@@ -780,8 +780,6 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
         return { ok: true, items: [...deciding, ...runs, ...tasks, ...items] };
       },
     },
-    // Who can be picked to lead a stage or decide at one.
-    { method: 'GET', path: /^\/api\/directory$/, handle: async () => ({ ok: true, ...(await pickable()), roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) }) },
     // The library: ways SaaS teams commonly run work, to start from.
     { method: 'GET', path: /^\/api\/process-library$/, handle: () => ({ ok: true, library: PROCESS_LIBRARY }) },
     {
@@ -1028,11 +1026,12 @@ export function parseCadence(raw: unknown): ScheduleTrigger | null | undefined {
 }
 
 /// Where workers may work: what the hire offer's "Works in" picker lists.
-function workPlaces(): Array<{ name: string; path: string }> {
+/// The kind lets Readiness say "38 repos · 2 workspaces".
+function workPlaces(): Array<{ name: string; path: string; kind: 'workspace' | 'project' }> {
   const store = Store.load();
   return [
-    ...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath })),
-    ...store.projects.map((p) => ({ name: p.name, path: p.path })),
+    ...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath, kind: 'workspace' as const })),
+    ...store.projects.map((p) => ({ name: p.name, path: p.path, kind: 'project' as const })),
   ];
 }
 
@@ -1187,6 +1186,19 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     };
   };
   return [
+    // Who is who, for anyone signed in: each person once, by the name they go
+    // by, with the handles, emails and device names they were recorded under,
+    // so a row shows "Sam Rivera" where an ask kept "samr". Also the groups
+    // and roles a picker offers; someone with a Slack id can be picked.
+    // Slack being down just means fewer names.
+    {
+      method: 'GET',
+      path: /^\/api\/directory$/,
+      handle: async () => {
+        const slack = slackPeople ? await slackPeople().catch(() => []) : [];
+        return { ok: true, people: org.peopleDirectory(slack.map((p) => ({ id: p.id, name: p.name, handle: p.handle }))), groups: org.directory().groups, roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) };
+      },
+    },
     { method: 'GET', path: /^\/api\/today$/, handle: (c) => org.today(c) },
     { method: 'GET', path: /^\/api\/proposals$/, handle: (c) => org.proposals(c) },
     {
@@ -1429,7 +1441,15 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/toolchain$/, handle: (c, b, [name]) => org.setRepoToolchain(c, decodeURIComponent(name), str(b.kit), str(b.version) || null) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.disconnectRepo(c, decodeURIComponent(name)) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/workers$/, handle: (c, b, [name]) => org.letWorkOnRepo(c, str(b.worker), decodeURIComponent(name)) },
-    { method: 'GET', path: /^\/api\/teams$/, handle: (c) => org.teams(c) },
+    // Each team with its last 30 days, for its card.
+    {
+      method: 'GET',
+      path: /^\/api\/teams$/,
+      handle: (c) => {
+        const month = org.teamMonth(c);
+        return org.teams(c).map((t) => (month[t.id] ? { ...t, last30: month[t.id] } : t));
+      },
+    },
     { method: 'GET', path: /^\/api\/now$/, handle: (c) => org.workingNow(c) },
     {
       method: 'GET',

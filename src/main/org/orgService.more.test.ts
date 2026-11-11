@@ -290,6 +290,23 @@ describe('teams', () => {
     expect(h.svc.decideTeamTask(pat, 't1', { kind: 'answer', answers: ['US'] }).ok).toBe(true);
     expect(h.teamCalls).toEqual(['answer:t1:US']);
   });
+
+  it("sums a team's last 30 days for its card, and dates each task", () => {
+    const DAY = 86_400_000;
+    const staged = [{ kind: 'research', status: 'done' }];
+    const tasks = [
+      { ...task, id: 'a', status: 'done', stages: staged, createdAt: NOW - 3 * DAY, finishedAt: NOW - 1 * DAY, spentUSD: 6, budgetUSD: 40 },
+      { ...task, id: 'b', status: 'done', stages: staged, createdAt: NOW - 10 * DAY, finishedAt: NOW - 6 * DAY, spentUSD: 4, budgetUSD: 40 },
+      // A question answered straight away: counted, but not in the cycle time.
+      { ...task, id: 'c', status: 'done', answered: true, createdAt: NOW - 2 * DAY, finishedAt: NOW - 2 * DAY + 60_000, spentUSD: 1, budgetUSD: 40 },
+      { ...task, id: 'd', status: 'done', stages: staged, createdAt: NOW - 40 * DAY, finishedAt: NOW - 39 * DAY, spentUSD: 9, budgetUSD: 40 },
+      { ...task, id: 'e', kind: 'learn', createdAt: NOW - DAY, spentUSD: 2, budgetUSD: 40 },
+    ] as unknown as TeamTask[];
+    const h = harness({ roster: [worker('luke', { manager: { name: 'Pat', slackUserId: PAT } })], teams: { teams: [team], tasks } });
+    expect(h.svc.teamMonth(pat)).toEqual({ 'team-1': { tasks: 3, spentUSD: 11, budgetUSD: 120, medianCycleMs: 3 * DAY } });
+    expect(h.svc.teamTasks(pat).find((t) => t.id === 'a')).toMatchObject({ createdAt: NOW - 3 * DAY, finishedAt: NOW - DAY });
+    expect(harness({ roster: [worker('luke')], teams: { teams: [team], tasks } }).svc.teamMonth(sam)).toEqual({});
+  });
 });
 
 describe('admin views', () => {

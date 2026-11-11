@@ -7,6 +7,7 @@ import { TriggerService, type Deliverable, type WorkerTrigger } from '../main/or
 import type { OrgCaller } from '../shared/org/policy';
 import type { ProcessState } from '../shared/org/process';
 import { parseIdea } from '../main/slack/processSlack';
+import { buildPeopleDirectory } from '../main/org/peopleDirectory';
 
 const PAT: OrgCaller = { name: 'Pat', slackUserId: 'U0ACMEPAT', admin: false };
 const RILEY: OrgCaller = { name: 'Riley', slackUserId: 'U0ACMERILEY', admin: false };
@@ -54,6 +55,7 @@ describe('process routes', () => {
     library: (_c: OrgCaller, opts: { documents?: boolean; kind?: string }) => [{ documents: !!opts.documents, kind: opts.kind ?? null }],
     listWorkers: () => [],
     directory: () => ({ people: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }], groups: [] }),
+    peopleDirectory: (slack: Array<{ id: string; name: string; handle?: string }>) => buildPeopleDirectory({ seen: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }], slack }),
     repoList: () => ({ ok: true, repos: [{ name: 'acme-repo', path: '/x' }], workspaces: [] }),
     teamPage: (c: OrgCaller) => ({ ok: true, team: { id: 't-product', name: 'Product', budgetUSDPerTask: 50, canChange: c === PAT, checkpoints: { askFirst: true, finalReview: true }, members: [{ name: 'Lena', role: 'Writes' }] } }),
   };
@@ -105,7 +107,7 @@ describe('process routes', () => {
 
     it('lets anyone in Slack be picked, once each, without joining first', async () => {
       const dir = await call(PAT, 'GET', '/api/directory');
-      expect(dir.people).toEqual([{ name: 'Holly Ng', slackUserId: 'U0ACMEHOLLY', handle: 'holly' }, { name: 'Sam', slackUserId: 'U0ACMESAM', handle: 'sam' }]);
+      expect(dir.people).toEqual([{ id: 'U0ACMEHOLLY', name: 'Holly Ng', slackUserId: 'U0ACMEHOLLY', handle: 'holly' }, { id: 'U0ACMESAM', name: 'Sam', slackUserId: 'U0ACMESAM', handle: 'sam' }]);
       const read = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: 'name: Zed led\naccess: { who: people, people: [Holly Ng] }\nstages:\n  - name: A\n    team: Product\n    lead: Holly Ng\n  - name: B\n    decide: [holly]\n' });
       expect(read.notes).toEqual([]);
       expect(read.draft.stages[0].owner).toEqual({ name: 'Holly Ng', slackUserId: 'U0ACMEHOLLY' });

@@ -757,3 +757,28 @@ describe('Setup → Readiness metrics', () => {
     }
   });
 });
+
+describe('the people directory', () => {
+  it('names everyone for anyone signed in, Slack included, and nobody without a token', async () => {
+    const seen: unknown[] = [];
+    const o = {
+      peopleDirectory: (slack: unknown) => {
+        seen.push(slack);
+        return [{ id: 'U0ACMESAM', name: 'Sam Rivera', slackUserId: 'U0ACMESAM', handle: 'samr', aliases: ['Sam browser'] }];
+      },
+      directory: () => ({ people: [], groups: [{ id: 'admins', name: 'Admins', members: [] }] }),
+    } as unknown as OrgService;
+    const plane = createControlPlane({ org: o, log: () => {}, slackPeople: async () => [{ id: 'U0ACMESAM', name: 'Sam Rivera', handle: 'samr', title: 'Acme ops' }], authenticate: (t) => (t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(plane, { host: '127.0.0.1', port: 0 });
+    const at = `http://127.0.0.1:${(plane.address() as AddressInfo).port}`;
+    try {
+      const res = await (await fetch(`${at}/api/directory`, { headers: { Authorization: 'Bearer ocli_good' } })).json();
+      expect(res).toMatchObject({ ok: true, people: [{ name: 'Sam Rivera', handle: 'samr', aliases: ['Sam browser'] }], groups: [{ id: 'admins' }] });
+      // Only a name and a handle go in from Slack: not their title.
+      expect(seen).toEqual([[{ id: 'U0ACMESAM', name: 'Sam Rivera', handle: 'samr' }]]);
+      expect((await fetch(`${at}/api/directory`)).status).toBe(401);
+    } finally {
+      plane.close();
+    }
+  });
+});

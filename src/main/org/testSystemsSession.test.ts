@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { credentialEnv, extraEnv, type TestSystem } from '../../shared/testSystems';
-import { MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
+import { BLANK_RETRY_MS, LIKELY_BLANK_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
 
 const billing: TestSystem = {
   id: 'billing',
@@ -17,6 +17,9 @@ const billing: TestSystem = {
 };
 const E = credentialEnv('billing');
 const SECRETS: Record<string, string> = { [E.user]: 'qa@acme.dev', [E.password]: 'hunter2-secret', [E.key]: 'qa-key-123', [extraEnv('billing', 'pin')]: 'pin-98765' };
+
+/// A screenshot the size of a real page's.
+const PAGE_PNG = Buffer.alloc(LIKELY_BLANK_BYTES + 5000, 3);
 
 const page = (url: string, extra = ''): ToolResult => ({ content: [{ type: 'text', text: `### Page\n- Page URL: ${url}\n- Page Title: x\n${extra}` }] });
 
@@ -249,7 +252,7 @@ describe('screenshots', () => {
     const files = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-evidence-'));
     const { child, calls } = fakeBrowser((name, args) => {
       if (name === 'browser_take_screenshot') {
-        fs.writeFileSync(String(args.filename), 'png-bytes');
+        fs.writeFileSync(String(args.filename), PAGE_PNG);
         return { content: [{ type: 'text', text: `### Result\nTook the screenshot and saved it as ${String(args.filename)}` }, { type: 'image', data: 'aW1n', mimeType: 'image/png' }] };
       }
       return page('https://staging.billing.acme.dev/home');
@@ -257,7 +260,7 @@ describe('screenshots', () => {
     const s = new TestSystemsSession({ systems: () => [billing], secret: (n) => SECRETS[n], startBrowser: async () => child, tempDir: () => tmp, sleep: async () => {}, filesDir: files });
     const res = await s.call('browser_take_screenshot', { filename: '/data/projects/acme/shots/BILL-123-AC1.png' });
     expect(calls[0].args.filename).toBe(path.join(tmp, 'BILL-123-AC1.png'));
-    expect(fs.readFileSync(path.join(files, 'BILL-123-AC1.png'), 'utf-8')).toBe('png-bytes');
+    expect(fs.readFileSync(path.join(files, 'BILL-123-AC1.png')).equals(PAGE_PNG)).toBe(true);
     expect(JSON.stringify(res)).toContain('with this run’s files');
     // Never the browser's own folder: a later step would go looking for it.
     expect(JSON.stringify(res)).not.toContain(tmp);
@@ -271,5 +274,60 @@ describe('screenshots', () => {
     expect(calls[2].args).not.toHaveProperty('filename');
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(files, { recursive: true, force: true });
+  });
+
+  // Playwright sends no picture back when it's given a file name, as here.
+  function shooter(sizes: number[]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-shot-'));
+    let n = 0;
+    const slept: number[] = [];
+    const { child, calls } = fakeBrowser((name, args) => {
+      if (name === 'browser_take_screenshot') {
+        fs.writeFileSync(String(args.filename), Buffer.alloc(sizes[Math.min(n++, sizes.length - 1)], 3));
+        return { content: [{ type: 'text', text: `### Result\nSaved it as ${String(args.filename)}` }] };
+      }
+      return page('https://staging.billing.acme.dev/home');
+    });
+    const s = new TestSystemsSession({ systems: () => [billing], secret: (n) => SECRETS[n], startBrowser: async () => child, tempDir: () => tmp, sleep: async (ms) => void slept.push(ms) });
+    const shots = () => calls.filter((c) => c.name === 'browser_take_screenshot').length;
+    return { s, shots, slept, done: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+  }
+  const said = (res: ToolResult) => res.content.map((c) => c.text ?? '').join(' ');
+
+  it('are sent back for the worker to see, from the file', async () => {
+    const t = shooter([PAGE_PNG.length]);
+    const res = await t.s.call('browser_take_screenshot', {});
+    const img = res.content.find((c) => c.type === 'image');
+    expect(img).toMatchObject({ mimeType: 'image/png', data: PAGE_PNG.toString('base64') });
+    expect(said(res)).toContain('shown below');
+    expect(t.shots()).toBe(1);
+    t.done();
+  });
+
+  it('are not sent back when too large to show, and say so', async () => {
+    const t = shooter([MAX_INLINE_IMAGE_BYTES + 1]);
+    const res = await t.s.call('browser_take_screenshot', {});
+    expect(res.content.some((c) => c.type === 'image')).toBe(false);
+    expect(said(res)).toContain('too large to show');
+    t.done();
+  });
+
+  it('are taken again, after a moment, when they come out almost empty', async () => {
+    const t = shooter([LIKELY_BLANK_BYTES - 1, PAGE_PNG.length]);
+    const res = await t.s.call('browser_take_screenshot', { fullPage: true });
+    expect(t.shots()).toBe(2);
+    expect(t.slept).toEqual([BLANK_RETRY_MS]);
+    expect(said(res)).not.toContain('almost empty');
+    expect(res.content.find((c) => c.type === 'image')?.data).toBe(PAGE_PNG.toString('base64'));
+    t.done();
+  });
+
+  it('warn the worker off one that stays almost empty, without trying forever', async () => {
+    const t = shooter([LIKELY_BLANK_BYTES - 1]);
+    const res = await t.s.call('browser_take_screenshot', {});
+    expect(t.shots()).toBe(2);
+    expect(said(res)).toContain('almost empty');
+    expect(said(res)).toContain('Don’t use it as evidence');
+    t.done();
   });
 });

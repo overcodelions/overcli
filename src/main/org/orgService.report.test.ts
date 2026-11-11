@@ -124,6 +124,27 @@ describe('OrgService.report', () => {
     expect(svc.listWorkers(admin).find((w) => w.id === 'ben')!.month).toEqual({ runs: 0, failed: 0, pullRequests: 0 });
   });
 
+  it('gives each worker its last 30 days: jobs ended, failed, the 30 before, and its newest run', () => {
+    const DAY = 86_400_000;
+    const at = (id: string, createdAt: number, state: Record<string, unknown>, endedAt?: number) =>
+      ({ id, workerId: 'ana', createdAt, state, attempts: endedAt ? [{ startedAt: createdAt, endedAt }] : [], flowSnapshot: { name: 'f', steps: [] }, artifacts: {} }) as unknown as FlowRun;
+    const { svc } = harness({
+      flowRuns: [
+        at('r1', NOW - 2 * DAY, { kind: 'done', success: true }),
+        at('r2', NOW - 3 * DAY, { kind: 'aborted' }),
+        at('r3', NOW - 3_600_000, { kind: 'done', success: false }, NOW - 1_800_000),
+        // Still going: not a job yet.
+        at('r4', NOW - 60_000, { kind: 'running', currentStepId: 's' }),
+        at('r5', NOW - 40 * DAY, { kind: 'done', success: true }),
+        // Past 60 days: in neither window.
+        at('r6', NOW - 90 * DAY, { kind: 'done', success: true }),
+      ],
+    });
+    const list = svc.listWorkers(admin);
+    expect(list.find((w) => w.id === 'ana')!.last30).toEqual({ jobs: 3, failed: 1, prior: 1, lastRun: { at: NOW - 1_800_000, outcome: 'failed' } });
+    expect(list.find((w) => w.id === 'ben')!.last30).toEqual({ jobs: 0, failed: 0, prior: 0 });
+  });
+
   it('shows only the workers the caller can see, and leaves the hidden ones out of the totals', () => {
     const { svc } = harness();
     const res = svc.report(pat, 30);
@@ -155,12 +176,41 @@ describe('OrgService.report', () => {
     if (!week.ok) throw new Error(week.error);
     expect(week.report.daily).toHaveLength(7);
     expect(new Date(asked[0]).getHours()).toBe(0);
-    expect(svc.report(pat, 30).ok && asked[1] < asked[0]).toBe(true);
+    // Each window asks again from the start of the one before it, for "vs prior".
+    expect(asked[1] < asked[0]).toBe(true);
+    expect(svc.report(pat, 30).ok && asked[2] < asked[0]).toBe(true);
     // Not a number: the default window.
     const fallback = svc.report(pat, Number('soon'));
     expect(fallback.ok && fallback.report.days).toBe(30);
     expect(svc.report(pat, 14)).toEqual({ ok: false, error: 'Pick 7 days, 30 days or all time (0).' });
     expect(svc.report(pat, -7).ok).toBe(false);
+  });
+
+  it('adds up the window of equal length before, for the visible workers only', () => {
+    const DAY = 86_400_000;
+    const minute = 60_000;
+    const pr = (id: string, workerId: string, createdAt: number) =>
+      ({ id, workerId, createdAt, state: { kind: 'done', success: true }, flowSnapshot: { name: 'f', steps: [] },
+        attempts: [{ startedAt: createdAt, endedAt: createdAt + 10 * minute }],
+        artifacts: { 'pull-requests.md': { name: 'pull-requests.md', body: `- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/${id} (branch fix/${id})`, producedAt: createdAt } } }) as unknown as FlowRun;
+    const { svc } = harness({
+      // This week: ana $1. The week before: ana $4, ben $2, hidden cal $40. Before that: ana $8.
+      facts: [run('ana', 1), run('ana', 4, NOW - 9 * DAY), run('ben', 2, NOW - 10 * DAY), run('cal', 40, NOW - 9 * DAY), run('ana', 8, NOW - 20 * DAY)],
+      flowRuns: [pr('1', 'ana', NOW - 9 * DAY), pr('2', 'cal', NOW - 9 * DAY), pr('3', 'ana', NOW - 30 * DAY)],
+    });
+    const week = svc.report(pat, 7);
+    if (!week.ok) throw new Error(week.error);
+    expect(week.report.totals.costUSD).toBe(1);
+    const prior = week.prior!;
+    expect(prior.untilMs).toBe(week.report.sinceMs);
+    expect(new Date(prior.sinceMs).getHours()).toBe(0);
+    expect(Math.round((prior.untilMs - prior.sinceMs) / DAY)).toBe(7);
+    expect(prior).toMatchObject({ costUSD: 6, itemsDone: 0, tokens: 30, workedMs: 4 * minute, pullRequests: 1 });
+    // 4 minutes at 1.5×, and the pull request run's 10 minutes topped up to an hour (the floor) from the 15 it had.
+    expect(prior.savedMs).toBe(4 * minute * 1.5 + (60 - 15) * minute);
+    // All time has nothing before it.
+    const all = svc.report(pat, 0);
+    expect(all.ok && all.prior).toBeUndefined();
   });
 
   it('says so when the host has no report', () => {

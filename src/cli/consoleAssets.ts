@@ -60,7 +60,7 @@ const DARK = `
   --violet: #b896ff; --violet-soft: rgba(184, 150, 255, 0.14);
   --need: #f2b04a; --need-ink: #241700; --need-soft: rgba(242, 176, 74, 0.14);
   --bad: #ff8f84; --bad-ink: #2a0703; --bad-soft: rgba(255, 143, 132, 0.13); --bad-line: rgba(255, 143, 132, 0.35);
-  --shadow: none;
+  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 1px 2px rgba(0, 0, 0, 0.35);
   color-scheme: dark;`;
 
 const LIGHT = `
@@ -76,7 +76,7 @@ const LIGHT = `
   --violet: #6d28d9; --violet-soft: #f1e8fd;
   --need: #8a4a07; --need-ink: #ffffff; --need-soft: #fbefdd;
   --bad: #b3261e; --bad-ink: #ffffff; --bad-soft: #fdecea; --bad-line: #f1c4bf;
-  --shadow: none;
+  --shadow: 0 1px 2px rgba(16, 16, 24, 0.06);
   color-scheme: light;`;
 
 export const CONSOLE_CSS = `
@@ -936,6 +936,8 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wchip[style*="--wh"] { background: hsl(var(--wh) 50% 50% / var(--chip-bg-a)); border-color: hsl(var(--wh) 50% 55% / 0.45); color: hsl(var(--wh) 65% var(--chip-ink-l)); }
 .wchip:hover { border-color: var(--go); color: var(--go); }
 .avatar.xs { width: 18px; height: 18px; font-size: 8.5px; }
+.who-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+.who-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .camerow:hover { background: var(--panel-2); }
 .camerow .libkind { width: 28px; height: 28px; border-radius: 7px; flex: none; margin-top: 1px; }
 .cametitle { font-weight: 600; font-size: 13.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -944,6 +946,8 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .came-top { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
 .came-top .cametitle { flex: 1; min-width: 0; }
 .came-at { flex: none; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+/* Under an outcome, the words it was asked in: quiet, quoted, one line. */
+.came-ask { display: block; min-width: 0; font-size: 12.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* One ticket's updates as one row: its key, who, and the steps in order. */
 .came-key { flex: none; font-family: var(--mono); font-size: 12px; color: var(--faint); }
 .came-sep { flex: none; width: 1px; height: 12px; background: var(--line-2); }
@@ -978,6 +982,65 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .librows .empty { padding: 36px 24px; }
 .libmore { display: flex; justify-content: center; padding: 14px; border-bottom: 1px solid var(--line); }
 @media (max-width: 880px) { .libhead { display: none; } .librow { grid-template-columns: 34px minmax(0, 1fr); } .librow > :nth-child(n+3) { display: none; } .libopen { padding-left: 16px; } }
+/* Library: a sidebar of filters beside one card of work, by day. */
+.lb-tools { display: flex; gap: 8px; align-items: center; flex: 0 1 560px; min-width: 0; }
+.lb-tools .lib-search { flex: 1 1 auto; }
+.lb { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.lb-facets { flex: 1 1 200px; max-width: 240px; min-width: 0; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 16px; }
+.lb-fgroup { display: flex; flex-direction: column; gap: 1px; }
+.lb-fgroup h3 { margin: 16px 0 6px; padding: 0 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.lb-facets > .lb-fgroup:first-child h3 { margin-top: 0; }
+.lb-clear { align-self: flex-start; padding: 0 6px 4px; color: var(--go); font-size: 12.5px; }
+.lb-facet { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 13px; color: var(--muted); cursor: pointer; min-width: 0; }
+.lb-facet > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-facet:hover { background: var(--panel-2); color: var(--ink); }
+.lb-facet input { width: 15px; height: 15px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--go); }
+.lb-facet .n { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.lb-facet.zero { opacity: 0.55; }
+.lb-card { flex: 999 1 640px; min-width: 0; box-shadow: var(--shadow); }
+.lb-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--head); }
+.lb-count { margin-left: auto; font-size: 12.5px; color: var(--faint); }
+.lb-head select { width: auto; min-height: 32px; padding: 4px 30px 4px 10px; font-size: 13px; }
+.lb-cols, .lb-row { display: grid; grid-template-columns: minmax(0, 1fr) 104px 150px 160px 112px; gap: 14px; padding: 0 16px; }
+.lb-card.rated .lb-cols, .lb-card.rated .lb-row { grid-template-columns: minmax(0, 1fr) 104px 150px 160px 112px 80px; }
+.lb-cols { padding-top: 9px; padding-bottom: 9px; border-bottom: 1px solid var(--line); background: var(--head); font-size: 12px; font-weight: 600; color: var(--faint); }
+.lb-cols .r, .lb-when, .lb-rate { text-align: right; }
+.lb-row { width: 100%; align-items: start; padding-top: 12px; padding-bottom: 12px; border: 0; border-bottom: 1px solid var(--line); background: var(--panel); text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.lb-row:hover, .lb-row[aria-expanded="true"] { background: var(--panel-2); }
+.lb-row:focus-visible, .lb-step:focus-visible { outline: 2px solid var(--go); outline-offset: -2px; }
+.lb-work { display: flex; gap: 12px; min-width: 0; }
+.lb-work .libkind { width: 30px; height: 30px; border-radius: 8px; flex: none; }
+.lb-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lb-title { font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.lb-ask { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-out { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 5px; font-size: 12px; color: var(--faint); min-width: 0; }
+.lb-trail { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 4px; min-width: 0; }
+.lb-trail .libtag { font-size: 12px; }
+.lb-key { padding-top: 2px; font-family: var(--mono); font-size: 12px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-key.none { color: var(--faint); }
+.lb-kmob { display: none; font-family: var(--mono); color: var(--ink); }
+.lb-who { display: flex; align-items: center; gap: 7px; min-width: 0; padding-top: 2px; font-size: 13px; white-space: nowrap; }
+.lb-who > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.lb-by { color: var(--muted); }
+.lb-by > svg { flex: none; color: var(--faint); }
+.lb-when { padding-top: 2px; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.lb-when .faint { display: block; margin-top: 2px; font-size: 11px; }
+.lb-rate { padding-top: 2px; }
+.lb-card .lb-day { padding: 14px 16px 6px; }
+.lb-mobonly { display: none; }
+.lb-quick { border-bottom: 1px solid var(--line); }
+.lb-quick .came-steps { border-top: 1px solid var(--line); }
+.lb-card .libopen { padding-left: 58px; }
+.lb-steps { display: flex; flex-direction: column; margin: -4px 0 0; }
+.lb-step { display: grid; grid-template-columns: 92px auto minmax(0, 1fr) auto; gap: 12px; align-items: baseline; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: none; text-align: left; font: inherit; font-size: 13px; color: inherit; cursor: pointer; }
+.lb-step:hover, .lb-step[aria-expanded="true"] { background: var(--panel); }
+.lb-stepat { font-family: var(--mono); font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.lb-steptitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-step > .faint { font-size: 12px; white-space: nowrap; }
+.lb-stepopen { padding: 8px 8px 12px 104px; }
+.lb-span { margin: 8px 0 0; padding: 0 8px; font-size: 12.5px; }
+@media (max-width: 1100px) { .lb-facets { max-width: none; flex-basis: 100%; position: static; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 20px; } .lb-facets > .lb-fgroup h3 { margin-top: 4px; } .lb-clear { grid-column: 1 / -1; } }
+@media (max-width: 860px) { .lb-cols { display: none; } .lb-row, .lb-card.rated .lb-row { grid-template-columns: minmax(0, 1fr) auto; } .lb-row > .lb-key, .lb-row > .lb-who, .lb-row > .lb-rate { display: none; } .lb-kmob { display: inline; } .lb-out.lb-mobonly { display: flex; } .lb-card .libopen { padding-left: 16px; } .lb-step { grid-template-columns: auto minmax(0, 1fr); } .lb-step > .libtag, .lb-step > .faint { display: none; } .lb-stepopen { padding-left: 8px; } .lb-tools { flex-basis: 100%; } }
 .reach-code { display: flex; gap: 8px; align-items: flex-start; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; }
 .reach-code pre { margin: 0; flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12.5px; }
 .tool-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; align-items: start; padding: 14px 18px; border-top: 1px solid var(--line); }
@@ -1190,6 +1253,59 @@ table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wl-detail-foot { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 10px 20px; border-top: 1px solid var(--line); }
 .wl-detail-foot:empty { display: none; }
 .wl-empty { padding: 40px; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); flex: 1; height: calc(100vh - 320px); min-height: 420px; box-sizing: border-box; }
+/* Workers list and worker page */
+.wk-stats { margin-bottom: 2px; }
+.wk-up { color: var(--ok); font-weight: 600; } .wk-down { color: var(--bad); font-weight: 600; }
+.wk-statbar { display: block; height: 6px; margin-top: 4px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.wk-statbar > i { display: block; height: 100%; border-radius: 3px; background: var(--go); }
+.wk-statbar.high > i { background: var(--need); }
+table.wk-table .wk-tag { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+table.wk-table td .sub { display: block; margin-top: 2px; }
+.wk-last { font-weight: 500; } .wk-last.ok { color: var(--ok); } .wk-last.bad { color: var(--bad); } .wk-last.quiet { color: var(--faint); }
+.wk-now.waiting { color: var(--need); } .wk-now.bad { color: var(--bad); } .wk-now.working { color: var(--go); }
+.wk-ok { display: inline-flex; align-items: center; gap: 8px; }
+.wk-okbar { position: relative; display: inline-block; width: 70px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.wk-okbar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--ok); }
+.wk-okbar.low > i { background: var(--need); }
+.wk-num { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+.wk-spend { display: flex; align-items: center; gap: 10px; }
+.wk-spend-bar { position: relative; flex: none; width: 110px; height: 6px; border-radius: 3px; background: var(--line); }
+.wk-spend-bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--go); }
+.wk-spend-bar.high > i { background: var(--need); } .wk-spend-bar.over > i { background: var(--bad); }
+.wk-spend-bar > b { position: absolute; top: -3px; width: 2px; height: 12px; margin-left: -1px; border-radius: 1px; background: var(--ink); }
+.wk-spend-v { min-width: 52px; text-align: right; font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+.wk-spend-of { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.topnav .tab-group { flex: none; padding: 0 6px 0 10px; font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); align-self: center; }
+.topnav .tab-rule { flex: none; width: 1px; height: 20px; margin: 0 6px; background: var(--line-2); align-self: center; }
+.wk-head2 { display: flex; flex-wrap: wrap; gap: 16px 20px; align-items: center; }
+.wk-head2 > .wk-id-main { flex: 1 1 320px; }
+.wk-head2 > .page-actions { padding-top: 0; }
+.wk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 13px; }
+.wk-meta-i { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
+.wk-stats-row { display: flex; flex-wrap: wrap; align-items: stretch; row-gap: 10px; }
+.wk-stat { display: flex; flex-direction: column; gap: 2px; padding: 0 18px; border-left: 1px solid var(--line); }
+.wk-stat:first-child { border-left: 0; padding-left: 0; }
+.wk-stat > b { font-family: var(--serif); font-size: 22px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.wk-stat > span { font-size: 12px; color: var(--faint); white-space: nowrap; }
+.wk-stat.need > b { color: var(--need); } .wk-stat.bad > b, .wk-stat.bad > span { color: var(--bad); }
+.wl-runs { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 11px; font-weight: 600; line-height: 16px; }
+.wl-row.wl-child { padding-left: 28px; background: color-mix(in srgb, var(--panel-2) 50%, transparent); }
+.wl-row.wl-child.on { background: var(--go-soft); }
+.wk-fail { display: flex; flex-direction: column; gap: 14px; margin: 14px 0 6px; }
+.wk-fail-box { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 8px; background: var(--bad-soft); border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent); }
+.wk-fail-h { color: var(--bad); font-weight: 600; }
+.wk-fail-why p { margin: 0; font-size: 13.5px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wk-fail-steps { display: flex; flex-direction: column; gap: 8px; }
+.wk-tl { position: relative; list-style: none; margin: 0; padding: 0 0 0 26px; }
+.wk-tl::before { content: ""; position: absolute; left: 8px; top: 8px; bottom: 8px; width: 2px; background: var(--line); }
+.wk-tl-i { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 5px 0 9px; font-size: 13px; }
+.wk-tl-i::before { content: ""; position: absolute; left: -23px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--panel); }
+.wk-tl-i.bad::before { background: var(--bad); }
+.wk-tl-i.off::before { background: var(--line-2); }
+.wk-tl-i.off > b { color: var(--faint); font-weight: 500; }
+.wk-tl-i > b { font-weight: 600; }
+.wk-tl-t { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+.wk-tl-i .msg { margin-top: 4px; }
 .mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .md-table { overflow-x: auto; margin: 8px 0; }
 .md-table table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
@@ -1381,6 +1497,43 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .sd-table { width: 100%; font-size: 13px; }
 .sd-table td, .sd-table th { padding: 4px 8px; text-align: left; }
 .sd-table td.num, .sd-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Reports */
+.rp-page { display: flex; flex-direction: column; gap: 22px; transition: opacity 0.15s; }
+.rp-page.rp-busy { opacity: 0.55; pointer-events: none; }
+.rp-hero { display: flex; flex-wrap: wrap; box-shadow: var(--shadow); }
+.rp-hero-main { flex: 2 1 420px; min-width: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 8px; border-right: 1px solid var(--line); }
+@media (max-width: 760px) { .rp-hero-main { border-right: 0; border-bottom: 1px solid var(--line); } }
+.rp-eyebrow { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.rp-hero-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
+.rp-hero-n { font-family: var(--serif); font-size: 60px; font-weight: 800; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.rp-hero-delta { font-size: 14.5px; }
+.rp-hero-note { max-width: 68ch; font-size: 13px; color: var(--muted); }
+.rp-facts { font-size: 12.5px; color: var(--faint); }
+.rp-hero-side { flex: 1 1 260px; display: flex; flex-direction: column; justify-content: center; background: var(--panel); }
+.rp-kv { display: flex; justify-content: space-between; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.rp-kv:first-child { border-top: 0; }
+.rp-kv b { color: var(--ink); font-family: var(--mono); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rp-delta { font-size: 12.5px; font-weight: 600; color: var(--faint); white-space: nowrap; }
+.rp-delta.good { color: var(--ok); }
+.rp-delta.warm { color: var(--need); }
+.rp-hero-delta .rp-delta { font-size: 14.5px; }
+.rp-chart { box-shadow: var(--shadow); }
+.rp-chart .k { color: var(--muted); }
+.rp-peak { font-family: var(--mono); font-size: 11px; font-weight: 400; color: var(--faint); }
+.rp-vrow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rp-chart .v { font-family: var(--serif); font-size: 26px; letter-spacing: -0.02em; }
+.rp-plot { height: 84px; margin-top: 4px; }
+.rp-plot i { position: relative; z-index: 1; background: var(--chart); opacity: 0.78; }
+.rp-plot i.peak { opacity: 1; }
+.rp-plot i.zero { background: var(--line); opacity: 1; }
+.rp-grid { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--line); pointer-events: none; }
+.rp-table .rp-sub { display: flex; align-items: center; gap: 0; max-width: 340px; }
+.rp-table .rp-sub > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.rp-table td.rp-low { color: var(--need); }
+.rp-spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 22px; vertical-align: middle; }
+.rp-spark i { display: block; width: 5px; min-height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--chart) 45%, transparent); }
+.rp-spark i.now { background: var(--chart); }
+.rp-spark i.zero { height: 2px !important; background: var(--line-2); }
 .big { font-family: var(--serif); font-size: 28px; line-height: 1.1; }
 .thinking { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); }
 .dots { display: inline-flex; gap: 4px; }
@@ -1792,6 +1945,81 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .signbox { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; }
 section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
 .rechecked { color: var(--ok) !important; }
+/* Readiness */
+.setup-rail .rd-navm { margin-left: auto; padding-left: 8px; font-size: 12px; font-weight: 500; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.setup-rail .rd-navm.need { color: var(--need); }
+.setup-rail .rd-navm.bad { color: var(--bad); }
+.rd-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 300px); gap: 20px; align-items: start; }
+@media (max-width: 1180px) { .rd-layout { grid-template-columns: minmax(0, 1fr); } }
+.rd-main, .rd-rail { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.rd-rail { position: sticky; top: calc(var(--chrome-h) + 16px); }
+@media (max-width: 1180px) { .rd-rail { position: static; } }
+.rd-card, .rd-storage, .rd-side { box-shadow: var(--shadow); }
+.rd-pad { padding: 12px 18px; }
+.rd-hero { display: flex; align-items: center; flex-wrap: wrap; gap: 16px 22px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
+.rd-ring { flex: none; }
+.rd-ring circle { fill: none; stroke-width: 8; }
+.rd-ring .track { stroke: var(--line); }
+.rd-ring .fill { stroke: var(--go); stroke-linecap: round; }
+.rd-ring.all .fill { stroke: var(--ok); }
+.rd-ring text { fill: var(--ink); font-family: var(--serif); font-size: 20px; font-weight: 800; }
+.rd-hero-text { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rd-hero-title { font-family: var(--serif); font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.rd-hero-act { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rd-checked { font-size: 12.5px; display: inline-flex; align-items: center; gap: 5px; }
+section.checking .rd-attn, section.checking .rd-grid { opacity: 0.45; transition: opacity 0.15s; }
+.rd-label { padding: 14px 18px 6px; font-size: 12px; font-weight: 600; color: var(--faint); }
+.rd-label.need { color: var(--need); }
+.rd-attn { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px 14px; margin: 0 12px 12px; padding: 14px 16px; border-radius: var(--r-lg); background: var(--need-soft); border: 1px solid color-mix(in srgb, var(--need) 35%, transparent); }
+.rd-attn.bad { background: var(--bad-soft); border-color: var(--bad-line); }
+.rd-bang { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--need); color: var(--need-ink); font-size: 13px; font-weight: 800; }
+.rd-attn.bad .rd-bang { background: var(--bad); color: var(--bad-ink); }
+.rd-attn-text { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.rd-attn-title { font-weight: 600; }
+.rd-attn-text .faint { font-size: 13px; }
+.rd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rd-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.rd-chip.off { color: var(--need); border-color: color-mix(in srgb, var(--need) 45%, transparent); }
+.rd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+.rd-cell { display: flex; align-items: flex-start; gap: 12px; padding: 13px 18px; background: var(--panel); min-width: 0; }
+.rd-ok { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--ok); color: var(--panel); }
+.rd-ok svg { stroke-width: 3; }
+.rd-cell-text { flex: 1; min-width: 0; }
+.rd-cell-title { font-weight: 600; font-size: 13.5px; }
+.rd-cell-detail { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rd-link { font-size: 12.5px; color: var(--go); flex: none; }
+.rd-opt { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; padding: 13px 18px; border-top: 1px solid var(--line); }
+.rd-opt-text { flex: 1 1 240px; min-width: 0; font-size: 13.5px; }
+.rd-opt-text b { font-weight: 600; }
+.rd-orgbox:not(:empty) { padding: 0 18px 16px; }
+.rd-total { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rd-count { font-size: 12px; font-weight: 600; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rd-bar { display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; background: var(--panel-2); margin-top: 6px; }
+.rd-bar > span { display: block; height: 100%; min-width: 2px; }
+.rd-sw { flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.rd-sw-build { background: var(--violet); }
+.rd-sw-runs { background: var(--chart); }
+.rd-sw-repos { background: var(--ok); }
+.rd-sw-tools { background: var(--need); }
+.rd-sw-other { background: var(--faint); opacity: 0.6; }
+.rd-cat { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+table.data td.rd-what { font-size: 12.5px; min-width: 220px; }
+table.data td.rd-size { color: var(--ink); }
+.rd-unit { color: var(--faint); }
+table.data th.rd-tick, table.data td.rd-tick { width: 36px; padding-right: 0; }
+.rd-tick input { accent-color: var(--go); width: 15px; height: 15px; }
+.btn.rd-danger { background: none; color: var(--bad); border-color: var(--bad-line); }
+.btn.rd-danger:hover:not(:disabled) { background: var(--bad-soft); }
+.btn.rd-danger:disabled { opacity: 0.5; cursor: default; }
+.rd-kv { display: flex; justify-content: space-between; gap: 12px; padding: 9px 18px; border-top: 1px solid var(--line); font-size: 13px; }
+.rd-kv:first-child { border-top: 0; }
+.rd-kv > span:first-child { color: var(--muted); flex: none; }
+.rd-kv > span:last-child { min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-change { display: flex; flex-direction: column; gap: 3px; padding: 10px 18px; border-top: 1px solid var(--line); font-size: 13px; }
+.rd-change:first-child { border-top: 0; }
+.rd-change .who-chip { font-weight: 600; }
+.rd-change-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rd-when { font-size: 11.5px; }
 .picker { border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
 .picker button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 8px 12px; border: 0; border-top: 1px solid var(--line); background: var(--panel); cursor: pointer; text-align: left; color: var(--ink); }
 .picker button:first-child { border-top: 0; }
@@ -2181,6 +2409,61 @@ button.pf-card:focus-visible { outline: 2px solid var(--go); outline-offset: 2px
 .pf-item.stuck { background: var(--bad-soft); border-color: var(--bad-line); }
 .pf-item.stuck .pf-now { color: var(--bad); }
 .pf-none { font-size: 12px; color: var(--faint); padding: 8px 2px; }
+/* Teams and processes board */
+.tb-card { box-shadow: var(--shadow); }
+.tb-top { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.tb-top > .avatar { border-radius: 10px; }
+.tb-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.tb-chip.need { background: var(--need-soft); color: var(--need); border-color: color-mix(in srgb, var(--need) 35%, var(--line)); }
+.tb-chip.go { background: var(--go-soft); color: var(--go); border-color: color-mix(in srgb, var(--go) 35%, var(--line)); }
+.tb-mini { margin: 0 -16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.tb-mini > div { background: var(--panel); padding: 10px 14px; min-width: 0; }
+.tb-mini b { display: block; font-family: var(--serif); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tb-mini span { display: block; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-card .tb-mini + .tmfoot { border-top: 0; background: none; }
+.tb-foot .faces { flex: none; }
+.tb-foot .faces > .avatar { border-color: var(--panel); }
+.tb-who { flex: 1 1 140px; min-width: 0; font-size: 12.5px; }
+.tb-foot .btn { margin-left: auto; flex: none; }
+.tb-note { margin-left: auto; font-size: 12.5px; padding: 10px 0; }
+table.data td.tb-task { min-width: 280px; }
+.pb-stats { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.pb-list { display: flex; flex-direction: column; gap: 16px; }
+.pb-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden; min-width: 0; }
+.pb-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 24px; padding: 16px 18px; }
+.pb-what { flex: 1 1 360px; min-width: 0; }
+.pb-name { margin: 0; font-family: var(--serif); font-size: 19px; font-weight: 700; letter-spacing: -0.02em; min-width: 0; }
+.pb-name .linkish { color: var(--ink); font: inherit; text-align: left; overflow-wrap: anywhere; }
+.pb-name .linkish:hover { color: var(--go); }
+.pb-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.pb-purpose { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.pb-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; color: var(--faint); }
+.pb-facts { display: flex; gap: 24px; flex-wrap: wrap; }
+.pb-fact { display: flex; flex-direction: column; min-width: 0; }
+.pb-fact b { font-family: var(--serif); font-size: 22px; font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.pb-fact span { font-size: 12px; color: var(--faint); white-space: nowrap; }
+.pb-acts { gap: 8px; align-self: center; flex: none; }
+.pb-flow { padding: 6px 18px 4px; border-top: 1px solid var(--line); min-width: 0; }
+.pf-fit { overflow: hidden; min-width: 0; }
+.pf-fit .pf-host { transform-origin: 0 0; }
+.pf-fit .pf-card { min-height: 78px; padding: 9px 10px; }
+.pf-fit .pf-tag, .pf-fit .pf-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-fit .pf-card b { font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pf-card.hot { box-shadow: 0 0 0 3px var(--need-soft); }
+.pf-cnt { position: absolute; top: -9px; right: -7px; min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; border-radius: 999px; background: var(--go); color: var(--go-ink); font-size: 11px; font-weight: 700; line-height: 20px; text-align: center; box-shadow: 0 0 0 3px var(--panel); font-variant-numeric: tabular-nums; }
+.pf-cnt.wait { background: var(--need); color: var(--need-ink); }
+.pb-items { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 18px 14px; border-top: 1px solid var(--line); background: var(--head); }
+.pb-label { font-size: 12px; font-weight: 600; color: var(--faint); margin-right: 4px; }
+.pb-item { appearance: none; font: inherit; display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 26px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer; }
+.pb-item:hover { border-color: var(--go); }
+.pb-item:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.pb-item.wait { background: var(--need-soft); color: var(--need); border-color: color-mix(in srgb, var(--need) 40%, var(--line)); }
+.pb-item.stuck { background: var(--bad-soft); color: var(--bad); border-color: var(--bad-line); }
+.pb-it { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+.pb-n { flex: none; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.pb-item.wait .pb-n { color: inherit; opacity: 0.8; }
+.linkish.pb-more { color: var(--go); font-size: 12.5px; font-weight: 600; }
+@media (max-width: 640px) { .pb-top { padding: 14px; } .pb-flow { padding: 6px 12px 4px; } .pb-items { padding: 12px 14px; } .pb-facts { gap: 18px; } }
 /* A process item, the page's whole width: its stages across the top, the
    call waiting on you, tabs, and who does what beside them. */
 .pi-page { display: flex; flex-direction: column; gap: 18px; width: 100%; }
@@ -2443,6 +2726,50 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .if-now.bad { color: var(--bad); }
 .if-age { width: 64px; text-align: right; font-size: 12.5px; flex: none; }
 .if-done { padding: 4px 0; }
+/* The inbox: a row of figures, then the work beside a rail of what's around it. */
+.ib .sec { box-shadow: var(--shadow); }
+.ib .sec-head .label { font-size: 14px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.ib-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow); }
+.ib-stat { background: var(--panel); padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ib-k { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.ib-v { font-family: var(--serif); font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+.ib-v.need { color: var(--need); }
+.ib-n { font-size: 12.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-spark { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; align-items: end; height: 24px; margin-top: 2px; }
+.ib-spark i { display: block; border-radius: 2px 2px 0 0; background: color-mix(in srgb, var(--go) 38%, var(--panel)); }
+.ib-spark i.now { background: var(--go); }
+.ib-meter { display: block; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; margin: 9px 0; }
+.ib-meter > i { display: block; height: 100%; border-radius: 3px; background: var(--go); }
+.ib-meter > i.high { background: var(--need); }
+.ib-cols { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-start; }
+.ib-main { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+.ib-rail { flex: 1 1 300px; max-width: 420px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 1000px) { .ib-rail { max-width: none; } }
+.ib-headnote { margin-left: auto; font-size: 12.5px; white-space: nowrap; }
+.ib-flight .if-rows { border: 0; border-radius: 0; }
+.ib-day { display: flex; align-items: center; gap: 10px; padding: 12px 16px 4px; font-size: 12px; font-weight: 600; color: var(--faint); }
+.ib-day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.ib-li { appearance: none; font: inherit; color: inherit; text-align: left; width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 16px; border: 0; border-top: 1px solid var(--line); background: none; cursor: pointer; }
+.ib-li:first-child { border-top: 0; }
+.ib-li:hover { background: var(--panel-2); }
+.ib-li:focus-visible { outline: 2px solid var(--go); outline-offset: -2px; }
+.ib-li-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ib-li-main b { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-li-main span { font-size: 12.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); flex: none; }
+.ib-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.ib-dot.go { background: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
+.ib-dot.ok { background: var(--ok); }
+.ib-dot.need { background: var(--need); }
+.ib-dot.bad { background: var(--bad); }
+.ib-when { width: 76px; flex: none; font-family: var(--mono); font-size: 11.5px; line-height: 1.35; color: var(--ink); }
+.ib-foot { padding: 10px 16px; border-top: 1px solid var(--line); }
+.ib-foot .linkish { color: var(--go); font-size: 13px; }
+.ib-empty { margin: 0; padding: 14px 16px; color: var(--muted); font-size: 13px; }
+.ib-bars { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; align-items: end; height: 84px; padding: 16px 16px 0; }
+.ib-bars i { display: block; min-height: 2px; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--go) 42%, var(--panel)); }
+.ib-bars i.now { background: var(--go); }
+.ib-barx { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; padding: 6px 16px 14px; font-family: var(--mono); font-size: 11px; color: var(--faint); text-align: center; }
 .if-flight:not(.quiet) { gap: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
 .if-flight:not(.quiet) > .row { min-height: 46px; padding: 0 16px; background: var(--head); border-bottom: 1px solid var(--line); }
 .if-flight:not(.quiet) > .if-rows { border: 0; border-radius: 0; }
@@ -2646,6 +2973,38 @@ export const CONSOLE_JS = String.raw`
     if (PICTURES[seed]) return h('span', { class: 'avatar pic ' + (size || 'm'), 'data-face': seed, 'aria-hidden': 'true' }, h('img', { src: PICTURES[seed], alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }));
     return h('span', { class: 'avatar ' + (size || 'm'), 'data-face': seed, style: 'background:hsl(' + hue(seed + name) + ' 42% 40%)', text: initials(name), 'aria-hidden': 'true' });
   }
+  /// People as names. Who asked, who manages, who decides arrive as Slack
+  /// handles, emails or ids; the directory (/api/directory, loaded at sign-in)
+  /// turns them into the name a person goes by. Anything unknown reads as it came.
+  function loadDirectory() {
+    if (state.directory) return Promise.resolve();
+    return api('GET', '/api/directory').then(function (r) {
+      var map = {};
+      ((r && r.people) || []).forEach(function (p) {
+        [p.id, p.handle, p.email, p.name].concat(p.aliases || []).forEach(function (k) { if (k) map[String(k).trim().toLowerCase()] = p; });
+      });
+      state.directory = map;
+    }, function () { state.directory = {}; });
+  }
+  function personOf(raw) {
+    // A Slack mention (<@U0…>) is the id it carries.
+    var d = state.directory || {}, k = String(raw || '').trim().toLowerCase().replace(/^<@([a-z0-9]+)(\|[^>]*)?>$/, '$1').replace(/^@/, '');
+    return d[k] || (k.indexOf('@') > 0 ? d[k.split('@')[0]] : null) || null;
+  }
+  function who(raw) { var p = personOf(raw); return p ? p.name : String(raw || ''); }
+  /// Whether a recorded name is the signed-in person, under any of their names.
+  function isMe(raw) {
+    if (!raw || !state.me) return false;
+    var p = personOf(raw), me = personOf(state.me.slackUserId) || personOf(state.me.name);
+    return p && me ? p === me : String(raw).trim().toLowerCase() === String(state.me.name || '').trim().toLowerCase();
+  }
+  /// "You" for the signed-in person, their name for anyone else.
+  function whoOrYou(raw, you) { return !raw || isMe(raw) ? (you || 'You') : who(raw); }
+  /// A person as an avatar and their name.
+  function whoChip(raw, size) {
+    var name = who(raw), p = personOf(raw);
+    return h('span', { class: 'who-chip', title: p && p.handle && p.handle !== name ? name + ' (@' + p.handle + ')' : name }, avatar('person:' + ((p && p.id) || name), name, size || 'xs'), h('span', { text: name }));
+  }
   function ago(ms) {
     if (!ms) return '';
     var m = Math.round((Date.now() - ms) / 60000);
@@ -2808,7 +3167,7 @@ export const CONSOLE_JS = String.raw`
     function submit() {
       var t = input.value.trim(); if (!t) return;
       store(TOKEN_KEY, t);
-      api('GET', '/api/whoami').then(function (me) { state.me = me; return api('GET', '/api/workers').then(null, function () {}); }).then(function () { render(); })
+      api('GET', '/api/whoami').then(function (me) { state.me = me; return Promise.all([api('GET', '/api/workers').then(null, function () {}), loadDirectory()]); }).then(function () { render(); })
         .catch(function () { err.textContent = ''; err.appendChild(h('div', { class: 'msg err', text: 'That token was not accepted. Check it was copied whole, or ask your admin for a new one.' })); });
     }
     input.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
@@ -2950,9 +3309,14 @@ export const CONSOLE_JS = String.raw`
     var on = x.tabs ? x.current() : null;
     return h('nav', { class: 'topnav ctx', 'aria-label': x.label || 'Where you are' },
       h('div', { class: 'ctx-where' + (x.tabs ? ' has-tabs' : '') }, chromeCrumbs(x)),
-      (x.tabs || []).map(function (t) {
-        return h('button', { 'aria-current': on === t.id ? 'page' : null, onclick: function () { x.pick(t.id); } },
-          t.icon ? icon(t.icon) : null, t.label, t.count ? h('span', { class: 'total', text: String(t.count) }) : null);
+      (x.tabs || []).map(function (t, i, all) {
+        // A tab that starts a group (a worker's Work, Setup) gets its label,
+        // and a rule before it when a group came first.
+        var starts = t.group && (!i || all[i - 1].group !== t.group);
+        return [starts && i ? h('span', { class: 'tab-rule', 'aria-hidden': 'true' }) : null,
+          starts ? h('span', { class: 'tab-group', 'aria-hidden': 'true', text: t.group }) : null,
+          h('button', { 'aria-current': on === t.id ? 'page' : null, onclick: function () { x.pick(t.id); } },
+            t.icon ? icon(t.icon) : null, t.label, t.count ? h('span', { class: 'total', text: String(t.count) }) : null)];
       }));
   }
   /// The day's sections, then Admin's: tabs() has them split by a 'sep'.
@@ -3008,12 +3372,14 @@ export const CONSOLE_JS = String.raw`
     return navMenu(h('button', { class: 'org crumb-link org-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-current': on ? 'page' : null, title: 'Setup, People and Activity', 'aria-label': me.org + ': Setup, People and Activity' },
       h('span', { class: 'org-name', text: me.org }), items.map(navBadges), icon('chevron', 14)), items, 'org-wrap');
   }
-  var WORKER_TABS = [['talk', 'Conversation', 'inbox'], ['runs', 'Runs', 'clock'], ['files', 'Files', 'doc'], ['journal', 'Journal', 'library'], ['triggers', 'Triggers', 'bolt'], ['job', 'Job', 'list'], ['tuning', 'Tuning', 'bolt'], ['reach', 'How to reach', 'arrow'], ['settings', 'Settings', 'gear']];
+  /// In two groups: what it has done (Work), and how it's set up (Setup).
+  var WORKER_TABS = [['talk', 'Conversation', 'inbox', 'Work'], ['runs', 'Runs', 'clock', 'Work'], ['files', 'Files', 'doc', 'Work'], ['journal', 'Journal', 'library', 'Work'],
+    ['job', 'Job', 'list', 'Setup'], ['triggers', 'Triggers', 'bolt', 'Setup'], ['tuning', 'Tuning', 'bolt', 'Setup'], ['reach', 'How to reach', 'arrow', 'Setup'], ['settings', 'Settings', 'gear', 'Setup']];
   function workerChrome(w, counts, current, pick, last) {
     // Another worker's page, opened while this one was loading.
     if (!last && state.workerId !== w.id) return;
     setChrome([['Workers', function () { go('workers'); }], [w.name, last ? function () { openWorker(w.id); } : null]].concat(last ? [[last]] : []),
-      WORKER_TABS.filter(function (t) { return t[0] !== 'tuning' || w.youManage; }).map(function (t) { return { id: t[0], label: t[1], icon: HAS_ICON(t[2]) ? t[2] : null, count: (counts || {})[t[0]] }; }),
+      WORKER_TABS.filter(function (t) { return t[0] !== 'tuning' || w.youManage; }).map(function (t) { return { id: t[0], label: t[1], icon: HAS_ICON(t[2]) ? t[2] : null, count: (counts || {})[t[0]], group: t[3] }; }),
       current, pick, w.name);
   }
 
@@ -3295,8 +3661,13 @@ export const CONSOLE_JS = String.raw`
       }));
   }
 
+  // Each render's number: only the newest one may put its page up.
+  var renderSeq = 0, shownRoute = null;
   function render() {
-    app.textContent = '';
+    // Signed in, the page on screen stays up until the next one is ready,
+    // so a filter or a tab redraws in place rather than flashing to Loading.
+    var signedIn = !!(token() && state.me) && !/^\/(join|pair|sso)\b/.test(location.pathname);
+    if (!signedIn) app.textContent = '';
     // The picture a draft came from, open beside the editor, closes with it.
     document.body.classList.remove('pi-open');
     // The invite and pairing pages are reached by link and stand alone.
@@ -3309,7 +3680,7 @@ export const CONSOLE_JS = String.raw`
     if (wanted) { store('overcli-org-open', null); state.tab = wanted; }
     if (!state.me) {
       app.appendChild(h('div', { class: 'login-wrap' }, thinking('Signing in…')));
-      api('GET', '/api/whoami').then(function (me) { state.me = me; return api('GET', '/api/workers').then(null, function () {}); }).then(function () { render(); }).catch(function (e) {
+      api('GET', '/api/whoami').then(function (me) { state.me = me; return Promise.all([api('GET', '/api/workers').then(null, function () {}), loadDirectory()]); }).then(function () { render(); }).catch(function (e) {
         // 401 already sent us back to sign in; anything else, say so.
         if (!token()) return;
         app.textContent = '';
@@ -3328,15 +3699,28 @@ export const CONSOLE_JS = String.raw`
     // Hiring is narrow once it's questions or an offer; the brief has the
     // ideas beside it.
     var main = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') }, thinking('Loading…'));
-    app.appendChild(h('div', { class: 'frame' },
+    var frame = h('div', { class: 'frame' },
       h('div', { class: 'chrome' }, topBar(me), chromeRow()),
-      h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main)));
-    syncChromeHeight();
-    refreshCounts();
+      h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main));
+    var mine = ++renderSeq, route = hashFor(), sameRoute = route === shownRoute, y = window.scrollY;
+    var up = false;
+    var putUp = function () {
+      if (up || mine !== renderSeq) return;
+      up = true;
+      shownRoute = route;
+      app.textContent = '';
+      app.appendChild(frame);
+      syncChromeHeight();
+      refreshCounts();
+      window.scrollTo(0, sameRoute ? y : 0);
+    };
+    // Nothing on screen yet: up at once, Loading and all. Otherwise only
+    // if the next page is slow, so the wait still shows.
+    if (!app.querySelector('.frame')) putUp(); else setTimeout(putUp, 400);
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
     var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
-    view().then(function (node) { main.textContent = ''; append(main, node); syncChromeRow(); })
-      .catch(function (e) { main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); syncChromeRow(); });
+    view().then(function (node) { if (mine !== renderSeq) return; main.textContent = ''; append(main, node); putUp(); syncChromeRow(); })
+      .catch(function (e) { if (mine !== renderSeq) return; main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); putUp(); syncChromeRow(); });
   }
 
   // ---- shared pieces ---------------------------------------------------
@@ -3485,7 +3869,7 @@ export const CONSOLE_JS = String.raw`
     };
     yes.onclick = decide(true); no.onclick = decide(false);
     append(card, [avatar('', c.name || '?', 'm'), h('div', { class: 'ask-body' },
-      h('div', { class: 'ask-head' }, h('span', { class: 'ask-name', text: x.requestedBy + ' wants to hire ' + (c.name || 'a worker') }), h('span', { class: 'tag need', text: 'Hire' })),
+      h('div', { class: 'ask-head' }, h('span', { class: 'ask-name', text: who(x.requestedBy) + ' wants to hire ' + (c.name || 'a worker') }), h('span', { class: 'tag need', text: 'Hire' })),
       c.tagline ? h('p', { class: 'muted', text: c.tagline }) : null,
       c.jobDescription ? h('details', null, h('summary', { text: 'The job' }), h('div', { class: 'quote', style: 'font-size:15px;margin-top:8px', text: c.jobDescription })) : null,
       h('p', { class: 'faint', text: money(c.budgetUSDPerMonth) + ' a month. Tools: ' + ((c.connectors || []).join(', ') || 'none') + '.' }),
@@ -3557,7 +3941,7 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'spread' },
         h('div', null,
           h('h3', { class: 'serif', style: 'font-size:19px' }, h('button', { class: 'linkish', style: 'color:var(--ink);font:inherit', text: t.title, onclick: function () { go('team', { teamId: t.teamId }); } })),
-          h('p', { class: 'faint', text: t.teamName + (t.requestedBy ? ', for ' + t.requestedBy : '') + '. ' + money(t.spentUSD) + ' spent of a ' + money(t.budgetUSD) + ' cap.' })),
+          h('p', { class: 'faint', text: t.teamName + (t.requestedBy ? ', for ' + who(t.requestedBy) : '') + '. ' + money(t.spentUSD) + ' spent of a ' + money(t.budgetUSD) + ' cap.' })),
         h('span', { class: 'tag' + (t.waitingOnYou ? ' need' : t.status === 'done' ? ' go' : ''), text: status })),
       t.stages.length ? stageStrip(t) : null,
       t.packSummary ? h('details', null, h('summary', { text: 'What the team delivered' }), h('div', { style: 'font-size:14px;margin-top:8px' }, md(t.packSummary))) : null,
@@ -3636,8 +4020,8 @@ export const CONSOLE_JS = String.raw`
 
   function workItem(d, opts) {
     var detail = h('div', { hidden: true, style: 'grid-column:2 / -1' }, h('div', { class: 'quote', style: 'font-size:15px', text: d.summary || '' }));
-    var meta = [d.workerName, d.forManager && opts && opts.showManager ? 'for ' + d.forManager : null, ago(d.at), d.costUSD != null ? money(d.costUSD) : null,
-      d.rating ? (d.rating.useful ? 'useful to ' : 'not useful to ') + d.rating.by : null].filter(Boolean).join(', ');
+    var meta = [d.workerName, d.forManager && opts && opts.showManager ? 'for ' + who(d.forManager) : null, ago(d.at), d.costUSD != null ? money(d.costUSD) : null,
+      d.rating ? (d.rating.useful ? 'useful to ' : 'not useful to ') + who(d.rating.by) : null].filter(Boolean).join(', ');
     var rateSlot = h('div', { style: 'grid-column:2 / -1' });
     return h('div', { class: 'item' },
       h('span', { style: 'grid-row: span 2' }, avatar(d.workerId, d.workerName, 's')),
@@ -3821,12 +4205,14 @@ export const CONSOLE_JS = String.raw`
 
   /// A row whose title is the button: the whole row clicks through to it,
   /// and a worker's chip on the second line opens the worker instead.
-  function cameRow(k, title, at, line, onclick, chev) {
+  /// asked, when given, is the original ask, shown under an outcome title.
+  function cameRow(k, title, at, line, onclick, chev, asked) {
     var btn = h('button', { type: 'button', class: 'cametitle came-open', text: title, onclick: onclick });
     var row = h('div', { class: 'camerow' + (chev ? ' camegroup' : '') },
       h('span', { class: 'kpi-ic libkind ' + k[1], 'aria-hidden': 'true' }, icon(k[0], 15)),
       h('span', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' },
         h('span', { class: 'came-top' }, btn, h('span', { class: 'faint came-at', text: at })),
+        asked ? h('span', { class: 'came-ask', title: asked, text: '“' + asked + '”' }) : null,
         h('span', { class: 'libsrc' }, line)),
       chev ? h('span', { class: 'came-chev', 'aria-hidden': 'true' }, icon('chevron', 16)) : null);
     return { row: row, btn: btn };
@@ -3870,11 +4256,13 @@ export const CONSOLE_JS = String.raw`
     };
     // The worker as a chip, then what it did: the playbook, the trigger, or
     // who asked. A team's work keeps its line as it was.
-    var rest = o.kind === 'run' ? o.flowName || '' : o.kind === 'event' ? o.triggerName || '' : o.kind === 'errand' ? 'asked by ' + (o.askedBy && o.askedBy !== (state.me && state.me.name) ? o.askedBy : 'you') : '';
+    // Someone else's ask names them as a person, not the handle it was kept under.
+    var rest = o.kind === 'run' ? o.flowName || '' : o.kind === 'event' ? o.triggerName || '' : o.kind === 'errand' ? 'asked by ' + (isMe(o.askedBy) || !o.askedBy ? 'you' : '') : '';
+    var asker = o.kind === 'errand' && o.askedBy && !isMe(o.askedBy) ? whoChip(o.askedBy) : null;
     var line = x.workerName && o.kind !== 'task'
-      ? [h('span', { class: 'libtag ' + k[1], text: src[0] }), workerChip(x.workerId, x.workerName, { runId: x.runId, title: x.title, at: x.at }), rest ? h('span', { text: rest }) : null]
+      ? [h('span', { class: 'libtag ' + k[1], text: src[0] }), workerChip(x.workerId, x.workerName, { runId: x.runId, title: x.title, at: x.at }), rest ? h('span', { text: rest }) : null, asker]
       : [h('span', { class: 'libtag ' + k[1], text: src[0] }), h('span', { text: src[1] + (x.kind === 'task' && x.pack ? ' · ' + plural(x.pack.files.length, 'deliverable', 'deliverables') : '') })];
-    var r = cameRow(k, nameOf(x), (opts && opts.when) || ago(x.at) + (x.minutes != null ? ' · took ' + took(x.minutes * 60000) : ''), line, open);
+    var r = cameRow(k, nameOf(x), (opts && opts.when) || ago(x.at) + (x.minutes != null ? ' · took ' + took(x.minutes * 60000) : ''), line, open, false, x.outcome ? askedTitle(x) : null);
     var row = r.row;
     if (x.kind === 'answer' && x.workerId) {
       r.btn.onclick = function () { openConversation(x.workerId, { runId: x.runId, title: x.title, at: x.at }); };
@@ -3927,7 +4315,7 @@ export const CONSOLE_JS = String.raw`
   /// one; anything else by its title; a wrap-up by the title of what it wraps
   /// up. Items about the same thing are one piece of work.
   function subjectOf(x) {
-    var t = nameOf(x) || '', w = WRAP_UP.exec(t);
+    var t = askedTitle(x) || '', w = WRAP_UP.exec(t);
     if (w) t = w[1];
     var keys = (t.match(ANY_KEY) || []).filter(function (k, i, all) { return all.indexOf(k) === i; });
     return keys.length === 1 ? { id: 'key:' + keys[0], key: keys[0] } : { id: 't:' + t.trim().toLowerCase(), title: t.trim() };
@@ -3955,7 +4343,7 @@ export const CONSOLE_JS = String.raw`
   function stepName(x) {
     var o = libOrigin(x);
     if (o.kind === 'event') return o.triggerName || 'Trigger';
-    if (WRAP_UP.test(nameOf(x) || '')) return 'Wrapped up';
+    if (WRAP_UP.test(askedTitle(x) || '')) return 'Wrapped up';
     return o.flowName || libSource(x)[0];
   }
 
@@ -3965,12 +4353,14 @@ export const CONSOLE_JS = String.raw`
     if (g.items.length < 2) return cameInRow(g.items[0]);
     var newest = g.items[0];
     var ws = workSteps(g.items), steps = ws.steps, began = ws.began, ended = ws.ended;
-    var work = steps.filter(function (x) { return x.kind !== 'event' && !WRAP_UP.test(nameOf(x) || ''); });
+    var work = steps.filter(function (x) { return x.kind !== 'event' && !WRAP_UP.test(askedTitle(x) || ''); });
     // A ticket's trigger names the problem, else a step titled by the key;
     // otherwise the work's own title.
-    var keyed = g.key ? steps.filter(function (x) { var m = TICKET_KEY.exec(nameOf(x) || ''); return m && m[1] === g.key; }) : [];
+    var keyed = g.key ? steps.filter(function (x) { var m = TICKET_KEY.exec(askedTitle(x) || ''); return m && m[1] === g.key; }) : [];
     var lead = g.key ? keyed[0] || steps[0] : work[0] || steps[0];
-    var title = g.title || nameOf(lead).replace(TICKET_KEY, '') || nameOf(lead);
+    // One piece of work by title leads with what it came to, the ask under it.
+    var outcome = !g.key && lead.outcome;
+    var title = outcome || g.title || askedTitle(lead).replace(TICKET_KEY, '') || askedTitle(lead);
     var k = LIB_KIND[(work[0] || newest).kind] || ['doc', '', 'Item'];
     var who = steps.filter(function (x, i) { return x.workerName && steps.findIndex(function (y) { return y.workerName === x.workerName; }) === i; });
     // The same step twice in a row reads once, with a count.
@@ -3996,7 +4386,7 @@ export const CONSOLE_JS = String.raw`
       h('span', { class: 'came-path' }, trail)], function () {
       list.hidden = !list.hidden;
       setCameOpen(r, !list.hidden);
-    }, true);
+    }, true, outcome ? g.title || askedTitle(lead) : null);
     setCameOpen(r, false);
     var row = r.row;
     return h('div', null, row, list);
@@ -4022,14 +4412,10 @@ export const CONSOLE_JS = String.raw`
         ? 'Since yesterday, ' + (names.length === 1 ? names[0] + ' delivered ' + plural(byWorker[names[0]], 'thing', 'things') : names.length === 2 ? names[0] + ' and ' + names[1] + ' delivered work' : names[0] + ', ' + names[1] + ' and ' + plural(names.length - 2, 'other', 'others') + ' delivered work') + '.'
         : needs ? 'Nothing new came in since yesterday.' : 'All quiet. Ask a worker for something, or check back after its next run.';
       var date = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
-      var pct = t.spend.allowanceUSD ? Math.min(100, (t.spend.spentUSD / t.spend.allowanceUSD) * 100) : 0;
-      // The day's numbers live in the sentence and the section labels, not a
-      // row of counts that are mostly zero.
-      var spent = money(t.spend.spentUSD) + ' spent this month' + (t.spend.allowanceUSD != null ? ' of ' + money(t.spend.allowanceUSD) : '') + '.';
+      // The day's numbers, spend included, are in the row of figures below.
       var nodes = [h('header', { class: 'page-head' },
-        h('div', null, h('div', { class: 'eyebrow', text: date }), h('h1', { class: 'page-title', text: title }), h('p', { class: 'page-sub', text: sub + ' ' + spent })))];
+        h('div', null, h('div', { class: 'eyebrow', text: date }), h('h1', { class: 'page-title', text: title }), h('p', { class: 'page-sub', text: sub })))];
       var ask = quickAsk(workers);
-      if (ask) nodes.push(ask);
       var upcoming = t.crew.filter(function (w) { return w.nextShiftAt; }).sort(function (a, b) { return a.nextShiftAt - b.nextShiftAt; }).slice(0, 4);
       // Everything in flight, from workers, teams and processes, in one list;
       // what waits on you is in Needs you instead.
@@ -4085,7 +4471,7 @@ export const CONSOLE_JS = String.raw`
         });
       });
       var flightTabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' }, [['all', 'All'], ['worker', 'Workers'], ['team', 'Teams'], ['process', 'Processes']].map(function (o) {
-        return h('button', { type: 'button', 'aria-pressed': flightTab === o[0] ? 'true' : 'false', onclick: function () { state.flightTab = o[0]; render(); } }, o[1]);
+        return h('button', { type: 'button', 'aria-pressed': flightTab === o[0] ? 'true' : 'false', onclick: function () { state.flightTab = flightTab = o[0]; pressSeg(this); drawFlight(); } }, o[1]);
       }));
       var decisionCard = function (x) {
         return h('div', { class: 'if-need' },
@@ -4098,23 +4484,70 @@ export const CONSOLE_JS = String.raw`
       nodes[0].querySelector('.page-title').textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
       // Updates about the same thing as one row, unless asked for every update.
       var groups = workGroups(finished);
-      var flat = !!state.inboxFlat || groups.length === finished.length;
-      var rows = flat ? finished.map(function (x) { return cameInRow(x); }) : groups.map(cameInGroup);
+      var flat;
       // Enough rows to fill the window below the header (a row is about
       // 54px), never fewer than 8; the rest a click on.
       var fits = Math.max(8, Math.ceil((window.innerHeight - 300) / 54));
-      var shown = state.inboxAll ? rows : rows.slice(0, fits);
       var finishedTabs = groups.length < finished.length ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' }, [[false, 'Grouped'], [true, 'Every update']].map(function (o) {
-        return h('button', { type: 'button', 'aria-pressed': flat === o[0] ? 'true' : 'false', onclick: function () { state.inboxFlat = o[0]; render(); } }, o[1]);
+        return h('button', { type: 'button', 'aria-pressed': !!state.inboxFlat === o[0] ? 'true' : 'false', onclick: function () { state.inboxFlat = o[0]; pressSeg(this); drawFinished(); } }, o[1]);
       })) : null;
-      flightSec = h('section', { class: 'stack if-flight' + (moving.length ? '' : ' quiet'), 'aria-label': 'In flight' },
-        h('div', { class: 'row', style: 'gap:12px' }, flightLabel,
-          upcoming.length ? h('span', { class: 'faint if-next' }, 'Up next: ', upcoming.map(function (w, i) {
-            return [i ? ' · ' : '', h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' ' + when(w.nextShiftAt)];
-          })) : null,
-          moving.length ? flightTabs : null),
+      // In flight as a card with a header; what's scheduled next is in the
+      // rail's Coming up, so the header only carries the filter.
+      flightSec = h('section', { class: 'sec ib-flight', 'aria-label': 'In flight' },
+        h('div', { class: 'sec-head', style: 'justify-content:flex-start' }, flightLabel, moving.length ? flightTabs : null),
         flightBody);
-      nodes.push(h('div', { class: 'stack', style: 'gap:22px' },
+      // Finished work by day, real work first and the quick answers folded
+      // into one row per day, so a minute's reply doesn't bury a ticket.
+      // The view switches and Show more redraw this card alone, in place.
+      var doneBox = h('div', { class: 'if-done' });
+      var drawFinished = function () {
+      flat = !!state.inboxFlat || groups.length === finished.length;
+      var units = flat ? finished.map(function (x) { return { items: [x] }; }) : groups;
+      var days = [];
+      units.forEach(function (g) {
+        var label = dayLabel(g.items[0].at), d = days[days.length - 1];
+        if (!d || d.label !== label) days.push(d = { label: label, work: [], quick: [] });
+        (!state.inboxFlat && isQuick(g) ? d.quick : d.work).push(g);
+      });
+      var budget = state.inboxAll ? Infinity : fits, hiddenCount = 0;
+      var finishedBody = [];
+      days.forEach(function (d) {
+        if (d.quick.length === 1) { d.work.push(d.quick[0]); d.quick = []; d.work.sort(function (a, b) { return b.items[0].at - a.items[0].at; }); }
+        var rowsHere = [];
+        d.work.forEach(function (g) {
+          if (budget <= 0) { hiddenCount++; return; }
+          budget--;
+          rowsHere.push(flat ? cameInRow(g.items[0]) : cameInGroup(g));
+        });
+        if (d.quick.length && budget > 0) { budget--; rowsHere.push(quickAnswersRow(d.label, d.quick)); }
+        else if (d.quick.length) hiddenCount += d.quick.length;
+        if (rowsHere.length) finishedBody.push(h('div', { class: 'ib-day', text: d.label }), rowsHere);
+      });
+      fill(doneBox, [finishedBody, hiddenCount ? h('button', { class: 'linkish camemore', text: 'Show ' + hiddenCount + ' more', onclick: function () { state.inboxAll = true; drawFinished(); } }) : null]);
+      };
+      drawFinished();
+      // The day's numbers as a row of figures, each with its trend.
+      var lib = Array.isArray(r[3]) ? r[3] : [];
+      var perDay = [6, 5, 4, 3, 2, 1, 0].map(function (back) {
+        var d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - back);
+        var start = d.getTime(), end = start + 86400000;
+        return lib.filter(function (x) { return x.status === 'delivered' && x.at >= start && x.at < end; }).length;
+      });
+      var spans = groups.map(function (g) { var ws = workSteps(g.items); return ws.ended - ws.began; }).sort(function (a, b) { return a - b; });
+      var median = spans.length ? spans[Math.floor(spans.length / 2)] : null;
+      var allowance = t.spend.allowanceUSD;
+      var spendPct = allowance ? Math.min(100, (t.spend.spentUSD / allowance) * 100) : 0;
+      var stats = h('div', { class: 'ib-stats', role: 'group', 'aria-label': 'Since yesterday' },
+        ibStat('Delivered', String(groups.length), plural(finished.length, 'update', 'updates') + ' since yesterday', ibSpark(perDay, 'Delivered each day, last 7 days: ' + perDay.join(', '))),
+        ibStat('In flight', String(moving.length), upcoming.length ? 'Next: ' + upcoming[0].name + ' ' + when(upcoming[0].nextShiftAt) : 'Nothing scheduled'),
+        ibStat('Median time to done', median == null ? '—' : median < 60000 ? '<1 min' : took(median), spans.length ? 'Across ' + plural(spans.length, 'piece', 'pieces') + ' of work' : 'Nothing finished yet'),
+        ibStat('Needs you', String(needs), needs ? 'Waiting on a decision' : 'All clear', null, needs ? 'need' : ''),
+        ibStat('Spend this month', money(t.spend.spentUSD), allowance ? 'of ' + money(allowance) + ' allowed' : 'Heading for ' + money(t.spend.projectedUSD),
+          allowance ? h('span', { class: 'ib-meter', role: 'img', 'aria-label': Math.round(spendPct) + '% of the allowance' }, h('i', { class: spendPct >= 90 ? 'high' : null, style: 'width:' + spendPct.toFixed(1) + '%' })) : null));
+      var mainCol = [];
+      if (ask) mainCol.push(ask);
+      nodes.push(stats);
+      mainCol.push(
         // Needs you shows only when something does: the title already says
         // when nothing does. A crew of nobody gets the way to hire one.
         needs ? h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' },
@@ -4130,11 +4563,108 @@ export const CONSOLE_JS = String.raw`
             h('span', { class: 'faint', style: 'flex:1;font-size:13px', text: !finished.length ? '' : groups.length < finished.length ? plural(finished.length, 'update', 'updates') + ' on ' + plural(groups.length, 'piece', 'pieces') + ' of work' : String(finished.length) }),
             finishedTabs,
             h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Library →', onclick: function () { go('library'); } })),
-          finished.length ? h('div', { class: 'if-done' }, shown,
-            rows.length > shown.length ? h('button', { class: 'linkish camemore', text: 'Show ' + (rows.length - shown.length) + ' more', onclick: function () { state.inboxAll = true; render(); } }) : null)
-            : h('p', { class: 'muted', style: 'margin:0;padding:16px 18px', text: 'Nothing finished since yesterday.' }))));
-      return nodes;
+          finished.length ? doneBox
+            : h('p', { class: 'muted', style: 'margin:0;padding:16px 18px', text: 'Nothing finished since yesterday.' })));
+      nodes.push(h('div', { class: 'ib-cols' },
+        h('div', { class: 'ib-main' }, mainCol),
+        h('aside', { class: 'ib-rail', 'aria-label': 'At a glance' }, inboxRail(t, upcoming))));
+      return [h('div', { class: 'ib stack', style: 'gap:22px' }, nodes)];
     });
+  }
+
+  /// A segmented control's buttons: this one pressed, the rest not.
+  function pressSeg(btn) {
+    Array.prototype.forEach.call(btn.parentNode.children, function (b) { b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'); });
+  }
+
+  /// A one-off reply that took under a minute: worth having, not worth a row
+  /// of its own beside a ticket that took two hours.
+  function isQuick(g) {
+    if (g.items.length > 1) return false;
+    var x = g.items[0], o = libOrigin(x);
+    return x.kind === 'answer' || (o.kind === 'errand' && !(x.minutes >= 1));
+  }
+
+  /// A day's quick answers as one row that opens on all of them.
+  function quickAnswersRow(label, list) {
+    var open = !!(state.ibQuickOpen && state.ibQuickOpen[label]);
+    var who = [];
+    list.forEach(function (g) { var n = g.items[0].workerName; if (n && who.indexOf(n) < 0) who.push(n); });
+    var titles = list.slice(0, 3).map(function (g) { return nameOf(g.items[0]); });
+    var body = h('div', { class: 'came-steps' }, list.map(function (g) { return h('div', { class: 'came-step' }, cameInRow(g.items[0])); }));
+    body.hidden = !open;
+    var r = cameRow(['slack', 'ok'], plural(list.length, 'quick answer', 'quick answers'), who.slice(0, 3).join(', ') + (who.length > 3 ? ' +' + (who.length - 3) : ''),
+      [h('span', { text: titles.join(' · ') + (list.length > 3 ? ' · +' + (list.length - 3) + ' more' : '') })], function () {
+        body.hidden = !body.hidden;
+        state.ibQuickOpen = state.ibQuickOpen || {};
+        state.ibQuickOpen[label] = !body.hidden;
+        setCameOpen(r, !body.hidden);
+      }, true);
+    r.row.classList.add('ib-quick');
+    setCameOpen(r, open);
+    return h('div', null, r.row, body);
+  }
+
+  function ibStat(label, value, note, extra, cls) {
+    return h('div', { class: 'ib-stat' },
+      h('span', { class: 'ib-k', text: label }),
+      h('span', { class: 'ib-v' + (cls ? ' ' + cls : ''), text: value }),
+      note ? h('span', { class: 'ib-n', text: note, title: note }) : null,
+      extra || null);
+  }
+  function ibSpark(vals, label) {
+    var top = Math.max.apply(null, vals.concat([1]));
+    return h('span', { class: 'ib-spark', role: 'img', 'aria-label': label }, vals.map(function (v, i) {
+      return h('i', { class: i === vals.length - 1 ? 'now' : null, style: 'height:' + (v ? Math.max(12, (v / top) * 100) : 6).toFixed(1) + '%' });
+    }));
+  }
+
+  /// The inbox's right-hand rail: who's working, what's next, and what it cost.
+  function inboxRail(t, upcoming) {
+    var ST = { working: ['go', 'Working'], waiting: ['need', 'Waiting on you'], stuck: ['bad', 'Stuck'], idle: ['ok', 'Idle'], paused: ['', 'Paused'] };
+    var ORDER = { working: 0, waiting: 1, stuck: 2, idle: 3, paused: 4 };
+    var crew = t.crew.slice().sort(function (a, b) { return (ORDER[a.state] || 0) - (ORDER[b.state] || 0) || a.name.localeCompare(b.name); });
+    var busy = crew.filter(function (w) { return w.state === 'working'; }).length;
+    var idle = crew.filter(function (w) { return w.state === 'idle'; }).length;
+    var head = function (label, note) { return h('div', { class: 'sec-head' }, h('span', { class: 'label', text: label }), note ? h('span', { class: 'faint ib-headnote', text: note }) : null); };
+    var out = [];
+    if (crew.length) out.push(h('section', { class: 'sec', 'aria-label': 'Workers now' },
+      head('Workers now', busy + ' busy · ' + idle + ' idle'),
+      h('div', null, crew.slice(0, 6).map(function (w) {
+        var st = ST[w.state] || ['', w.state];
+        return h('button', { type: 'button', class: 'ib-li', onclick: function () { openWorker(w.id); } },
+          avatar(w.id, w.name, 's'),
+          h('span', { class: 'ib-li-main' }, h('b', { text: w.name }), h('span', { text: w.nextShiftAt ? 'Next run ' + when(w.nextShiftAt) : 'Works when asked' })),
+          h('span', { class: 'ib-state' }, h('span', { class: 'ib-dot ' + st[0], 'aria-hidden': 'true' }), st[1]));
+      })),
+      h('div', { class: 'ib-foot' }, h('button', { class: 'linkish', text: (crew.length > 6 ? 'All ' + crew.length + ' workers' : 'Workers') + ' →', onclick: function () { go('workers'); } }))));
+    out.push(h('section', { class: 'sec', 'aria-label': 'Coming up' },
+      head('Coming up'),
+      upcoming.length ? h('div', null, upcoming.map(function (w) {
+        var at = when(w.nextShiftAt), sp = at.indexOf(' ');
+        return h('button', { type: 'button', class: 'ib-li', onclick: function () { openWorker(w.id); } },
+          h('span', { class: 'ib-when' }, at.slice(0, sp), h('br'), at.slice(sp + 1)),
+          h('span', { class: 'ib-li-main' }, h('b', { text: w.name }), h('span', { text: 'Scheduled run' })));
+      })) : h('p', { class: 'ib-empty', text: 'Nothing scheduled. Workers still work when asked.' })));
+    var spendBody = h('div', null, h('p', { class: 'ib-empty', text: 'Loading…' }));
+    var total = h('span', { class: 'faint ib-headnote' });
+    out.push(h('section', { class: 'sec', 'aria-label': 'Spend, last 7 days' },
+      h('div', { class: 'sec-head' }, h('span', { class: 'label', text: 'Spend, last 7 days' }), total),
+      spendBody,
+      state.me.admin ? h('div', { class: 'ib-foot' }, h('button', { class: 'linkish', text: 'Spending →', onclick: function () { go('setup', { setupTab: 'spending' }); } })) : null));
+    var now = new Date(), from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+    api('GET', '/api/spend/days?from=' + ymd(from) + '&to=' + ymd(now) + '&tz=' + now.getTimezoneOffset()).then(function (s) {
+      if (!s || s.ok === false || !s.days) { fill(spendBody, [h('p', { class: 'ib-empty', text: 'Spend isn’t available.' })]); return; }
+      total.textContent = money(s.totalUSD);
+      var top = Math.max.apply(null, s.days.map(function (d) { return d.totalUSD; }).concat([0.01]));
+      var last = s.days.length - 1;
+      var dayName = function (d) { return new Date(d.date + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' }); };
+      fill(spendBody, [
+        h('div', { class: 'ib-bars', role: 'img', 'aria-label': 'Spend by day: ' + s.days.map(function (d) { return dayName(d) + ' ' + money(d.totalUSD); }).join(', ') },
+          s.days.map(function (d, i) { return h('i', { class: i === last ? 'now' : null, title: dayName(d) + ' · ' + money(d.totalUSD), style: 'height:' + ((d.totalUSD / top) * 100).toFixed(1) + '%' }); })),
+        h('div', { class: 'ib-barx', 'aria-hidden': 'true' }, s.days.map(function (d) { return h('span', { text: dayName(d).slice(0, 2) }); }))]);
+    }, function () { fill(spendBody, [h('p', { class: 'ib-empty', text: 'Spend isn’t available.' })]); });
+    return out;
   }
 
   // ---- work ------------------------------------------------------------
@@ -4182,6 +4712,14 @@ export const CONSOLE_JS = String.raw`
       h('span', { text: TRUST_RUNG[level] || level }));
   }
 
+  /// The worker page's status chip: what's happening now first; when it's
+  /// idle and its newest run failed, that, in red.
+  function workerHeadBadge(w) {
+    var lr = w.last30 && w.last30.lastRun;
+    if (w.enabled && !w.waiting && w.state === 'idle' && workerStatus(w).cls !== 'bad' && lr && lr.outcome === 'failed') return h('span', { class: 'badge bad', title: 'Its last run failed ' + ago(lr.at), text: 'Last run failed' });
+    return workerBadge(w);
+  }
+
   /// A worker's state as a badge: the class says how loudly, the text what.
   /// A solid disc before a title that says the state before anything else.
   function HAS_ICON(name) { return Object.prototype.hasOwnProperty.call(ICONS, name); }
@@ -4200,20 +4738,6 @@ export const CONSOLE_JS = String.raw`
     var cls = st.cls || (w.state === 'working' ? 'working' : w.enabled ? 'ok' : '');
     var short = !w.enabled ? 'Paused' : st.cls === 'bad' ? 'Can’t reach a tool' : w.waiting ? 'Waiting on you' : w.state === 'working' ? 'Working' : w.state === 'stuck' ? 'Stuck' : 'Idle';
     return h('span', { class: 'badge ' + cls, title: st.text, text: short });
-  }
-
-  /// A worker's spend: a bar against the most anyone spent, so the rows
-  /// compare, and the amount beside it. Its own budget is mentioned only
-  /// when it's at 80% or past it.
-  function spendCell(spent, budget, most) {
-    spent = spent || 0;
-    var pct = budget ? (spent / budget) * 100 : 0;
-    var level = budget && pct >= 100 ? 'over' : budget && pct >= 80 ? 'high' : '';
-    return h('div', { class: 'spendcell' },
-      h('div', { class: 'sc-line' },
-        h('div', { class: 'meter', style: 'flex:1' }, h('span', { style: 'width:' + (most > 0 ? (spent / most) * 100 : 0).toFixed(1) + '%' })),
-        h('b', { text: money(spent) })),
-      level ? h('span', { class: 'sc-warn ' + level, text: Math.round(pct) + '% of ' + money(budget) + ' budget' }) : null);
   }
 
   /// The roster's spend day by day, a column a day; hovering or focusing a
@@ -4254,6 +4778,34 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'sc-axis' }, h('span', { text: dayName(days[0].day) }), h('span', { text: 'Today' }))));
   }
 
+  /// How a worker's newest run went, in a few words and a colour: "✓ 3h ago",
+  /// "✗ Failed 9:58 AM", "— Paused". From last30.lastRun on /api/workers.
+  function lastRunText(w) {
+    var lr = w.last30 && w.last30.lastRun;
+    if (!w.enabled) return { cls: 'quiet', text: '— Paused' };
+    if (!lr) return { cls: 'quiet', text: '— No runs yet' };
+    var at = dayLabel(lr.at) === 'Today' ? clock(lr.at) : ago(lr.at);
+    if (lr.outcome === 'failed') return { cls: 'bad', text: '✗ Failed ' + at };
+    if (lr.outcome === 'stopped') return { cls: 'quiet', text: '■ Stopped ' + ago(lr.at) };
+    return { cls: 'ok', text: '✓ ' + ago(lr.at) };
+  }
+  /// Its success rate over 30 days, as a whole percent; null with no runs.
+  function successPct(l) { return l && l.jobs ? Math.round(100 * (l.jobs - l.failed) / l.jobs) : null; }
+  /// Spend against budget on one scale for every row: the fill is what it
+  /// spent, the tick its budget, so who spends most and who's near their cap
+  /// both read at a glance. Amber past 85% of its budget, red past it.
+  function budgetCell(spent, budget, scale) {
+    spent = spent || 0;
+    var pct = budget > 0 ? (spent / budget) * 100 : 0;
+    var level = budget > 0 && pct >= 100 ? 'over' : budget > 0 && pct > 85 ? 'high' : '';
+    var of = function (n) { return scale > 0 ? Math.min(100, (n / scale) * 100).toFixed(1) + '%' : '0%'; };
+    return h('div', { class: 'wk-spend', title: budget > 0 ? Math.round(pct) + '% of its ' + money(budget) + ' budget' : 'No budget set' },
+      h('span', { class: 'wk-spend-bar ' + level, role: 'img', 'aria-label': money(spent) + (budget > 0 ? ' of ' + money(budget) : '') },
+        h('i', { style: 'width:' + of(spent) }), budget > 0 ? h('b', { style: 'left:' + of(budget) }) : null),
+      h('span', { class: 'wk-spend-v', text: money(spent) }),
+      budget > 0 ? h('span', { class: 'wk-spend-of', text: '/ ' + money(budget) }) : null);
+  }
+
   function viewWorkers() {
     return Promise.all([api('GET', '/api/workers'), api('GET', '/api/report?days=30').catch(function () { return null; }), api('GET', '/api/teams').catch(function () { return []; })]).then(function (res) {
       var list = res[0], chart = spendChart(res[1]);
@@ -4265,13 +4817,16 @@ export const CONSOLE_JS = String.raw`
       var inTeam = function (w) { return !!teamsOf[w.name]; };
       if (!list.length) return [head('Workers', null, hireButton(), 'Workspace'), emptyState('No workers you can see yet.', 'Hire one, or ask your admin to make a team’s workers visible to you.', hireButton())];
       var filter = state.workersFilter || 'all';
-      var attention = function (w) { return workerStatus(w).cls === 'bad' || w.waiting > 0 || w.state === 'stuck'; };
+      var attention = function (w) { return workerStatus(w).cls === 'bad' || w.waiting > 0 || w.state === 'stuck' || !!(w.enabled && w.last30 && w.last30.lastRun && w.last30.lastRun.outcome === 'failed'); };
       var counts = { all: list.length, mine: list.filter(function (w) { return w.youManage; }).length, teams: list.filter(inTeam).length, solo: list.filter(function (w) { return !inTeam(w); }).length, attention: list.filter(attention).length };
       var body = h('tbody');
       var shown = h('span');
       var query = h('input', { type: 'search', placeholder: 'Filter by name', 'aria-label': 'Filter workers', value: state.workersQuery || '' });
       var trust = h('select', { 'aria-label': 'Trust level' }, h('option', { value: '', text: 'Any trust level' }),
         Object.keys(TRUST_RUNG).map(function (k) { return h('option', { value: k, text: TRUST_RUNG[k] }); }));
+      // One scale for every row's spend bar: the most anyone spent or may.
+      var scale = list.reduce(function (n, w) { return Math.max(n, w.spentThisMonthUSD || 0, w.budgetUSDPerMonth || 0); }, 0);
+      var COLS = 8;
       var draw = function () {
         var q = query.value.trim().toLowerCase();
         state.workersQuery = query.value.trim();
@@ -4282,50 +4837,71 @@ export const CONSOLE_JS = String.raw`
           if (filter === 'teams' && !inTeam(w)) return false;
           if (filter === 'solo' && inTeam(w)) return false;
           if (trust.value && w.trust !== trust.value) return false;
-          return !q || (w.name + ' ' + w.tagline + ' ' + (w.manager || '')).toLowerCase().indexOf(q) >= 0;
+          return !q || (w.name + ' ' + w.tagline + ' ' + (w.manager ? w.manager + ' ' + who(w.manager) : '')).toLowerCase().indexOf(q) >= 0;
         }).sort(function (a, b) { return (b.spentThisMonthUSD || 0) - (a.spentThisMonthUSD || 0); });
-        // Bars against the biggest spender, so who's doing the most stands out.
-        var most = rows.reduce(function (n, w) { return Math.max(n, w.spentThisMonthUSD || 0); }, 0);
         rows.forEach(function (w) {
+          var l = w.last30 || { jobs: 0, failed: 0 };
+          var lr = lastRunText(w), st = workerStatus(w), ok = successPct(l);
+          // What's live beats how the last run went, so it's said under it:
+          // working, waiting on you, a tool it can't reach.
+          var now = w.enabled && (st.cls === 'bad' || st.cls === 'waiting' || st.cls === 'working') ? st : null;
           var tr = h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(w.id); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(w.id); } },
             h('td', null, h('div', { class: 'who' }, avatar(w.id, w.name, 's'), h('div', { style: 'min-width:0' },
               h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('b', { text: w.name }), (teamsOf[w.name] || []).map(function (t) { return h('span', { class: 'teamtag', title: 'On the ' + t + ' team' }, icon('team', 12), t); })),
-              h('span', { class: 'sub', text: w.tagline })))),
-            h('td', null, workerBadge(w)),
+              h('span', { class: 'sub wk-tag', title: w.tagline, text: w.tagline })))),
+            h('td', null, h('span', { class: 'wk-last ' + lr.cls, text: lr.text }), now ? h('span', { class: 'sub wk-now ' + now.cls, text: now.text }) : null),
+            h('td', null, ok == null ? h('span', { class: 'faint', text: '—' }) : h('span', { class: 'wk-ok' },
+              h('span', { class: 'wk-okbar' + (ok < 90 ? ' low' : ''), role: 'img', 'aria-label': ok + '% succeeded' }, h('i', { style: 'width:' + ok + '%' })),
+              h('span', { class: 'wk-num', text: ok + '%' }))),
+            h('td', { class: 'r', title: l.failed ? l.failed + ' failed' : null, text: String(l.jobs) }),
             h('td', null, h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, trustMeter(w.trust), w.coding ? codingTag() : null)),
-            h('td', { class: 'muted', text: w.manager || '—' }),
-            h('td', { class: 'muted', text: askers(w) }),
+            h('td', null, w.manager ? whoChip(w.manager) : h('span', { class: 'faint', text: '—' }), h('span', { class: 'sub', text: askers(w) + ' can ask' })),
             h('td', { class: 'muted' }, w.schedule, w.enabled && w.nextRunAt ? h('span', { class: 'sub', text: 'Next ' + when(w.nextRunAt) }) : null),
-            h('td', null, spendCell(w.spentThisMonthUSD, w.budgetUSDPerMonth, most)));
+            h('td', null, budgetCell(w.spentThisMonthUSD, w.budgetUSDPerMonth, scale)));
           body.appendChild(tr);
         });
-        if (!rows.length) body.appendChild(h('tr', null, h('td', { colspan: '7', class: 'muted', style: 'padding:28px 16px;text-align:center', text: 'No workers match.' })));
+        if (!rows.length) body.appendChild(h('tr', null, h('td', { colspan: String(COLS), class: 'muted', style: 'padding:28px 16px;text-align:center', text: 'No workers match.' })));
         shown.textContent = 'Showing ' + rows.length + ' of ' + list.length;
       };
       query.oninput = draw;
       trust.onchange = draw;
       draw();
       var waitingN = list.filter(function (w) { return w.waiting > 0; }).reduce(function (n, w) { return n + w.waiting; }, 0);
-      var working = list.filter(function (w) { return w.state === 'working'; }).length;
+      var working = list.filter(function (w) { return w.state === 'working'; });
       var broken = list.filter(function (w) { return workerStatus(w).cls === 'bad'; }).length;
       var spent = list.reduce(function (n, w) { return n + (w.spentThisMonthUSD || 0); }, 0);
       var budget = list.reduce(function (n, w) { return n + (w.enabled ? w.budgetUSDPerMonth || 0 : 0); }, 0);
+      var jobs = list.reduce(function (n, w) { return n + ((w.last30 || {}).jobs || 0); }, 0);
+      var failed = list.reduce(function (n, w) { return n + ((w.last30 || {}).failed || 0); }, 0);
+      var prior = list.reduce(function (n, w) { return n + ((w.last30 || {}).prior || 0); }, 0);
+      var change = prior ? Math.round(100 * (jobs - prior) / prior) : null;
+      var next = list.filter(function (w) { return w.enabled && w.nextRunAt; }).sort(function (a, b) { return a.nextRunAt - b.nextRunAt; })[0];
+      var paused = list.filter(function (w) { return !w.enabled; }).length;
+      var budgetPct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+      // A tab or filter redraws the table's rows, not the page.
+      var tabsBox = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' });
       var tab = function (id, label) {
-        return h('button', { 'aria-pressed': filter === id ? 'true' : 'false', onclick: function () { state.workersFilter = id; render(); } }, label, h('span', { class: 'c', text: String(counts[id]) }));
+        return h('button', { 'aria-pressed': filter === id ? 'true' : 'false', onclick: function (e) { filter = state.workersFilter = id; pressSeg(e.currentTarget); draw(); } }, label, h('span', { class: 'c', text: String(counts[id]) }));
       };
-      return [head('Workers', null, h('div', { class: 'page-actions' }, h('button', { class: 'btn', onclick: function () { go('chart'); } }, icon('chart', 16), 'Org chart'), hireButton()), 'Workspace'),
-        h('div', { class: 'kpis' },
-          h('div', { class: 'kpi' }, kpiIcon('people'), h('span', { class: 'k', text: 'Workers' }), h('span', { class: 'v', text: String(list.length) }), h('span', { class: 'n', text: list.filter(function (w) { return !w.enabled; }).length + ' paused' })),
-          h('div', { class: 'kpi' }, kpiIcon('inbox', 'need'), h('span', { class: 'k', text: 'Waiting on you' }), h('span', { class: 'v' + (waitingN ? ' need' : ''), text: String(waitingN) }), waitingN ? h('button', { class: 'n', text: 'Open inbox →', onclick: function () { go('today'); } }) : h('span', { class: 'n', text: 'All clear' })),
-          h('div', { class: 'kpi' }, kpiIcon('bolt', 'ok'), h('span', { class: 'k', text: 'Working now' }), h('span', { class: 'v', text: String(working) }), h('span', { class: 'n', text: broken ? plural(broken, 'can’t reach a tool', 'can’t reach a tool') : 'Every tool reachable' })),
-          h('div', { class: 'kpi' }, kpiIcon('bars', 'violet'), h('span', { class: 'k', text: 'Spend this month' }), h('span', { class: 'v', text: money(spent) }), h('button', { class: 'n', text: 'of ' + money(budget) + ' budgeted · Reports →', onclick: function () { go('reports'); } }))),
+      append(tabsBox, [tab('all', 'All'), tab('mine', 'Managed by me'), counts.teams ? [tab('teams', 'In a team'), tab('solo', 'Solo')] : null, tab('attention', 'Needs attention')]);
+      var link = function (text, onclick) { return h('button', { class: 'linkish ib-n', style: 'color:var(--go);text-align:left', text: text, onclick: onclick }); };
+      return [head('Workers', plural(list.length, 'worker', 'workers') + (paused ? ', ' + paused + ' paused' : '') + '. How each is doing, who it answers to, and what it costs.',
+          h('div', { class: 'page-actions' }, h('button', { class: 'btn', onclick: function () { go('chart'); } }, icon('chart', 16), 'Org chart'), hireButton()), 'Workspace'),
+        h('div', { class: 'ib-stats wk-stats' },
+          ibStat('Jobs, last 30 days', String(jobs), null, h('span', { class: 'ib-n' },
+            change == null ? (jobs ? 'None in the 30 days before' : 'No runs yet')
+              : [h('span', { class: change >= 0 ? 'wk-up' : 'wk-down', text: (change >= 0 ? '▲ ' : '▼ ') + Math.abs(change) + '%' }), ' vs prior 30 days'])),
+          ibStat('Success rate', jobs ? successPct({ jobs: jobs, failed: failed }) + '%' : '—', jobs ? failed + ' failed of ' + jobs : 'Nothing has run yet'),
+          ibStat('Waiting on you', String(waitingN), null, waitingN ? link('Open inbox →', function () { go('today'); }) : h('span', { class: 'ib-n', text: 'All clear' }), waitingN ? 'need' : null),
+          ibStat('Working now', String(working.length), next ? 'Next: ' + next.name + ' ' + when(next.nextRunAt) : 'Nothing scheduled',
+            broken ? h('span', { class: 'ib-n wk-down', text: plural(broken, 'can’t reach a tool', 'can’t reach a tool') }) : null),
+          ibStat('Spend this month', money(spent), null, [link('of ' + money(budget) + ' budgeted · Reports →', function () { go('reports'); }),
+            h('span', { class: 'wk-statbar' + (budgetPct > 85 ? ' high' : ''), role: 'img', 'aria-label': Math.round(budgetPct) + '% of the budget spent' }, h('i', { style: 'width:' + budgetPct.toFixed(1) + '%' }))])),
         chart,
         h('section', { class: 'tcard', 'aria-label': 'Workers' },
-          h('div', { class: 'tbar' },
-            h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' }, tab('all', 'All'), tab('mine', 'Managed by me'), counts.teams ? [tab('teams', 'In a team'), tab('solo', 'Solo')] : null, tab('attention', 'Needs attention')),
-            h('div', { class: 'tools' }, query, trust)),
-          h('div', { class: 'tscroll' }, h('table', { class: 'data' },
-            h('thead', null, h('tr', null, ['Worker', 'Status', 'Trust', 'Manager', 'Who can ask', 'Schedule', 'Spend this month'].map(function (t) { return h('th', { text: t }); }))),
+          h('div', { class: 'tbar' }, tabsBox, h('div', { class: 'tools' }, query, trust)),
+          h('div', { class: 'tscroll' }, h('table', { class: 'data wk-table' },
+            h('thead', null, h('tr', null, [['Worker'], ['Last run'], ['Success, 30d'], ['Jobs, 30d', 'r'], ['Trust'], ['Manager'], ['Schedule'], ['Spend vs budget']].map(function (t) { return h('th', { class: t[1] || null, text: t[0] }); }))),
             body)),
           h('div', { class: 'tfoot' }, shown, h('button', { class: 'linkish', style: 'color:var(--go)', text: 'View as org chart →', onclick: function () { go('chart'); } })))];
     });
@@ -4488,12 +5064,12 @@ export const CONSOLE_JS = String.raw`
 
   /// What set a thread off, as a label.
   function threadSource(t) {
-    var me = state.me && t.by === state.me.name;
-    if (t.source === 'ask') return me ? 'You asked' : (t.by || 'Someone') + ' asked' + (t.via === 'slack' ? ' in Slack' : '');
+    var me = !!t.by && isMe(t.by);
+    if (t.source === 'ask') return me ? 'You asked' : (t.by ? who(t.by) : 'Someone') + ' asked' + (t.via === 'slack' ? ' in Slack' : '');
     if (t.source === 'trigger') return 'A trigger fired';
-    if (t.source === 'runNow') return t.by ? (me ? 'You' : t.by) + ' pressed Run now' : 'Run now';
+    if (t.source === 'runNow') return t.by ? (me ? 'You' : who(t.by)) + ' pressed Run now' : 'Run now';
     if (t.source === 'schedule') return 'Scheduled check';
-    if (t.source === 'colleague') return (t.by || 'A colleague') + ' passed this on';
+    if (t.source === 'colleague') return (t.by ? who(t.by) : 'A colleague') + ' passed this on';
     if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI failed, so a fix started' : 'Ticket update after a push';
     return 'Run';
   }
@@ -4516,7 +5092,7 @@ export const CONSOLE_JS = String.raw`
     if (!p) return null;
     var waiting = p.items.filter(function (i) { return i.status === 'waiting'; });
     if (!waiting.length) return null;
-    if (!ctx.youManage) return h('p', { class: 'muted', text: 'Waiting for ' + (w.manager || 'its manager') + ' to say yes.' });
+    if (!ctx.youManage) return h('p', { class: 'muted', text: 'Waiting for ' + (w.manager ? who(w.manager) : 'its manager') + ' to say yes.' });
     var out = h('div', { 'aria-live': 'polite' });
     var boxes = waiting.map(function (it) {
       var box = h('input', { type: 'checkbox', checked: true, 'aria-label': it.title });
@@ -4619,7 +5195,7 @@ export const CONSOLE_JS = String.raw`
         inside.push(threadProposal(t, w, ctx));
         if (asking) {
           var it = (ctx.waiting || []).filter(function (x) { return x.runId === asking.runId; })[0];
-          inside.push(it ? waitingCard(it) : h('p', { class: 'muted', style: 'margin:0', text: 'Waiting on ' + (w.manager || 'its manager') + '.' }));
+          inside.push(it ? waitingCard(it) : h('p', { class: 'muted', style: 'margin:0', text: 'Waiting on ' + (w.manager ? who(w.manager) : 'its manager') + '.' }));
         }
       }
       if (s.state === 'now' && i > 0 && live) inside.push(liveRunView(live.runId, 'step'));
@@ -4789,7 +5365,7 @@ export const CONSOLE_JS = String.raw`
     }
     if (r.state === 'question' || r.state === 'approval') {
       var it = (ctx.waiting || []).filter(function (x) { return x.runId === r.runId; })[0];
-      return h('div', { class: 't-run' }, head, it ? waitingCard(it) : h('p', { class: 'muted', text: 'Waiting on ' + (w.manager || 'its manager') + '.' }));
+      return h('div', { class: 't-run' }, head, it ? waitingCard(it) : h('p', { class: 'muted', text: 'Waiting on ' + (w.manager ? who(w.manager) : 'its manager') + '.' }));
     }
     if (r.state === 'interrupted') {
       var carry = h('button', { class: 'btn go small', text: 'Carry on now' });
@@ -5054,7 +5630,7 @@ export const CONSOLE_JS = String.raw`
       var need = x.threads.filter(function (t) { return t.stage === 'waiting' || t.stage === 'needsYou'; }).length;
       var moving = x.threads.some(function (t) { return t.stage === 'running' || t.stage === 'deciding'; });
       var badge = document.querySelector('.page-head .badge:not([class*="t-"])');
-      if (badge) badge.replaceWith(workerBadge(Object.assign({}, w, { waiting: need, state: moving ? 'working' : w.state === 'working' ? 'idle' : w.state })));
+      if (badge) badge.replaceWith(workerHeadBadge(Object.assign({}, w, { waiting: need, state: moving ? 'working' : w.state === 'working' ? 'idle' : w.state })));
       if (!n) return;
       var waitingOnYou = /waiting/.test(n.sentence) && !moving;
       var go_ = h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: state.workerTab && state.workerTab !== 'talk' ? 'Open it in Conversation' : 'Show me', onclick: function () {
@@ -5233,6 +5809,68 @@ export const CONSOLE_JS = String.raw`
     };
   }
 
+  /// A failed or stopped piece of work, said plainly at the top of it: the
+  /// step it stopped on, the error in the run's own words, and what to do
+  /// next (Retry, Open the log). Under it, what it did step by step up to
+  /// where it stopped, timed from /steps. Nothing is guessed at.
+  function failedPanel(t, w, youManage) {
+    if (t.stage !== 'failed' && t.stage !== 'stopped') return null;
+    var broke = (t.runs || []).filter(function (r) { return r.state === 'failed' || r.state === 'stopped'; }).pop() || null;
+    var stopped = t.stage === 'stopped' || (broke && broke.state === 'stopped');
+    var steps = broke && broke.steps ? broke.steps.map(function (s) { return { id: s.id, label: s.label, state: s.state }; }) : [];
+    var at = steps.findIndex(function (s) { return s.state === 'failed'; });
+    if (at < 0) at = steps.findIndex(function (s) { return s.state !== 'done'; });
+    var said = t.error || (broke && broke.error) || (stopped ? 'It was stopped before it finished.' : '');
+    var why = h('div', { class: 'wk-fail-why' }, said ? h('p', { text: said }) : h('p', { class: 'faint', text: 'The run didn’t say why. Its log has every step’s output.' }));
+    var out = h('div', { 'aria-live': 'polite' });
+    // Again, the way it started: a scheduled check or Run now runs again;
+    // anything asked or set off is asked again in its own thread, with what
+    // went before in view.
+    var scheduled = t.source === 'schedule' || t.source === 'runNow';
+    var retry = w.enabled && (scheduled ? youManage : true) ? h('button', { class: 'btn go small', text: 'Retry', title: scheduled ? 'Start a new run' : 'Ask ' + w.name + ' to try again, in this thread' }) : null;
+    if (retry) retry.onclick = function () {
+      var restore = busy(retry, 'Starting…');
+      var p = scheduled ? api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/run')
+        : api('POST', '/api/ask', { worker: w.id, message: 'That didn’t work. Please try it again.', replyTo: t.id });
+      p.then(function (x) { restore(); fill(out, [msg(x, scheduled ? 'Started again.' : 'Asked again.')]); if (x.ok !== false) livePoke(w.id, 300); }, function () { restore(); });
+    };
+    var list = h('ol', { class: 'wk-tl', 'aria-label': 'What it did' });
+    var draw = function (timing) {
+      var byId = {};
+      (timing || []).forEach(function (s) { byId[s.id] = s; });
+      // No steps from the thread: the run's own record still has them.
+      var rows = steps.length ? steps : (timing || []).map(function (s) { return { id: s.id, label: s.id.replace(/[-_]+/g, ' '), state: s.error ? 'failed' : s.endedAt ? 'done' : 'next' }; });
+      var stopAt = steps.length ? at : rows.findIndex(function (s) { return s.state === 'failed'; });
+      fill(list, rows.map(function (s, i) {
+        var x = s.id && byId[s.id];
+        var took = x && x.startedAt ? (x.endedAt || x.startedAt) - x.startedAt : 0;
+        var here = i === stopAt;
+        var reached = here || s.state === 'done' || (stopAt < 0 ? s.state !== 'next' : i < stopAt);
+        var time = x && x.startedAt ? new Date(x.startedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '';
+        var how = !reached ? 'Not reached' : here ? (took ? (stopped ? 'stopped after ' : 'failed after ') + secs(took) : stopped ? 'stopped here' : 'failed here') : took ? secs(took) : '';
+        return h('li', { class: 'wk-tl-i ' + (here ? 'bad' : reached ? 'ok' : 'off') },
+          h('b', { text: s.label }),
+          h('span', { class: 'wk-tl-t', text: [time, how].filter(Boolean).join(' · ') }),
+          here && x && x.error && x.error !== said ? h('div', { class: 'msg err', text: x.error }) : null);
+      }));
+      if (!rows.length) fill(list, [h('li', { class: 'faint', style: 'list-style:none', text: 'No steps recorded.' })]);
+    };
+    draw(null);
+    if (broke && broke.runId) {
+      var hit = runStepsCache[broke.runId];
+      if (!hit || Date.now() - hit.at > 60000) hit = runStepsCache[broke.runId] = { at: Date.now(), p: api('GET', '/api/runs/' + encodeURIComponent(broke.runId) + '/steps') };
+      hit.p.then(function (x) { if (x && x.ok !== false) draw(x.steps || []); });
+    }
+    var where = at >= 0 && steps[at] ? (stopped ? 'Stopped' : 'Failed') + ' at step ' + (at + 1) + ' of ' + steps.length + ': ' + steps[at].label : stopped ? 'It was stopped before it finished' : 'It failed';
+    return h('section', { class: 'wk-fail', 'aria-label': 'What went wrong' },
+      h('div', { class: 'wk-fail-box' },
+        h('b', { class: 'wk-fail-h', text: where }), why,
+        h('div', { class: 'row', style: 'gap:8px' }, retry,
+          broke && broke.runId ? h('button', { class: 'btn small', text: 'Open the log', onclick: function () { openRun(broke.runId); } }) : null),
+        out),
+      steps.length || (broke && broke.runId) ? h('div', { class: 'wk-fail-steps' }, h('span', { class: 't-kind', text: 'What it did' }), list) : null);
+  }
+
   function conversation(w) {
     // One box to talk to it, under the thread that's open: a reply to that
     // thread, or a new task. Built once and moved into each redraw, so what's
@@ -5297,6 +5935,14 @@ export const CONSOLE_JS = String.raw`
       }
       if (t.runs.length) return t.runs[0].title;
       return t.source === 'runNow' ? 'Run now' : 'Scheduled check';
+    };
+    /// The ticket a thread is about (ACME-7311), from what set it off or its
+    /// title; '' when it names none.
+    var ticketKey = function (t) {
+      var tp = t.prompt ? triggerParts(t.prompt) : null;
+      if (tp && tp.key) return tp.key;
+      var m = /\b([A-Z][A-Z0-9]+-\d+)\b/.exec(titleOf(t));
+      return m ? m[1] : '';
     };
     var whoFor = function (t) {
       if (t.team) return 'For ' + t.team.name;
@@ -5374,10 +6020,23 @@ export const CONSOLE_JS = String.raw`
       var shown = data.threads.filter(function (t) { return inFilter(t) && matches(t); });
       var keepScroll = list.scrollTop;
       var nodes = [], lastDay = null;
+      // Work on the same ticket, again and again (a check, a retest, a
+      // wrap-up), is one entry where the newest is: "N runs", the rest under it.
+      var byKey = {};
+      shown.forEach(function (t) { var k = ticketKey(t); if (k) (byKey[k] = byKey[k] || []).push(t); });
       shown.forEach(function (t) {
+        var k = ticketKey(t), same = k && byKey[k].length > 1 ? byKey[k] : null;
+        if (same && same[0] !== t) return;
         var day = dayLabel(t.lastAt || t.at);
         if (day !== lastDay) { nodes.push(h('div', { class: 'wl-day', text: day })); lastDay = day; }
-        nodes.push(row(t));
+        if (!same) { nodes.push(row(t)); return; }
+        // Open while one of them is the one picked; picking the entry opens it.
+        var open = same.some(function (x) { return x.id === sel; });
+        var first = row(t);
+        first.children[2].prepend(h('span', { class: 'wl-runs', text: plural(same.length, 'run', 'runs') }));
+        first.classList.add('wl-grouped');
+        nodes.push(first);
+        if (open) same.slice(1).forEach(function (x) { var r = row(x); r.classList.add('wl-child'); nodes.push(r); });
       });
       if (!nodes.length) nodes.push(h('p', { class: 'muted', style: 'padding:24px 16px;text-align:center', text: data.threads.length ? 'Nothing matches.' : 'Nothing yet. Ask ' + w.name + ' something, or press Run now.' }));
       if (data.nextBefore) nodes.push(more);
@@ -5435,7 +6094,7 @@ export const CONSOLE_JS = String.raw`
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
           original),
         // The live activity sits inside the timeline's running step.
-        h('div', { class: 'wl-detail-body' }, threadCard(t, w, ctx),
+        h('div', { class: 'wl-detail-body' }, failedPanel(t, w, data.youManage), threadCard(t, w, ctx),
           liveRun && !(t.progress && t.progress.length > 1) ? h('section', { class: 'stack', style: 'gap:8px;margin-top:14px' }, h('div', { class: 't-kind', text: 'What it’s doing' }), liveRunView(liveRun.runId, true)) : null),
         h('div', { class: 'wl-detail-foot' },
           t.team ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Open the team task', onclick: function () { go('team', { teamId: t.team.id }); } }) : null),
@@ -5486,15 +6145,6 @@ export const CONSOLE_JS = String.raw`
       n(m.failed, 'failed', 'failed'),
       m.pullRequests ? h('span', null, h('b', { style: 'font-weight:600;color:var(--ink)', text: money(w.spentThisMonthUSD / m.pullRequests) }), ' per PR') : null,
       h('button', { class: 'linkish', style: 'font-size:13px', text: 'Reports →', onclick: function () { go('reports'); } }));
-  }
-  /// This month's spend against its budget, as a short bar and the two sums.
-  function budgetMeter(spent, budget) {
-    spent = spent || 0;
-    if (!(budget > 0)) return h('span', { text: money(spent) + ' this month' });
-    var pct = Math.min(100, Math.round(100 * spent / budget));
-    return h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
-      h('span', { class: 'wk-budget' + (pct >= 90 ? ' need' : ''), role: 'img', 'aria-label': pct + '% of this month’s budget used' }, h('span', { style: 'width:' + pct + '%' })),
-      h('span', { text: money(spent) + ' of ' + money(budget) + ' this month' }));
   }
 
   /// The list and the thread end at the window's bottom edge, however tall
@@ -5590,8 +6240,9 @@ export const CONSOLE_JS = String.raw`
 
   function viewWorker() {
     return Promise.all([api('GET', '/api/workers/' + encodeURIComponent(state.workerId) + '/detail'), api('GET', '/api/workers'),
-      state.me.admin ? api('GET', '/api/admin/people') : Promise.resolve({ ok: false }), api('GET', '/api/repos').catch(function () { return { ok: false }; })]).then(function (r) {
-      var d = r[0], all = r[1], ppl = r[2], places = r[3] && r[3].ok !== false ? r[3] : { repos: [], workspaces: [] };
+      state.me.admin ? api('GET', '/api/admin/people') : Promise.resolve({ ok: false }), api('GET', '/api/repos').catch(function () { return { ok: false }; }),
+      api('GET', '/api/teams').catch(function () { return []; })]).then(function (r) {
+      var d = r[0], all = r[1], ppl = r[2], places = r[3] && r[3].ok !== false ? r[3] : { repos: [], workspaces: [] }, teams = r[4];
       if (d.ok === false) return [msg(d)];
       var w = d.worker;
       var out = h('div');
@@ -5981,21 +6632,30 @@ export const CONSOLE_JS = String.raw`
         var row = document.querySelector('.chrome .topnav');
         if (row) row.replaceWith(chromeRow());
       };
-      return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head wk-head' },
-          h('div', { style: 'min-width:0' },
-            h('div', { class: 'wk-id' },
-              w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
-              h('div', { class: 'wk-id-main' },
-                h('div', { class: 'wk-name-row' }, h('h1', { class: 'page-title', text: w.name }), workerBadge(w), trustMeter(w.trust), w.coding ? codingTag() : null),
-                w.tagline ? h('p', { class: 'wk-tagline', text: w.tagline }) : null,
-                // The facts as one strip: how it starts, what it holds, who
-                // can ask, and the month so far, each a cell of its own.
-                h('div', { class: 'wk-facts' },
-                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Runs' }), h('span', { text: w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'When asked' })),
-                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Tools' }), h('b', { class: 'v', text: String((w.tools || []).length) })),
-                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Who can ask' }), h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } })),
-                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Spend' }), budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth)),
-                  monthLine(w) ? h('span', { class: 'wk-fact' }, monthLine(w)) : null)))),
+      // Its 30 days at a glance, beside its name: jobs, how many went
+      // well, spend against budget, and whether every tool answers.
+      var l30 = w.last30 || { jobs: 0, failed: 0 };
+      var okPct = successPct(l30);
+      var spendPct = w.budgetUSDPerMonth > 0 ? (w.spentThisMonthUSD / w.budgetUSDPerMonth) * 100 : 0;
+      var stat = function (v, k, cls, title) { return h('div', { class: 'wk-stat' + (cls ? ' ' + cls : ''), title: title || null }, h('b', { text: v }), h('span', { text: k })); };
+      var teamNames = (Array.isArray(teams) ? teams : []).filter(function (t) { return (t.members || []).some(function (m) { return m.name === w.name; }); }).map(function (t) { return t.shortName || t.name; });
+      return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head wk-head wk-head2' },
+          w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
+          h('div', { class: 'wk-id-main' },
+            h('div', { class: 'wk-name-row' }, h('h1', { class: 'page-title', text: w.name }), workerHeadBadge(w), trustMeter(w.trust),
+              teamNames.map(function (t) { return h('span', { class: 'teamtag', title: 'On the ' + t + ' team' }, icon('team', 12), t); }), w.coding ? codingTag() : null),
+            w.tagline ? h('p', { class: 'wk-tagline', text: w.tagline }) : null,
+            // How it starts, who it answers to and who can ask, in a line.
+            h('div', { class: 'wk-meta' },
+              w.manager ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Managed by' }), whoChip(w.manager), w.managerInherited ? h('span', { class: 'faint', text: '(through its boss)' }) : null) : h('span', { class: 'wk-meta-i faint', text: 'No manager yet' }),
+              h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Runs' }), h('span', { text: w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'When asked' })),
+              h('button', { class: 'linkish wk-meta-i', style: 'color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } })),
+            monthLine(w)),
+          h('div', { class: 'wk-stats-row', role: 'group', 'aria-label': 'At a glance' },
+            stat(String(l30.jobs), 'jobs, 30 days', null, l30.failed ? l30.failed + ' failed' : null),
+            stat(okPct == null ? '—' : okPct + '%', 'succeeded', okPct != null && okPct < 90 ? 'need' : null),
+            stat(money(w.spentThisMonthUSD), w.budgetUSDPerMonth > 0 ? 'of ' + money(w.budgetUSDPerMonth) + ' this month' : 'this month', spendPct >= 100 ? 'bad' : spendPct > 85 ? 'need' : null),
+            stat(String((w.tools || []).length), (w.tools || []).length ? (missing.length ? 'tools · ' + missing.length + ' can’t be reached' : 'tools · all reachable') : 'tools', missing.length ? 'bad' : null)),
           h('div', { class: 'page-actions' },
             w.youManage ? h('button', { class: 'btn quiet', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
@@ -6063,24 +6723,105 @@ export const CONSOLE_JS = String.raw`
         h('button', { class: 'btn', text: 'Import YAML', onclick: function () { processYamlDialog(null); } }),
         h('button', { class: 'btn go', onclick: function () { go('processedit', { processId: null }); } }, icon('plus', 16), 'New process'));
       if (!list.length) return [head('Processes', intro, action), emptyState('No processes yet.', 'Start from the library: eleven ways SaaS teams commonly run work across teams, from idea to launch to incident postmortems. Each suggests which of your teams fits each stage.', h('button', { class: 'btn go', text: 'Browse the process library', onclick: function () { go('proclib', { libId: null }); } }))];
-      var cards = list.map(function (p) {
-        return openCard('tmcard prc', 'Open ' + p.name, function () { go('process', { processId: p.id, processItem: null }); },
-          h('div', { style: 'min-width:0' },
-            h('span', { class: 'tmname', text: p.name }),
-            p.purpose ? h('p', { class: 'tmpurpose', text: p.purpose }) : null,
-            h('p', { class: 'faint', style: 'margin:4px 0 0;font-size:12.5px', text: processStarters(p) })),
-          h('ol', { class: 'prc-strip', 'aria-label': 'Stages' }, p.stages.map(function (s, i) {
-            return h('li', { class: s.kind + (p.byStage[i] ? ' busy' : ''), title: s.name + (p.byStage[i] ? ': ' + p.byStage[i] + ' here' : '') },
-              h('span', { class: 'prc-ic', 'aria-hidden': 'true' }, icon(s.kind === 'people' ? 'person' : 'team', 13)),
-              h('span', { class: 'prc-sn', text: s.name }),
-              p.byStage[i] ? h('span', { class: 'prc-n', text: String(p.byStage[i]) }) : null);
-          })),
-          h('div', { class: 'tmmeta' }, h('span', { class: 'faint tmstats', text: ['Owned by ' + p.owner.name, plural(p.stages.length, 'stage', 'stages'), plural(p.active, 'item', 'items') + ' in flight'].concat(p.canSteer ? [accessText(p.access)] : []).join(' · ') })),
-          p.canStart === false ? null : h('div', { class: 'tmfoot' },
-            h('button', { class: 'btn small go', text: 'Put something in', onclick: function (e) { e.stopPropagation(); submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } })));
+      // Each process's own page data: its items, and who its stages name.
+      // One that won't load still gets its card, from the list alone.
+      return Promise.all(list.map(function (p) {
+        return api('GET', '/api/processes/' + encodeURIComponent(p.id)).then(function (x) { return x && x.ok !== false ? x : null; }, function () { return null; });
+      })).then(function (full) {
+        var boards = list.map(function (p, n) { return procBoardData(p, full[n]); });
+        var sum = function (k) { return boards.reduce(function (t, b) { return t + b[k]; }, 0); };
+        var cycles = [];
+        boards.forEach(function (b) { b.done.forEach(function (i) { cycles.push(i.finishedAt - i.createdAt); }); });
+        var waiting = sum('waitingN');
+        var strip = h('div', { class: 'ib-stats pb-stats' },
+          ibStat('Items in flight', String(sum('active')), plural(list.length, 'process', 'processes')),
+          ibStat('Waiting on a person', String(waiting), waiting ? 'a decision or an owner’s turn' : 'nobody is holding anything up', null, waiting ? 'need' : ''),
+          ibStat('Shipped, 30 days', String(sum('shipped')), 'made it through every stage'),
+          // Only once three made it all the way, as each process's own page has it.
+          cycles.length >= 3 ? ibStat('Median idea → shipped', spanShort(median(cycles)), 'from ' + plural(cycles.length, 'finished item', 'finished items')) : null);
+        return [head('Processes', intro, action, 'Workspace'), strip, h('div', { class: 'pb-list' }, boards.map(procBoardCard))];
       });
-      return [head('Processes', intro, action), h('div', { class: 'tmgrid' }, cards)];
     });
+  }
+
+  /// "3d 4h", "6h 40m", "18m": a length of time for a table cell or a figure.
+  function spanShort(ms) {
+    var m = Math.max(1, Math.round(ms / 60000));
+    if (m < 60) return m + 'm';
+    var hr = Math.floor(m / 60), d = Math.floor(hr / 24);
+    if (!d) return hr + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+    return d + 'd' + (hr % 24 ? ' ' + (hr % 24) + 'h' : '');
+  }
+
+  /// What a process's card on the board needs, from the list row and (when
+  /// it loaded) its own page's items. Counts per stage are the list's, which
+  /// sees every item; who waits on whom only for the items you can open.
+  function procBoardData(p, r) {
+    var items = (r && r.items) || [], full = (r && r.process) || p;
+    var month = Date.now() - 30 * 86400000;
+    var live = items.filter(function (i) { return i.status === 'active'; });
+    var done = items.filter(function (i) { return i.status === 'done' && i.finishedAt; });
+    var moved = items.reduce(function (t, i) { return Math.max(t, i.updatedAt || 0); }, 0);
+    return {
+      p: p, full: full, r: r || { items: [] }, items: items, live: live, done: done,
+      active: p.active || 0,
+      waitingN: live.filter(function (i) { return i.waitsOn; }).length,
+      shipped: done.filter(function (i) { return i.finishedAt > month; }).length,
+      times: processTimes(full, items),
+      moved: moved || null
+    };
+  }
+
+  /// One process on the board: what it is and how it's doing, its "How it
+  /// works" drawing with where the items are now, and the items themselves.
+  function procBoardCard(b) {
+    var p = b.p, full = b.full;
+    var open = function () { go('process', { processId: p.id, processItem: null }); };
+    var fact = function (v, k) { return h('div', { class: 'pb-fact' }, h('b', { text: v }), h('span', { text: k })); };
+    var put = p.canStart === false ? null : h('button', { class: 'btn small go', text: 'Put something in', onclick: function () { submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } });
+    var top = h('div', { class: 'pb-top' },
+      h('div', { class: 'pb-what' },
+        h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;min-width:0' },
+          h('h2', { class: 'pb-name' }, h('button', { type: 'button', class: 'linkish', text: p.name, onclick: open })),
+          h('span', { class: 'pb-chip', text: processStarters(p) })),
+        p.purpose ? h('p', { class: 'pb-purpose', text: p.purpose }) : null,
+        h('div', { class: 'pb-meta' }, whoChip(p.owner.name, 'xs'),
+          h('span', { text: ['owns it', plural(p.stages.length, 'stage', 'stages')].concat(b.moved ? ['last movement ' + ago(b.moved)] : []).concat(p.canSteer ? [accessText(p.access)] : []).join(' · ') }))),
+      h('div', { class: 'pb-facts' },
+        fact(String(b.active), 'in flight'),
+        fact(b.times.endToEnd != null ? spanShort(b.times.endToEnd) : '—', 'median cycle'),
+        fact(String(b.shipped), 'shipped, 30d')),
+      h('div', { class: 'row pb-acts' }, h('button', { class: 'btn small', text: 'Open', onclick: open }), put));
+
+    // Where the items are now, on the stages: the list's counts, amber where
+    // one of the items you can see waits on a person.
+    var liveAt = p.stages.map(function (s, i) {
+      return { n: (p.byStage || [])[i] || 0, waiting: b.live.some(function (it) { return it.stageIndex === i && it.waitsOn; }) };
+    });
+    var stageWho = procWho(b.r);
+    var plain = function (s) { return stageWho(s); };
+    var diagram = procDiagram(full, plain, b.times, waysIn(full, b.r), null, { fit: true, live: liveAt });
+
+    var me = ((state.me && state.me.name) || '').toLowerCase();
+    var MAX = 10;
+    var chips = b.live.slice().sort(function (a, c) { return (c.waitsOn ? 1 : 0) - (a.waitsOn ? 1 : 0) || c.stageIndex - a.stageIndex; }).slice(0, MAX).map(function (it) {
+      var label = it.title;
+      if (it.waitsOn) {
+        var since = (itemSpans(it).open || {}).since || it.updatedAt;
+        var on = it.yourTurn || (me && String(it.waitsOn).toLowerCase() === me) ? 'you' : who(it.waitsOn);
+        label += ' · waiting on ' + on + ' ' + spanShort(Date.now() - since).split(' ')[0];
+      }
+      return h('button', { type: 'button', class: 'pb-item' + (it.waitsOn ? ' wait' : '') + (it.blocked ? ' stuck' : ''), title: (p.stages[it.stageIndex] || {}).name || '', onclick: function () { go('process', { processId: p.id, processItem: it.id }); } },
+        h('span', { class: 'pb-it', text: label }), h('span', { class: 'pb-n', 'aria-label': 'stage ' + (it.stageIndex + 1), text: String(it.stageIndex + 1) }));
+    });
+    var more = b.live.length - chips.length + Math.max(0, b.active - b.live.length);
+    return h('section', { class: 'pb-card', 'aria-label': p.name },
+      top,
+      h('div', { class: 'pb-flow' }, diagram.node),
+      h('div', { class: 'pb-items' },
+        h('span', { class: 'pb-label', text: 'In flight' }),
+        chips.length ? chips : h('span', { class: 'faint', text: b.active ? plural(b.active, 'item', 'items') + ', none you can open' : 'Nothing in flight.' }),
+        chips.length && more > 0 ? h('button', { type: 'button', class: 'linkish pb-more', text: '+' + more + ' more', onclick: open }) : null));
   }
 
   /// "Put something in": a title and what it is.
@@ -6451,12 +7192,21 @@ export const CONSOLE_JS = String.raw`
   function procGrid(n) {
     return { cols: 'minmax(128px, 0.7fr) repeat(' + n + ', minmax(176px, 1fr)) minmax(100px, 0.5fr)', min: 128 + n * 176 + 100 + (n + 1) * PF_GAP };
   }
+  /// The same columns, squeezed to share whatever width there is. min: the
+  /// narrowest it reads at; below that the drawing scales down, never scrolls.
+  var PF_FIT_GAP = 28;
+  function procFitGrid(n) {
+    return { cols: 'minmax(0, 0.7fr) repeat(' + n + ', minmax(0, 1fr)) minmax(0, 0.6fr)', min: 72 + n * 92 + 64 + (n + 1) * PF_FIT_GAP };
+  }
   /// How a process runs, drawn: a card to start, one per stage, one to end;
   /// solid arrows from each to the next, and dashed loops round the outside
   /// for what goes back round (a send back, a repeat). The lines are drawn
   /// from where the cards actually are, and again when the layout changes.
-  function procDiagram(p, who, times, ways, onStart) {
-    var grid = procGrid(p.stages.length);
+  /// o.fit: fit the width it's given (the Processes board); o.live[i]: how
+  /// many items are at stage i now, and whether one waits on a person.
+  function procDiagram(p, who, times, ways, onStart, o) {
+    o = o || {};
+    var grid = o.fit ? procFitGrid(p.stages.length) : procGrid(p.stages.length), gap = o.fit ? PF_FIT_GAP : PF_GAP;
     var loops = [];
     p.stages.forEach(function (s, i) {
       if (s.repeat && s.kind !== 'people') loops.push({ from: i, to: i, label: 'every ' + plural(s.repeat.everyDays, 'day', 'days') + ' × ' + s.repeat.times, prefer: 'above' });
@@ -6493,16 +7243,29 @@ export const CONSOLE_JS = String.raw`
     var cards = [h(onStart ? 'button' : 'div', { type: onStart ? 'button' : null, class: 'pf-card start', onclick: onStart || null, 'aria-label': onStart ? 'Comes in from ' + listWords(ways.map(function (w) { return w.long; })) + '. Show how work comes in.' : null },
       tag('Start', 'start'), h('b', { text: 'Comes in' }), h('span', { class: 'pf-sub', text: shortWays.join(' · ') }))]
       .concat(p.stages.map(function (s, i) {
-        var t = times.text(s);
-        return h('div', { class: 'pf-card ' + s.kind }, tag((i + 1) + ' · ' + KIND_WORD[s.kind], s.kind), h('b', { text: s.name }), h('span', { class: 'pf-sub' }, who.node ? who.node(s) : who(s), t ? ' · ' + t : ''));
+        var t = times.text(s), at = o.live && o.live[i];
+        return h('div', { class: 'pf-card ' + s.kind + (at && at.waiting ? ' hot' : ''), title: o.fit ? s.name : null }, tag((i + 1) + ' · ' + KIND_WORD[s.kind], s.kind), h('b', { text: s.name }), h('span', { class: 'pf-sub' }, who.node ? who.node(s) : who(s), t ? ' · ' + t : ''),
+          at && at.n ? h('span', { class: 'pf-cnt' + (at.waiting ? ' wait' : ''), title: plural(at.n, 'item', 'items') + ' here now' + (at.waiting ? ', waiting on a person' : ''), text: String(at.n) }) : null);
       }))
       .concat([h('div', { class: 'pf-card end' }, tag('End', 'end'), h('b', { text: 'Done' }), h('span', { class: 'pf-sub', text: 'whoever put it in hears' }))]);
     var svg = document.createElementNS(SVG, 'svg');
     svg.setAttribute('class', 'pf-lines');
     svg.setAttribute('aria-hidden', 'true');
     var labels = h('div', { class: 'pf-labels', 'aria-hidden': 'true' });
-    var host = h('div', { class: 'pf-host', style: 'min-width:' + grid.min + 'px;padding-top:' + (12 + lanes.above.length * PF_LANE) + 'px;padding-bottom:' + (12 + lanes.below.length * PF_LANE) + 'px' },
-      h('div', { class: 'pf-grid', style: 'grid-template-columns:' + grid.cols + ';column-gap:' + PF_GAP + 'px' }, cards), svg, labels);
+    var host = h('div', { class: 'pf-host', style: (o.fit ? '' : 'min-width:' + grid.min + 'px;') + 'padding-top:' + (12 + lanes.above.length * PF_LANE) + 'px;padding-bottom:' + (12 + lanes.below.length * PF_LANE) + 'px' },
+      h('div', { class: 'pf-grid', style: 'grid-template-columns:' + grid.cols + ';column-gap:' + gap + 'px' }, cards), svg, labels);
+    var wrap = o.fit ? h('div', { class: 'pf-fit' }, host) : h('div', { class: 'pf-scroll' }, host);
+    /// Narrower than it reads at: drawn at that width and scaled to fit.
+    var fitNow = function () {
+      if (!o.fit) return;
+      host.style.width = ''; host.style.transform = '';
+      var avail = wrap.clientWidth;
+      if (avail && avail < grid.min) {
+        var k = avail / grid.min;
+        host.style.width = grid.min + 'px'; host.style.transform = 'scale(' + k + ')';
+        wrap.style.height = Math.ceil(host.offsetHeight * k) + 'px';
+      } else wrap.style.height = '';
+    };
     var seq = ++pfSeq;
     var el = function (tag_, attrs) { var n = document.createElementNS(SVG, tag_); for (var k in attrs) n.setAttribute(k, attrs[k]); return n; };
     var marker = function (id, cls) {
@@ -6513,10 +7276,13 @@ export const CONSOLE_JS = String.raw`
     var note = function (cls, text, x, y) { var n = h('span', { class: cls, text: text }); n.style.left = Math.round(x) + 'px'; n.style.top = Math.round(y) + 'px'; labels.appendChild(n); };
     var draw = function () {
       if (!host.isConnected) return;
+      fitNow();
       var base = host.getBoundingClientRect();
+      // Scaled down, the cards measure smaller than the lines' own space.
+      var k = o.fit && host.offsetWidth ? base.width / host.offsetWidth : 1;
       var R = cards.map(function (c) {
         var r = c.getBoundingClientRect();
-        return { l: r.left - base.left, r: r.right - base.left, t: r.top - base.top, b: r.bottom - base.top, cx: (r.left + r.right) / 2 - base.left };
+        return { l: (r.left - base.left) / k, r: (r.right - base.left) / k, t: (r.top - base.top) / k, b: (r.bottom - base.top) / k, cx: ((r.left + r.right) / 2 - base.left) / k };
       });
       var W = host.offsetWidth, H = host.offsetHeight;
       svg.setAttribute('width', String(W)); svg.setAttribute('height', String(H)); svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
@@ -6530,7 +7296,7 @@ export const CONSOLE_JS = String.raw`
       for (var k = 0; k + 1 < R.length; k++) {
         line('M' + (R[k].r + 2) + ' ' + mid + 'H' + (R[k + 1].l - 2), false);
         var s = p.stages[k];
-        if (s && s.delayDays) note('pf-wait', 'waits ' + (s.delayDays % 7 === 0 ? plural(s.delayDays / 7, 'week', 'weeks') : plural(s.delayDays, 'day', 'days')), (R[k].r + R[k + 1].l) / 2, mid - 6);
+        if (s && s.delayDays && !o.fit) note('pf-wait', 'waits ' + (s.delayDays % 7 === 0 ? plural(s.delayDays / 7, 'week', 'weeks') : plural(s.delayDays, 'day', 'days')), (R[k].r + R[k + 1].l) / 2, mid - 6);
       }
       loops.forEach(function (l) {
         var below = l.side === 'below', edge = below ? bottom : top, dir = below ? 1 : -1;
@@ -6550,13 +7316,13 @@ export const CONSOLE_JS = String.raw`
     var redraw = function () { if (queued) return; queued = true; requestAnimationFrame(function () { queued = false; draw(); }); };
     if (typeof ResizeObserver === 'function') {
       var ro = new ResizeObserver(function () { if (!host.isConnected) { ro.disconnect(); return; } redraw(); });
-      ro.observe(host);
+      ro.observe(o.fit ? wrap : host);
     } else {
       var onResize = function () { if (!host.isConnected) { window.removeEventListener('resize', onResize); return; } redraw(); };
       window.addEventListener('resize', onResize);
     }
     setTimeout(redraw, 0);
-    return { node: h('div', { class: 'pf-scroll' }, host), redraw: redraw, grid: grid };
+    return { node: wrap, redraw: redraw, grid: grid };
   }
   function pfLegend() {
     return h('span', { class: 'pf-legend' }, h('span', { class: 'on', text: 'moves on' }), h('span', { class: 'loop', text: 'goes back round' }));
@@ -7500,7 +8266,8 @@ export const CONSOLE_JS = String.raw`
         if (mine !== seq) return;
         var has = function (n) { return !term || n.toLowerCase().indexOf(term) >= 0; };
         var groups = opts.onGroup ? d.groups.filter(function (g) { return has(g.name); }) : [];
-        var people = d.people.filter(function (p) { return has(p.name) || (p.handle && has(p.handle)); }).slice(0, 8);
+        // Someone known only by name has no Slack id to pick them by.
+        var people = d.people.filter(function (p) { return p.slackUserId && (has(p.name) || (p.handle && has(p.handle))); }).slice(0, 8);
         var items = [];
         if (groups.length) items.push(h('div', { class: 'pp-head', text: 'Groups' }));
         groups.forEach(function (g) {
@@ -8198,27 +8965,34 @@ export const CONSOLE_JS = String.raw`
       if (!teams.length && makingCards.length) return [head('Teams', intro, action), h('div', { class: 'tmgrid' }, makingCards)];
       if (!teams.length) return [head('Teams', intro, action), emptyState('No teams you can see yet.', 'Make one from workers already here, or publish one you built in the overcli app: open the team and press Publish to your org.')];
       var live = function (k) { return k.status === 'running' || k.status === 'planning'; };
-      // One card per team: what it's for, who's on it, what it has done, and
-      // the two ways in. Giving it a task happens on its page, not in a form
-      // repeated on every card.
+      // One card per team: what it's for, its last 30 days in three figures,
+      // who's on it, and the way in. Giving it a task happens on its page,
+      // not in a form repeated on every card.
       var cards = teams.map(function (t) {
         var mine = tasks.filter(function (k) { return k.teamId === t.id; });
         var running = mine.filter(live).length;
-        var spent = mine.reduce(function (n, k) { return n + (k.spentUSD || 0); }, 0);
+        var review = mine.filter(function (k) { return k.status === 'review'; }).length;
+        var needs = mine.filter(function (k) { return k.waitingOnYou; }).length;
         var finished = mine.filter(function (k) { return k.status === 'done' || k.status === 'review'; }).map(function (k) { return k.updatedAt; });
         var last = finished.length ? Math.max.apply(null, finished) : null;
-        return openCard('tmcard', 'Open ' + t.name, function () { go('team', { teamId: t.id }); },
-          h('div', { style: 'min-width:0' },
-            h('span', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' }, PICTURES[t.id] ? avatar(t.id, t.name, 'm') : null,
-              h('span', { class: 'tmname', text: t.name })),
-            t.purpose ? h('p', { class: 'tmpurpose', text: t.purpose }) : null),
-          h('div', { class: 'tmmeta' },
-            h('span', { class: 'faces', title: t.members.map(function (m) { return m.name; }).join(', ') }, t.members.slice(0, 6).map(function (m) { return avatar(m.name, m.name, 's'); })),
-            h('span', { class: 'faint tmstats', text: [plural(t.members.length, 'member', 'members'), plural(mine.length, 'task', 'tasks'), money(spent) + ' spent'].concat(last ? ['delivered ' + ago(last)] : []).join(' · ') }),
-            h('span', { class: 'faint tmstats', text: teamBriefers(t) }),
-            running ? h('span', { class: 'tmlive' }, h('span', { class: 'livedot' }), running + ' running') : null),
-          t.canBrief ? h('div', { class: 'tmfoot' },
-            h('button', { class: 'btn small go', text: 'Give it a task', onclick: function (e) { e.stopPropagation(); go('team', { teamId: t.id, teamFocusBrief: true }); } })) : null);
+        var chip = needs ? ['need', needs + ' need' + (needs === 1 ? 's' : '') + ' you'] : review ? ['need', review + ' in review'] : running ? ['go', running + ' running'] : ['', 'Idle'];
+        var m = t.last30;
+        var fig = function (v, k) { return h('div', null, h('b', { text: v }), h('span', { text: k })); };
+        return openCard('tmcard tb-card', 'Open ' + t.name, function () { go('team', { teamId: t.id }); },
+          h('div', { class: 'tb-top' },
+            avatar(t.id, t.name, 'm'),
+            h('div', { style: 'min-width:0;flex:1' },
+              h('span', { class: 'tmname', text: t.name }),
+              t.purpose ? h('p', { class: 'tmpurpose', text: t.purpose }) : null),
+            h('span', { class: 'tb-chip ' + chip[0] }, chip[0] === 'go' ? h('span', { class: 'livedot' }) : null, chip[1])),
+          m ? h('div', { class: 'tb-mini' },
+            fig(String(m.tasks), (m.tasks === 1 ? 'task' : 'tasks') + ' · 30 days'),
+            fig(m.medianCycleMs != null ? spanShort(m.medianCycleMs) : '—', 'median cycle time'),
+            fig(money(m.spentUSD), m.budgetUSD ? 'of ' + money(m.budgetUSD) + ' budget' : 'spent · 30 days')) : null,
+          h('div', { class: 'tmfoot tb-foot' },
+            h('span', { class: 'faces', title: t.members.map(function (x) { return x.name; }).join(', ') }, t.members.slice(0, 6).map(function (x) { return avatar(x.name, x.name, 's'); })),
+            h('span', { class: 'faint tb-who', text: [plural(t.members.length, 'member', 'members'), teamBriefers(t)].concat(last ? ['delivered ' + ago(last)] : []).join(' · ') }),
+            t.canBrief ? h('button', { class: 'btn small go', text: 'Give it a task', onclick: function (e) { e.stopPropagation(); go('team', { teamId: t.id, teamFocusBrief: true }); } }) : null));
       });
       cards = makingCards.concat(cards);
       if (action) cards.push(h('article', { class: 'tmcard add' },
@@ -8226,42 +9000,71 @@ export const CONSOLE_JS = String.raw`
           h('p', { class: 'tmpurpose', text: 'Pick workers you manage, say what the team is for, and give it a budget per task.' })),
         h('div', { class: 'tmfoot' }, h('button', { class: 'btn small', onclick: openMaker }, icon('plus', 14), 'Make a team'))));
 
-      // Every team's tasks in one table, each opening its own page.
-      var TABS = [['all', 'All tasks', function () { return true; }], ['running', 'Running', live],
-        ['needs', 'Needs you', function (k) { return k.waitingOnYou; }], ['review', 'In review', function (k) { return k.status === 'review'; }]];
-      var tab = state.teamsTab || 'all';
-      var tabsEl = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' });
-      var body = h('tbody');
-      var drawTasks = function () {
-        tabsEl.replaceChildren.apply(tabsEl, TABS.map(function (t) {
-          return h('button', { 'aria-pressed': tab === t[0] ? 'true' : 'false', onclick: function () { tab = t[0]; state.teamsTab = tab; drawTasks(); } }, t[1], h('span', { class: 'c', text: String(tasks.filter(t[2]).length) }));
-        }));
-        var fit = TABS.filter(function (t) { return t[0] === tab; })[0][2];
-        var rows = tasks.filter(fit).sort(function (a, b) { return b.updatedAt - a.updatedAt; });
-        fill(body, rows.length ? rows.map(function (k) {
-          var b = k.waitingOnYou ? ['waiting', 'Needs you'] : TASK_BADGE[k.status] || ['', k.status];
-          var done = k.stages.filter(function (s) { return s.state === 'done'; }).length;
-          var open_ = function () { openTask(k.id); };
-          return h('tr', { class: 'link', tabindex: '0', onclick: open_, onkeydown: function (e) { if (e.key === 'Enter') open_(); } },
-            h('td', { class: 'wrap' }, h('b', { style: 'font-weight:600', text: k.title }), h('span', { class: 'sub', text: (k.requestedBy && k.requestedBy !== (state.me && state.me.name) ? k.requestedBy : 'You') + ' asked' })),
-            h('td', { class: 'muted', text: k.teamName }),
-            h('td', null, h('span', { class: 'badge ' + b[0], text: b[1] })),
-            h('td', null, k.stages.length ? h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
-              h('ol', { class: 'tsegs', style: 'width:150px', 'aria-label': done + ' of ' + k.stages.length + ' stages done' }, k.stages.map(function (s) { return h('li', { class: s.state, title: s.label }); })),
-              h('span', { class: 'faint', text: done + ' of ' + k.stages.length })) : h('span', { class: 'faint', text: 'Planning' })),
-            h('td', { class: 'r muted', text: money(k.spentUSD) }),
-            h('td', { class: 'r faint', text: ago(k.updatedAt) }));
-        }) : [h('tr', null, h('td', { colspan: '6', class: 'muted', style: 'padding:28px 16px;text-align:center', text: tasks.length ? 'No tasks like that.' : 'No tasks yet. Give a team one.' }))]);
-      };
-      drawTasks();
       return [head('Teams', 'Workers who take on a task together. Its coordinator plans it, you approve, the members run it.', action, 'Workspace'),
         h('div', { class: 'tmgrid' }, cards),
-        h('section', { class: 'tcard', 'aria-label': 'Tasks' },
-          h('div', { class: 'tbar' }, tabsEl),
-          h('div', { class: 'tscroll' }, h('table', { class: 'data' },
-            h('thead', null, h('tr', null, ['Task', 'Team', 'Status', 'Stages'].map(function (t) { return h('th', { text: t }); }), h('th', { class: 'r', text: 'Spent' }), h('th', { class: 'r', text: 'Updated' }))),
-            body)))];
+        teamTaskTable(tasks)];
     });
+  }
+
+  /// A question: a one-off ask the team answered from what it knows, or
+  /// one that finished without ever planning stages. Not staged work.
+  function isTeamQuestion(k) { return !!k.answered || (k.status === 'done' && !k.stages.length); }
+
+  /// Every team's tasks in one table, each opening its own page: staged work,
+  /// questions, what's in review and what was cancelled, each a tab. A tab
+  /// redraws only this card.
+  function teamTaskTable(tasks) {
+    var work = tasks.filter(function (k) { return !isTeamQuestion(k); });
+    var TABS = [['tasks', 'Tasks', function (k) { return !isTeamQuestion(k); }], ['questions', 'Questions', isTeamQuestion],
+      ['review', 'In review', function (k) { return k.status === 'review'; }], ['cancelled', 'Cancelled', function (k) { return k.status === 'cancelled'; }]];
+    // Someone waiting on you gets its own tab, while there is one.
+    if (tasks.some(function (k) { return k.waitingOnYou; })) TABS.splice(1, 0, ['needs', 'Needs you', function (k) { return k.waitingOnYou; }]);
+    var tab = TABS.some(function (t) { return t[0] === state.teamsTab; }) ? state.teamsTab : 'tasks';
+    // Cycle time only once something has finished; until then it's all dashes.
+    var timed = tasks.some(function (k) { return k.finishedAt && k.createdAt; });
+    var me = ((state.me && state.me.name) || '').toLowerCase();
+    var tabsEl = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' });
+    var note = h('span', { class: 'faint tb-note' });
+    var body = h('tbody');
+    var cols = 6 + (timed ? 1 : 0);
+    var stagesCell = function (k) {
+      var n = k.stages.length, done = k.stages.filter(function (s) { return s.state === 'done'; }).length;
+      if (n) return h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
+        h('ol', { class: 'tsegs', style: 'width:150px', 'aria-label': done + ' of ' + n + ' stages done' }, k.stages.map(function (s) { return h('li', { class: s.state, title: s.label }); })),
+        h('span', { class: 'faint', text: done + ' of ' + n }));
+      // No stages: what that means depends on where it got to.
+      var word = isTeamQuestion(k) ? 'Answered' : k.status === 'cancelled' ? 'Stopped before planning' : k.status === 'failed' ? 'Failed before planning' : k.status === 'done' || k.status === 'review' ? 'No stages' : 'Planning';
+      return h('span', { class: 'faint', text: word });
+    };
+    var draw = function () {
+      tabsEl.replaceChildren.apply(tabsEl, TABS.map(function (t) {
+        return h('button', { 'aria-pressed': tab === t[0] ? 'true' : 'false', onclick: function () { tab = t[0]; state.teamsTab = tab; draw(); } }, t[1], h('span', { class: 'c', text: String(tasks.filter(t[2]).length) }));
+      }));
+      note.textContent = tab === 'questions' ? 'One-off asks the team answered without planning stages.' : tab === 'tasks' && tasks.length > work.length ? 'Questions are one-off asks with no stages; they live in their own tab.' : '';
+      var fit = TABS.filter(function (t) { return t[0] === tab; })[0][2];
+      var rows = tasks.filter(fit).sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+      fill(body, rows.length ? rows.map(function (k) {
+        var b = k.waitingOnYou ? ['waiting', 'Needs you'] : isTeamQuestion(k) && k.status === 'done' ? ['ok', 'Answered'] : TASK_BADGE[k.status] || ['', k.status];
+        var open_ = function () { openTask(k.id); };
+        var yours = !k.requestedBy || String(k.requestedBy).toLowerCase() === me;
+        var out = String(k.packSummary || '').split('\n').map(function (l) { return l.replace(/^[#>*\-\s]+/, '').replace(/\*\*/g, '').trim(); }).filter(Boolean)[0];
+        return h('tr', { class: 'link', tabindex: '0', onclick: open_, onkeydown: function (e) { if (e.key === 'Enter') open_(); } },
+          h('td', { class: 'wrap tb-task' }, h('b', { style: 'font-weight:600', text: k.title }), h('span', { class: 'sub', text: k.teamName + (out ? ' · ' + out : '') })),
+          h('td', null, yours ? h('span', { class: 'muted', text: 'You' }) : whoChip(k.requestedBy, 'xs')),
+          h('td', null, h('span', { class: 'badge ' + b[0], text: b[1] })),
+          h('td', null, stagesCell(k)),
+          timed ? h('td', { class: 'r', text: k.finishedAt && k.createdAt ? spanShort(k.finishedAt - k.createdAt) : '—' }) : null,
+          h('td', { class: 'r', text: money(k.spentUSD) }),
+          h('td', { class: 'r faint', text: ago(k.updatedAt) }));
+      }) : [h('tr', null, h('td', { colspan: String(cols), class: 'muted', style: 'padding:28px 16px;text-align:center', text: tasks.length ? 'Nothing here.' : 'No tasks yet. Give a team one.' }))]);
+    };
+    draw();
+    return h('section', { class: 'tcard', 'aria-label': 'Tasks' },
+      h('div', { class: 'tbar' }, tabsEl, note),
+      h('div', { class: 'tscroll' }, h('table', { class: 'data' },
+        h('thead', null, h('tr', null, ['Task', 'Asked by', 'Status', 'Stages'].map(function (t) { return h('th', { text: t }); }),
+          timed ? h('th', { class: 'r', text: 'Cycle time' }) : null, h('th', { class: 'r', text: 'Spent' }), h('th', { class: 'r', text: 'Updated' }))),
+        body)));
   }
 
   /// Make a team: what it's for (and a crew suggested from it), who's on it
@@ -8942,7 +9745,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 't-top', style: 'align-items:flex-start' },
           h('div', { style: 'min-width:0;flex:1 1 320px' },
             h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, cls === ' live' ? h('span', { class: 'livedot' }) : null, h('b', { class: 't-title', text: task.title || task.brief })),
-            h('div', { class: 'faint', style: 'margin-top:2px', text: (task.requestedBy && task.requestedBy !== me ? task.requestedBy : 'You') + ' asked' + (task.title && task.title !== task.brief ? ' “' + briefShort(task.brief).text + '”' : '') + ' · ' + when(task.createdAt) })),
+            h('div', { class: 'faint', style: 'margin-top:2px', text: whoOrYou(task.requestedBy) + ' asked' + (task.title && task.title !== task.brief ? ' “' + briefShort(task.brief).text + '”' : '') + ' · ' + when(task.createdAt) })),
           h('span', { class: 'badge ' + b[0], text: b[1] + (cur && !done && (task.status === 'running' || task.status === 'waiting') ? ' · stage ' + (task.stagesDetail.indexOf(cur) + 1) + ' of ' + task.stagesDetail.length : '') })),
         !done && !(cur && cur.pieces.length && task.status !== 'proposed') ? h('p', { class: 't-head', text: task.nowSentence }) : null,
         task.status === 'planning' ? thinking('The coordinator is reading the brief and its members’ jobs, then writing questions or a plan.') : null,
@@ -9047,7 +9850,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { style: 'min-width:0;flex:1 1 320px' },
           h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, live ? h('span', { class: 'livedot' }) : null,
             h('button', { class: 'linkish t-title', style: 'color:var(--ink);text-align:left', text: task.title || task.brief, onclick: function () { openTask(task.id); } })),
-          h('div', { class: 'faint', style: 'margin-top:2px', text: (task.requestedBy && task.requestedBy !== (state.me && state.me.name) ? task.requestedBy : 'You') + ' asked · ' + when(task.createdAt) })),
+          h('div', { class: 'faint', style: 'margin-top:2px', text: whoOrYou(task.requestedBy) + ' asked · ' + when(task.createdAt) })),
         taskBadge(task)),
       task.stagesDetail.length ? stageMarks(task) : null,
       // Answered from what the team knows: the answer is the whole of it.
@@ -9274,7 +10077,7 @@ export const CONSOLE_JS = String.raw`
 
         // ---- Header: the team, the task, the crew, the spend.
         var bs = briefShort(task.brief);
-        var asker = task.requestedBy && task.requestedBy !== me ? task.requestedBy : 'You';
+        var asker = whoOrYou(task.requestedBy);
         var crumbs = [task.code ? 'code on ' + task.code.branch : null, asker + ' asked ' + when(task.createdAt).replace(/^Today /, 'today ')].filter(Boolean).join(' · ');
         var menu = moreMenu([
           review && task.canSteer ? ['Accept the pack', function (e) { post('', { kind: 'accept' }, 'Accepted. The task is done.'); }] : null,
@@ -9310,7 +10113,7 @@ export const CONSOLE_JS = String.raw`
         // In review the band below is the whole of it; the controls are for questions, a plan or a checkpoint.
         var controls = review ? null : teamTaskControls(task, out, refresh);
         var acts = taskWaitsOnCaller(task);
-        var waitsOn = task.requestedBy || 'whoever asked';
+        var waitsOn = task.requestedBy ? who(task.requestedBy) : 'whoever asked';
         var turn = task.waitingOnYou ? 'Your turn: ' : 'Waiting on ' + waitsOn + ': ';
         if (!room.busy && review && task.canSteer) {
           var head = 'Version ' + version + ', ' + plural(pack.files.length, 'file', 'files') + '.';
@@ -12426,7 +13229,7 @@ export const CONSOLE_JS = String.raw`
         return h('div', { class: 'tp-row' + (wide ? ' wide' : '') },
           avatar(w.id, w.name, 's'),
           h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, h('b', { style: 'font-weight:600', text: w.name }),
-            h('span', { class: 'faint tp-sub', text: wide ? 'Wider than the default: only an admin can set this.' : [full.tagline, w.manager].filter(Boolean).join(' · ') })),
+            h('span', { class: 'faint tp-sub', text: wide ? 'Wider than the default: only an admin can set this.' : [full.tagline, w.manager && who(w.manager)].filter(Boolean).join(' · ') })),
           pick || h('span'),
           h('span', { class: 'faint', style: 'font-size:12px;text-align:right;white-space:nowrap', text: p ? (w.calls ? plural(w.calls, 'call', 'calls') : 'Not used') + (w.refused ? ' · ' + w.refused + ' refused' : '') : '' }),
           take || h('span'));
@@ -12452,7 +13255,7 @@ export const CONSOLE_JS = String.raw`
             return h('button', { type: 'button', class: 'tp-opt', onclick: function () {
               fill(sug, [thinking('Giving it to ' + w.name + '…')]);
               ctx.give(w, true).then(function (x) { if (x && x.ok === false) { sug.hidden = true; return; } ctx.reopen(); });
-            } }, h('b', { text: w.name }), h('span', { class: 'faint', text: [w.tagline, w.manager].filter(Boolean).map(function (x) { return ' · ' + x; }).join('') }));
+            } }, h('b', { text: w.name }), h('span', { class: 'faint', text: [w.tagline, w.manager && who(w.manager)].filter(Boolean).map(function (x) { return ' · ' + x; }).join('') }));
           })) : []).concat(!ts.length && !ws.length ? [h('p', { class: 'muted', style: 'margin:0;padding:12px', text: words ? 'Nobody matches.' : 'Every worker you can give it to has it.' })] : []));
           sug.hidden = false;
         };
@@ -12697,7 +13500,7 @@ export const CONSOLE_JS = String.raw`
   function askers(w) {
     var a = w.audience;
     var picked = a && ((a.people || []).length + (a.groups || []).length + (a.roles || []).length);
-    return picked ? 'Picked people' : w.visibility === 'org' ? 'Anyone' : w.visibility === 'team' ? 'Its team' : 'Only ' + (w.youManage ? 'you' : w.manager || 'its manager');
+    return picked ? 'Picked people' : w.visibility === 'org' ? 'Anyone' : w.visibility === 'team' ? 'Its team' : 'Only ' + (w.youManage ? 'you' : w.manager ? who(w.manager) : 'its manager');
   }
   /// The same, as a line, with where it answers on its own.
   function whoCanAsk(w) {
@@ -13099,28 +13902,41 @@ export const CONSOLE_JS = String.raw`
   }
 
   // One measure per chart, each on its own axis: jobs, dollars, hours and
-  // tokens are four units, and no two belong on one scale. Hues match the
-  // desktop report's.
+  // tokens are four units, and no two belong on one scale. One accent for
+  // all four: the shape is the point, not which chart is which colour.
+  // up: whether more than last time reads as good (more spend isn't).
   var METRICS = [
-    { key: 'itemsDone', label: 'Jobs finished', tint: '#5d72ff', fmt: String },
-    { key: 'costUSD', label: 'Spend', tint: '#d97706', fmt: cents },
-    { key: 'workedMs', label: 'Agent time', tint: '#059669', fmt: workedTime },
-    { key: 'tokens', label: 'Tokens', tint: '#a855f7', fmt: tokens }
+    { key: 'itemsDone', label: 'Jobs finished', fmt: String, up: true },
+    { key: 'costUSD', label: 'Spend', fmt: cents, up: false },
+    { key: 'workedMs', label: 'Agent time', fmt: workedTime, up: true },
+    { key: 'tokens', label: 'Tokens', fmt: tokens, up: true }
   ];
 
-  function dayChart(m, daily) {
+  /// "▲ 18% vs prior", against the window of equal length before. Nothing
+  /// when there is no prior window (all time) or nothing in either.
+  function rpDelta(cur, prev, upIsGood) {
+    if (prev == null || (!cur && !prev)) return null;
+    if (!prev) return h('span', { class: 'rp-delta ' + (upIsGood ? 'good' : 'warm'), text: '▲ new vs prior' });
+    var pct = Math.round(((cur - prev) / prev) * 100);
+    if (!pct) return h('span', { class: 'rp-delta', text: 'same as prior' });
+    return h('span', { class: 'rp-delta ' + ((pct > 0) === upIsGood ? 'good' : 'warm'), text: (pct > 0 ? '▲ ' : '▼ ') + Math.abs(pct) + '% vs prior' });
+  }
+
+  /// A measure by day: its total, the change on the window before (prev,
+  /// when known), and its bars under two light gridlines.
+  function dayChart(m, daily, prev) {
     var total = daily.reduce(function (n, d) { return n + (d[m.key] || 0); }, 0);
     var max = Math.max.apply(null, daily.map(function (d) { return d[m.key] || 0; }).concat([0]));
-    var bars = h('div', { class: 'dbars', role: 'img', 'aria-label': m.label + ' by day, ' + m.fmt(total) + ' in total' });
-    bars.style.setProperty('--bar', m.tint);
+    var bars = h('div', { class: 'dbars rp-plot', role: 'img', 'aria-label': m.label + ' by day, ' + m.fmt(total) + ' in total' },
+      h('span', { class: 'rp-grid', style: 'top:0' }), h('span', { class: 'rp-grid', style: 'top:50%' }));
     daily.forEach(function (d) {
       var v = d[m.key] || 0;
-      bars.appendChild(h('i', { class: v ? '' : 'zero', title: shortDay(d.day) + ': ' + m.fmt(v), style: 'height:' + (max ? Math.max(4, (v / max) * 100) : 0).toFixed(1) + '%' }));
+      bars.appendChild(h('i', { class: v ? (v === max ? 'peak' : '') : 'zero', title: shortDay(d.day) + ': ' + m.fmt(v), style: 'height:' + (max ? Math.max(4, (v / max) * 100) : 0).toFixed(1) + '%' }));
     });
     if (!total) bars.appendChild(h('span', { class: 'none', text: 'None in this window' }));
-    return h('div', { class: 'mchart' },
-      h('div', { class: 'k' }, h('span', { text: m.label }), total ? h('span', { text: 'peak ' + m.fmt(max) + ' a day' }) : null),
-      h('div', { class: 'v', text: m.fmt(total) }),
+    return h('div', { class: 'mchart rp-chart' },
+      h('div', { class: 'k' }, h('span', { text: m.label }), total ? h('span', { class: 'rp-peak', text: 'peak ' + m.fmt(max) + ' a day' }) : null),
+      h('div', { class: 'rp-vrow' }, h('span', { class: 'v', text: m.fmt(total) }), prev === undefined ? null : rpDelta(total, prev, m.up !== false)),
       bars,
       daily.length ? h('div', { class: 'axis' }, h('span', { text: shortDay(daily[0].day) }), h('span', { text: shortDay(daily[daily.length - 1].day) })) : null);
   }
@@ -13135,19 +13951,48 @@ export const CONSOLE_JS = String.raw`
   }
 
   function reportCsv(rows) {
-    var cols = ['Worker', 'Jobs finished', 'Jobs failed', 'Pull requests', 'Shifts', 'Quiet shifts', 'Failed shifts', 'Agent minutes', 'Tokens', 'Spend USD', 'Spend per job USD', 'Spend per pull request USD'];
+    var cols = ['Worker', 'Jobs finished', 'Jobs failed', 'Success %', 'Pull requests', 'Shifts', 'Quiet shifts', 'Failed shifts', 'Agent minutes', 'Tokens', 'Spend USD', 'Spend per job USD', 'Spend per pull request USD'];
     return [cols].concat(rows.map(function (r) {
       var pj = perJob(r), prs = r.pullRequests || 0;
-      return [r.name, r.itemsDone, r.itemsFailed, prs, r.shifts, r.quietShifts, r.failedShifts, Math.round(r.workedMs / 60000), r.inputTokens + r.outputTokens, r.costUSD.toFixed(2), pj == null ? '' : pj.toFixed(2), prs ? (r.costUSD / prs).toFixed(2) : ''];
+      var sr = successRate(r);
+      return [r.name, r.itemsDone, r.itemsFailed, sr == null ? '' : Math.round(sr * 100), prs, r.shifts, r.quietShifts, r.failedShifts, Math.round(r.workedMs / 60000), r.inputTokens + r.outputTokens, r.costUSD.toFixed(2), pj == null ? '' : pj.toFixed(2), prs ? (r.costUSD / prs).toFixed(2) : ''];
     })).map(function (row) { return row.map(csvCell).join(','); }).join('\n');
   }
+
+  /// Of the jobs that ended, the share that finished; null when none ended.
+  function successRate(r) { var n = r.itemsDone + (r.itemsFailed || 0); return n ? r.itemsDone / n : null; }
 
   /// Workers or Slack: which report the Reports page shows.
   function reportSwitch() {
     var on = state.reportView || 'workers';
     return h('div', { class: 'seg', role: 'group', 'aria-label': 'Report' }, [['workers', 'Workers'], ['spend', 'Spend'], ['slack', 'Slack'], ['watching', 'Watching']].map(function (o) {
-      return h('button', { 'aria-pressed': on === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportView = o[0]; render(); } });
+      return h('button', { 'aria-pressed': on === o[0] ? 'true' : 'false', text: o[1], onclick: function (e) { state.reportView = o[0]; pressSeg(e.currentTarget); reportsRedraw(); } });
     }));
+  }
+  /// 7 days, 30 days or all time, for the Workers and Slack reports.
+  function reportRange(days) {
+    return h('div', { class: 'seg', role: 'group', 'aria-label': 'Window' }, [[7, '7 days'], [30, '30 days'], [0, 'All time']].map(function (o) {
+      return h('button', { 'aria-pressed': days === o[0] ? 'true' : 'false', text: o[1], onclick: function (e) { state.reportDays = o[0]; pressSeg(e.currentTarget); reportsRedraw(); } });
+    }));
+  }
+
+  /// The Reports page's body, redrawn in place when its tab or range
+  /// changes: the page stays up, no Loading flash.
+  var reportsHost = null;
+  function reportsRedraw() {
+    var host = reportsHost;
+    if (!host || !host.isConnected) { render(); return; }
+    var seq = host.rpSeq = (host.rpSeq || 0) + 1;
+    host.classList.add('rp-busy');
+    reportPage().then(function (nodes) {
+      if (host.rpSeq !== seq) return;
+      host.classList.remove('rp-busy');
+      fill(host, nodes);
+    }, function (e) {
+      if (host.rpSeq !== seq) return;
+      host.classList.remove('rp-busy');
+      fill(host, [h('div', { class: 'msg err', text: String((e && e.message) || e) })]);
+    });
   }
 
   /// Every worker's budget times a factor, in whole dollars. Never below what
@@ -13402,7 +14247,7 @@ export const CONSOLE_JS = String.raw`
       };
       var isOrg = s.scope === 'all';
       var seg = h('div', { class: 'page-actions' }, reportSwitch(), s.canSeeAll ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Whose workers' }, [[false, 'My workers'], [true, 'Everyone’s']].map(function (o) {
-        return h('button', { 'aria-pressed': isOrg === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.spendAll = o[0]; state.spendWorker = ''; render(); } });
+        return h('button', { 'aria-pressed': isOrg === o[0] ? 'true' : 'false', text: o[1], onclick: function (e) { state.spendAll = o[0]; state.spendWorker = ''; pressSeg(e.currentTarget); reportsRedraw(); } });
       })) : null);
       var over = s.budgetUSD && s.capsUSD > s.budgetUSD;
       var top = card('spendtop', isOrg ? 'Org spend this month' : 'My workers this month', null, h('div', { class: 'stack', style: 'gap:8px' },
@@ -13433,107 +14278,159 @@ export const CONSOLE_JS = String.raw`
   }
 
   function viewReports() {
+    var host = reportsHost = h('div', { class: 'rp-page' });
+    return reportPage().then(function (nodes) { fill(host, nodes); return [host]; });
+  }
+
+  /// Hours saved, said the way a person would: "≈76h", or minutes under one.
+  function savedShort(min) { return min >= 60 ? '≈' + Math.round(min / 60) + 'h' : '≈' + Math.max(1, Math.round(min)) + 'm'; }
+  /// What that much of a person's time is, in days or weeks of eight-hour days.
+  function savedPlain(min) {
+    var hrs = min / 60;
+    if (hrs < 8) return 'About ' + plural(Math.max(1, Math.round(hrs)), 'hour', 'hours') + ' of a person’s time';
+    if (hrs < 40) return 'About ' + plural(Math.round(hrs / 8), 'working day', 'working days') + ' of a person’s time';
+    return 'About ' + plural(Math.round(hrs / 40), 'working week', 'working weeks') + ' of a person’s time';
+  }
+
+  /// The report the tab and range pick, as the page's nodes.
+  function reportPage() {
     var days = state.reportDays == null ? 30 : state.reportDays;
     if (state.reportView === 'spend') return viewSpend();
     if (state.reportView === 'slack') return viewSlackReport(days);
     // Built at once, its rows filled as they load; handed back like the rest.
     if (state.reportView === 'watching') return Promise.resolve(viewWatching());
     return api('GET', '/api/report?days=' + days).then(function (r) {
-      var seg = h('div', { class: 'page-actions' }, reportSwitch(), h('div', { class: 'seg', role: 'group', 'aria-label': 'Window' }, [[7, '7 days'], [30, '30 days'], [0, 'All time']].map(function (o) {
-        return h('button', { 'aria-pressed': days === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportDays = o[0]; render(); } });
-      })));
+      var seg = h('div', { class: 'page-actions' }, reportSwitch(), reportRange(days));
       var sub = 'What your workers delivered, what it cost, and where the time went.';
       if (r.ok === false) return [head('Reports', sub, seg, 'Workspace'), emptyState('No report yet.', r.error)];
       var rep = r.report || r;
       var t = rep.totals;
+      var prior = r.prior || null;
       var multiplier = r.savedMultiplier || 1.5;
       if (!rep.byWorker.length) return [head('Reports', sub, seg, 'Workspace'), emptyState('Nobody to report on yet.', 'Hire a worker and this fills in after its first shift.', hireButton())];
       if (!t.shifts && !t.runs) return [head('Reports', sub, seg, 'Workspace'), emptyState('Nothing in this window.', 'No shifts ran. Try a longer range.')];
 
-      var sortKey = state.reportSort || 'cost';
       var SORT = {
         cost: function (x) { return x.costUSD; },
         perJob: function (x) { var p = perJob(x); return p == null ? -1 : p; },
         done: function (x) { return x.itemsDone; },
         prs: function (x) { return x.pullRequests || 0; },
         perPr: function (x) { return x.pullRequests ? x.costUSD / x.pullRequests : -1; },
+        success: function (x) { var s = successRate(x); return s == null ? -1 : s; },
         shifts: function (x) { return x.shifts; },
         time: function (x) { return x.workedMs; },
         tokens: function (x) { return x.inputTokens + x.outputTokens; }
       };
-      var rows = rep.byWorker.slice().sort(function (a, b) { return SORT[sortKey](b) - SORT[sortKey](a) || a.name.localeCompare(b.name); });
+      var sorted = function () {
+        var key = SORT[state.reportSort] ? state.reportSort : 'cost';
+        return rep.byWorker.slice().sort(function (a, b) { return SORT[key](b) - SORT[key](a) || a.name.localeCompare(b.name); });
+      };
       // The roster's own median rate flags the expensive worker, not a
       // threshold picked from outside it.
-      var rates = rows.map(perJob).filter(function (x) { return x != null; }).sort(function (a, b) { return a - b; });
+      var rates = rep.byWorker.map(perJob).filter(function (x) { return x != null; }).sort(function (a, b) { return a - b; });
       var median = rates.length ? rates[Math.floor(rates.length / 2)] : 0;
       var dear = median > 0 ? median * 2 : Infinity;
 
       var sv = r.saved;
       var savedMin = sv ? sv.ms / 60000 : (t.workedMs / 60000) * multiplier;
+      var priorMin = prior ? prior.savedMs / 60000 : null;
       var savedHow = 'Estimated at ' + multiplier + '× measured agent time: one active agent hour stands in for about ' + multiplier + ' hours of a person’s.' +
         (sv && sv.prRuns ? ' The ' + plural(sv.prRuns, 'run', 'runs') + ' that opened a pull request count at ' + sv.prMultiplier + '×, and at least ' + plural(sv.prMinHours, 'hour', 'hours') + ' each (Setup → Spending).' : '');
-      var econ = function (k, v) { return h('div', null, h('span', { class: 'muted', text: k }), h('b', { text: v })); };
-      var th = function (key, label, right) {
-        return h('th', { class: right ? 'r' : null, 'aria-sort': sortKey === key ? 'descending' : null },
-          key ? h('button', { 'aria-pressed': sortKey === key ? 'true' : 'false', text: label + (sortKey === key ? ' ↓' : ''), onclick: function () { state.reportSort = key; render(); } }) : label);
-      };
+      var daily = rep.daily || [];
+      var span = days && daily.length ? shortDay(daily[0].day) + ' – ' + shortDay(daily[daily.length - 1].day) : 'All time';
       var exportBtn = h('button', { class: 'btn small', onclick: function () {
-        var a = h('a', { href: URL.createObjectURL(new Blob([reportCsv(rows)], { type: 'text/csv' })), download: 'worker-report-' + (days || 'all') + 'd.csv' });
+        var a = h('a', { href: URL.createObjectURL(new Blob([reportCsv(sorted())], { type: 'text/csv' })), download: 'worker-report-' + (days || 'all') + 'd.csv' });
         document.body.appendChild(a); a.click(); a.remove();
       } }, 'Export CSV');
 
+      // Time saved leads: it is the answer to "was this worth it". The rates
+      // beside it say what each unit of it cost.
+      var savedDelta = null;
+      if (priorMin != null && (savedMin >= 1 || priorMin >= 1)) {
+        var diff = savedMin - priorMin;
+        savedDelta = h('span', { class: 'rp-hero-delta' },
+          Math.abs(diff) < 1 ? h('span', { class: 'rp-delta', text: 'Same as' }) : h('span', { class: 'rp-delta ' + (diff > 0 ? 'good' : 'warm'), text: (diff > 0 ? '▲ ' : '▼ ') + savedShort(Math.abs(diff)).slice(1) }),
+          h('span', { class: 'faint', text: ' vs prior ' + plural(days, 'day', 'days') }));
+      }
+      var kv = function (k, v) { return h('div', { class: 'rp-kv' }, h('span', { text: k }), h('b', { text: v })); };
+      var hero = h('section', { class: 'sec rp-hero', 'aria-label': 'Estimated time saved' },
+        h('div', { class: 'rp-hero-main' },
+          h('div', { class: 'rp-eyebrow', text: 'Estimated time saved · ' + span }),
+          h('div', { class: 'rp-hero-row' }, h('span', { class: 'rp-hero-n', text: savedMin >= 1 ? savedShort(savedMin) : 'None yet' }), savedDelta),
+          h('p', { class: 'rp-hero-note', text: (savedMin >= 1 ? savedPlain(savedMin) + ', for ' + cents(t.costUSD) + '. ' : '') + savedHow }),
+          // What the window held, in a line: the counts the charts don't draw.
+          h('p', { class: 'rp-facts', text: [
+            plural(t.itemsDone, 'finished job', 'finished jobs'),
+            t.pullRequests ? plural(t.pullRequests, 'pull request', 'pull requests') : null,
+            plural(t.shifts, 'shift', 'shifts') + (t.quietShifts ? ', ' + t.quietShifts + ' of them quiet checks that found nothing to do (a success, not idle time)' : ''),
+            t.rejected ? plural(t.rejected, 'proposal', 'proposals') + ' you turned down' : null,
+            t.skippedShifts ? plural(t.skippedShifts, 'shift', 'shifts') + ' that never ran' : null].filter(Boolean).join(' · ') })),
+        h('div', { class: 'rp-hero-side' },
+          kv('Spend per hour saved', savedMin >= 1 ? cents(t.costUSD / (savedMin / 60)) : '—'),
+          t.pullRequests ? kv('Spend per pull request', cents(t.costUSD / t.pullRequests)) : null,
+          kv('Spend per finished job', t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—'),
+          kv('Spend per agent hour', t.workedMs ? cents(t.costUSD / (t.workedMs / 3600000)) : '—')));
+
+      var prevOf = function (key) { return prior ? prior[key] : undefined; };
+      // A worker's last two weeks of agent time, small, beside its numbers.
+      var trendDays = Math.min(14, daily.length);
+      var spark = function (x) {
+        var vals = (x.daily || []).slice(-trendDays).map(function (d) { return d.workedMs || 0; });
+        var top = Math.max.apply(null, vals.concat([1]));
+        return h('span', { class: 'rp-spark', role: 'img', 'aria-label': 'Agent time, last ' + plural(vals.length, 'day', 'days') + ': ' + workedTime(vals.reduce(function (a, b) { return a + b; }, 0)) },
+          vals.map(function (v, i) { return h('i', { class: (v ? '' : 'zero') + (i === vals.length - 1 ? ' now' : ''), style: 'height:' + (v ? Math.max(12, (v / top) * 100) : 0).toFixed(0) + '%' }); }));
+      };
+      var tbody = h('tbody'), headRow = h('tr');
+      var th = function (key, label, right) {
+        var on = (SORT[state.reportSort] ? state.reportSort : 'cost') === key;
+        return h('th', { class: right ? 'r' : null, 'aria-sort': on ? 'descending' : null },
+          key ? h('button', { 'aria-pressed': on ? 'true' : 'false', text: label + (on ? ' ↓' : ''), onclick: function () { state.reportSort = key; drawTable(); } }) : label);
+      };
+      // Sorting redraws the rows, not the page.
+      var drawTable = function () {
+        fill(headRow, [th(null, 'Worker'), trendDays > 1 ? th(null, 'Last ' + trendDays + ' days') : null, th('done', 'Jobs', true), th('success', 'Success', true), th('prs', 'PRs', true), th('shifts', 'Shifts', true), th('time', 'Agent time', true), th('tokens', 'Tokens', true), th('cost', 'Spend', true), th('perJob', 'Per job', true), th('perPr', 'Per PR', true), th(null, 'Last shift', true)]);
+        fill(tbody, sorted().map(function (x) {
+          var pj = perJob(x), sr = successRate(x);
+          var split = [x.quietShifts && x.quietShifts + ' quiet', x.workingShifts && x.workingShifts + ' spawned work', x.failedShifts && x.failedShifts + ' failed'].filter(Boolean).join(' · ');
+          return h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(x.workerId); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(x.workerId); } },
+            h('td', null, h('div', { class: 'who' }, avatar(x.workerId, x.name, 's'), h('div', { style: 'min-width:0' }, h('b', { text: x.name }),
+              h('span', { class: 'sub rp-sub' }, x.manager ? whoChip(x.manager) : null, h('span', { text: (x.manager ? ' · ' : '') + (x.enabled ? '' : 'Paused · ') + (split || 'No shifts') }))))),
+            trendDays > 1 ? h('td', null, spark(x)) : null,
+            h('td', { class: 'r', text: String(x.itemsDone) + (x.itemsFailed ? ' (' + x.itemsFailed + ' failed)' : '') }),
+            h('td', { class: 'r' + (sr == null ? ' muted' : sr < 0.8 ? ' rp-low' : ''), text: sr == null ? '—' : Math.round(sr * 100) + '%' }),
+            h('td', { class: 'r' + (x.pullRequests ? '' : ' muted'), text: x.pullRequests ? String(x.pullRequests) : '—' }),
+            h('td', { class: 'r', text: String(x.shifts) }),
+            h('td', { class: 'r', text: workedTime(x.workedMs) }),
+            h('td', { class: 'r', text: tokens(x.inputTokens + x.outputTokens) }),
+            h('td', { class: 'r', text: cents(x.costUSD) }),
+            h('td', { class: 'r' + (pj != null && pj > dear ? ' dear' : ''), title: pj != null && pj > dear ? 'More than twice the roster’s median cost per job' : null, text: pj == null ? '—' : cents(pj) }),
+            h('td', { class: 'r' + (x.pullRequests ? '' : ' muted'), text: x.pullRequests ? cents(x.costUSD / x.pullRequests) : '—' }),
+            h('td', { class: 'r muted', text: x.lastShiftAt ? ago(x.lastShiftAt) : '—' }));
+        }));
+      };
+      drawTable();
+      var tsr = successRate(t);
+
       return [head('Reports', sub, h('div', { class: 'page-actions' }, seg, exportBtn), 'Workspace'),
-        h('div', { class: 'lede' },
-          card('wc', 'Work completed', null, [
-            h('div', { class: 'big', text: plural(t.itemsDone, 'finished job', 'finished jobs') }),
-            h('p', { class: 'muted', style: 'font-size:13px', text: plural(t.shifts, 'shift', 'shifts') + ' run, ' + t.quietShifts + ' of them quiet checks that found nothing to do. Quiet is a success, not idle time.' }),
-            h('div', { class: 'econ' },
-              t.pullRequests ? econ('Pull requests opened', String(t.pullRequests)) : null,
-              econ('Agent time', workedTime(t.workedMs)),
-              econ('Recorded spend', cents(t.costUSD)),
-              econ('Tokens', tokens(t.inputTokens + t.outputTokens)),
-              t.rejected ? econ('Proposals you turned down', String(t.rejected)) : null,
-              t.skippedShifts ? econ('Shifts that never ran', String(t.skippedShifts)) : null)]),
-          card('ev', 'Estimated value', null, [
-            h('div', { class: 'big', text: savedMin >= 1 ? '≈' + workedTime(savedMin * 60000) + ' saved' : 'Nothing measured yet' }),
-            h('p', { class: 'muted', style: 'font-size:13px', text: savedHow }),
-            h('div', { class: 'econ' },
-              t.pullRequests ? econ('Spend per pull request', cents(t.costUSD / t.pullRequests)) : null,
-              econ('Spend per finished job', t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—'),
-              econ('Spend per agent hour', t.workedMs ? cents(t.costUSD / (t.workedMs / 3600000)) : '—'),
-              econ('Spend per hour saved', savedMin ? cents(t.costUSD / (savedMin / 60)) : '—'))])),
-        h('div', { class: 'charts' }, METRICS.map(function (m) { return dayChart(m, rep.daily || []); })),
+        hero,
+        h('div', { class: 'charts rp-charts' }, METRICS.map(function (m) { return dayChart(m, daily, prevOf(m.key)); })),
         h('section', { class: 'tcard', 'aria-label': 'By worker' },
           h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'By worker' }), h('span', { class: 'faint', text: 'Click a column to sort' })),
-          h('div', { class: 'tscroll' }, h('table', { class: 'data' },
-            h('thead', null, h('tr', null, th(null, 'Worker'), th('done', 'Jobs', true), th('prs', 'PRs', true), th('shifts', 'Shifts', true), th('time', 'Agent time', true), th('tokens', 'Tokens', true), th('cost', 'Spend', true), th('perJob', 'Per job', true), th('perPr', 'Per PR', true), th(null, 'Last shift', true))),
-            h('tbody', null, rows.map(function (x) {
-              var pj = perJob(x);
-              var split = [x.quietShifts && x.quietShifts + ' quiet', x.workingShifts && x.workingShifts + ' spawned work', x.failedShifts && x.failedShifts + ' failed'].filter(Boolean).join(' · ');
-              return h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(x.workerId); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(x.workerId); } },
-                h('td', null, h('div', { class: 'who' }, avatar(x.workerId, x.name, 's'), h('div', { style: 'min-width:0' }, h('b', { text: x.name }), h('span', { class: 'sub', text: (x.manager ? x.manager + ' · ' : '') + (x.enabled ? '' : 'Paused · ') + (split || 'No shifts') })))),
-                h('td', { class: 'r', text: String(x.itemsDone) + (x.itemsFailed ? ' (' + x.itemsFailed + ' failed)' : '') }),
-                h('td', { class: 'r' + (x.pullRequests ? '' : ' muted'), text: x.pullRequests ? String(x.pullRequests) : '—' }),
-                h('td', { class: 'r', text: String(x.shifts) }),
-                h('td', { class: 'r', text: workedTime(x.workedMs) }),
-                h('td', { class: 'r', text: tokens(x.inputTokens + x.outputTokens) }),
-                h('td', { class: 'r', text: cents(x.costUSD) }),
-                h('td', { class: 'r' + (pj != null && pj > dear ? ' dear' : ''), title: pj != null && pj > dear ? 'More than twice the roster’s median cost per job' : null, text: pj == null ? '—' : cents(pj) }),
-                h('td', { class: 'r' + (x.pullRequests ? '' : ' muted'), text: x.pullRequests ? cents(x.costUSD / x.pullRequests) : '—' }),
-                h('td', { class: 'r muted', text: x.lastShiftAt ? ago(x.lastShiftAt) : '—' }));
-            })),
+          h('div', { class: 'tscroll' }, h('table', { class: 'data rp-table' },
+            h('thead', null, headRow),
+            tbody,
             h('tfoot', null, h('tr', null,
-              h('td', { text: 'All workers' }), h('td', { class: 'r', text: String(t.itemsDone) }), h('td', { class: 'r', text: t.pullRequests ? String(t.pullRequests) : '—' }), h('td', { class: 'r', text: String(t.shifts) }),
+              h('td', { text: 'All workers' }), trendDays > 1 ? h('td') : null, h('td', { class: 'r', text: String(t.itemsDone) }), h('td', { class: 'r', text: tsr == null ? '—' : Math.round(tsr * 100) + '%' }), h('td', { class: 'r', text: t.pullRequests ? String(t.pullRequests) : '—' }), h('td', { class: 'r', text: String(t.shifts) }),
               h('td', { class: 'r', text: workedTime(t.workedMs) }), h('td', { class: 'r', text: tokens(t.inputTokens + t.outputTokens) }), h('td', { class: 'r', text: cents(t.costUSD) }),
               h('td', { class: 'r', text: t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—' }), h('td', { class: 'r', text: t.pullRequests ? cents(t.costUSD / t.pullRequests) : '—' }), h('td')))))),
-        h('p', { class: 'faint', text: 'Spend is each run’s model cost as its backend reports it; backends that don’t report a price count as $0, and planning and chat turns aren’t included. Only workers you can see are counted.' })];
+        h('p', { class: 'faint', text: 'Spend is each run’s model cost as its backend reports it; backends that don’t report a price count as $0, and planning and chat turns aren’t included. Only workers you can see are counted.' + (prior ? ' “vs prior” compares with the ' + plural(days, 'day', 'days') + ' before.' : '') })];
     });
   }
 
   var SLACK_METRICS = [
-    { key: 'messages', label: 'Messages', tint: '#5d72ff', fmt: String },
-    { key: 'started', label: 'Conversations', tint: '#059669', fmt: String },
-    { key: 'askers', label: 'People asking', tint: '#a855f7', fmt: String }
+    { key: 'messages', label: 'Messages', fmt: String },
+    { key: 'started', label: 'Conversations', fmt: String },
+    { key: 'askers', label: 'People asking', fmt: String }
   ];
 
   /// Who asks overgo what in Slack, for an org of any size: the totals and
@@ -13541,9 +14438,7 @@ export const CONSOLE_JS = String.raw`
   /// and paged on the server. An admin sees everyone; anyone else, themself.
   function viewSlackReport(days) {
     var admin = !!(state.me && state.me.admin);
-    var seg = h('div', { class: 'page-actions' }, reportSwitch(), h('div', { class: 'seg', role: 'group', 'aria-label': 'Window' }, [[7, '7 days'], [30, '30 days'], [0, 'All time']].map(function (o) {
-      return h('button', { 'aria-pressed': days === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportDays = o[0]; render(); } });
-    })));
+    var seg = h('div', { class: 'page-actions' }, reportSwitch(), reportRange(days));
     var sub = admin ? 'Who asks overgo what in Slack, and what came of it.' : 'What you have asked overgo in Slack.';
     return api('GET', '/api/slack/stats?days=' + days + '&limit=0').then(function (r) {
       if (r.ok === false) return [head('Reports', sub, seg, 'Workspace'), emptyState('No Slack report.', r.error)];
@@ -13784,7 +14679,7 @@ export const CONSOLE_JS = String.raw`
         took ? ['Took', took.replace(/^took /, '')] : null,
         ['Steps', String(r.steps)],
         ['Cost', r.costUSD ? money(r.costUSD) : '—'],
-        w.manager ? ['Manager', w.manager] : null
+        w.manager ? ['Manager', who(w.manager)] : null
       ].filter(Boolean);
       var longest = Math.max.apply(null, [1].concat(x.recent.map(function (y) { return y.minutes; })));
       var spark = x.recent.slice().reverse().map(function (y) {
@@ -13930,7 +14825,11 @@ export const CONSOLE_JS = String.raw`
   /// The words of an item to show and search: a page's visible text, else its body.
   function wordsOf(x) { var pg = pageOf(x); return pg ? pg.text : x.body || ''; }
   /// What to call an item: a kept page by its own title, not its file name.
-  function nameOf(x) { var pg = x.kind === 'file' ? pageOf(x) : null; return pg && pg.title ? pg.title : x.title; }
+  /// What to call an item: what it came to when the server could tell
+  /// ("Explained how to seed test data"), else its own title.
+  function nameOf(x) { return x.outcome || askedTitle(x); }
+  /// Its own title, as asked or kept: a kept page by its title, not its file name.
+  function askedTitle(x) { var pg = x.kind === 'file' ? pageOf(x) : null; return pg && pg.title ? pg.title : x.title; }
 
   // What kind of thing a Library item is, and where it came from, worked out
   // from the server's origin when it sends one and from older fields if not.
@@ -13949,14 +14848,75 @@ export const CONSOLE_JS = String.raw`
   function libSource(x) {
     var o = libOrigin(x);
     if (o.kind === 'task') return ['Team task', o.teamName + (o.taskTitle && o.taskTitle !== o.teamName && x.kind !== 'task' ? ' · ' + o.taskTitle : ''), x.kind === 'file' ? ((x.source && x.source.file) || x.title).split('/').pop() + (o.stage ? ' · stage ' + o.stage.index + ', ' + o.stage.title : '') : o.stage ? '› ' + o.stage.index + '. ' + o.stage.title : x.kind === 'task' ? (x.pack ? plural(x.pack.files.length, 'deliverable', 'deliverables') : '') : ''];
-    if (o.kind === 'errand') return ['Errand', (o.askedBy && o.askedBy !== (state.me && state.me.name) ? o.askedBy : 'You') + ' asked ' + o.workerName, o.via ? 'in ' + ({ console: 'the console', slack: 'Slack', mcp: 'Claude', app: 'the app' }[o.via] || o.via) : ''];
+    if (o.kind === 'errand') return ['Errand', whoOrYou(o.askedBy) + ' asked ' + o.workerName, o.via ? 'in ' + ({ console: 'the console', slack: 'Slack', mcp: 'Claude', app: 'the app' }[o.via] || o.via) : ''];
     if (o.kind === 'event') return ['Trigger', o.triggerName || 'An event', o.workerName ? 'for ' + o.workerName : ''];
     return ['Run', o.workerName + (o.flowName ? ' · ' + o.flowName : ''), o.how === 'trigger' && o.triggerName ? 'set off by “' + o.triggerName + '”' : RUN_HOW[o.how] || ''];
   }
 
-  /// The Library: finished work, newest first, each row saying what it is,
-  /// where it came from and who can see it. A row opens in place on what it
-  /// delivered; a team task shows its final pack, its working files a click on.
+  /// The Library's sidebar: what kind of work a row is, and the choices on
+  /// the card. Documents are a team task's files over again, so they're off
+  /// unless you tick them or search.
+  var LB_KINDS = [['ticket', 'Tickets'], ['task', 'Team tasks'], ['report', 'Reports'], ['document', 'Documents'], ['answer', 'Quick answers']];
+  var LB_RANGE = [['7', '7 days'], ['30', '30 days'], ['all', 'All time']];
+  var LB_SORT = [['new', 'Newest first'], ['old', 'Oldest first'], ['long', 'Took longest']];
+  var LB_RATE = [['useful', 'Rated useful'], ['notuseful', 'Rated not useful'], ['none', 'Not rated yet']];
+  var LB_VIS_RANK = { 'private': 0, team: 1, org: 2 };
+  /// A title with its bare links turned into what they point at: a ticket by
+  /// its key, a pull request by its number. A company's hostname says nothing.
+  function lbClean(t) {
+    return String(t || '').replace(/<?https?:\/\/[^\s>|]+(\|([^>]*))?>?/g, function (u, _, label) {
+      if (label) return label;
+      var k = u.match(ANY_KEY);
+      if (k) return k[0];
+      var pr = /\/pull\/(\d+)/.exec(u);
+      return pr ? 'PR #' + pr[1] : 'a link';
+    }).replace(/\s{2,}/g, ' ').trim();
+  }
+  /// Who or what asked for an item: a person, its schedule, or a trigger.
+  function lbAsker(x) {
+    var o = libOrigin(x);
+    if (o.kind === 'errand' && o.askedBy) return { text: who(o.askedBy), el: whoChip(o.askedBy, 'xs') };
+    var tag = function (ic, text) { return { text: text, el: h('span', { class: 'who-chip lb-by' }, icon(ic, 14), h('span', { text: text })) }; };
+    if (o.kind === 'event' || (o.kind === 'run' && o.how === 'trigger')) return o.triggerName ? tag('bolt', o.triggerName) : null;
+    if (o.kind === 'run' && o.how === 'schedule') return tag('clock', 'Schedule');
+    if (o.kind === 'run' && o.how === 'runNow') return tag('person', 'Run now');
+    return null;
+  }
+  /// One piece of work, worked out once: its kind for the sidebar, its key,
+  /// title, workers, who asked, how long it took, who can see it, its rating.
+  function lbUnit(g) {
+    var newest = g.items[0], ws = workSteps(g.items), steps = ws.steps;
+    var work = steps.filter(function (x) { return x.kind !== 'event' && !WRAP_UP.test(nameOf(x) || ''); });
+    var lead = g.items.length < 2 ? newest : g.key ? steps.filter(function (x) { var m = TICKET_KEY.exec(nameOf(x) || ''); return m && m[1] === g.key; })[0] || steps[0] : work[0] || steps[0];
+    var raw = g.items.length < 2 ? nameOf(newest) : g.title || nameOf(lead).replace(TICKET_KEY, '') || nameOf(lead);
+    var clean = lbClean(raw);
+    var key = g.key || null;
+    if (!key) g.items.some(function (x) { var m = lbClean(nameOf(x)).match(ANY_KEY); if (m) key = m[0]; return !!m; });
+    var title = (key ? clean.replace(TICKET_KEY, '') : clean) || clean || key || 'Untitled';
+    var main = work[0] || newest;
+    var kind = main.kind === 'document' || main.kind === 'file' ? 'document' : isQuick(g) || main.kind === 'answer' || main.answered ? 'answer' : key ? 'ticket' : main.kind === 'task' ? 'task' : 'report';
+    var workers = [], wkeys = [];
+    g.items.forEach(function (x) {
+      var o = libOrigin(x);
+      if (x.workerId && wkeys.indexOf('w:' + x.workerId) < 0) { wkeys.push('w:' + x.workerId); workers.push({ id: x.workerId, name: x.kind === 'task' || x.kind === 'file' || x.kind === 'document' ? o.teamName || x.workerName : x.workerName }); }
+      if (o.teamId && wkeys.indexOf('t:' + o.teamId) < 0) wkeys.push('t:' + o.teamId);
+    });
+    var asker = null;
+    steps.some(function (x) { asker = lbAsker(x); return !!asker; });
+    var ask = null;
+    steps.some(function (x) { var o = libOrigin(x); if (o.kind === 'errand' && o.question) ask = lbClean(o.question); return !!ask; });
+    var vis = 'private';
+    g.items.forEach(function (x) { var v = x.visibility || 'private'; if ((LB_VIS_RANK[v] || 0) > LB_VIS_RANK[vis]) vis = v; });
+    var rated = g.items.filter(function (x) { return x.rating; })[0];
+    var tookMs = g.items.length > 1 ? ws.ended - ws.began : newest.minutes != null ? newest.minutes * 60000 : null;
+    return { id: newest.id, g: g, items: g.items, steps: steps, newest: newest, at: newest.at, began: ws.began, ended: ws.ended, kind: kind, key: key, title: title, ask: ask && ask !== title && ask !== clean ? ask : null,
+      icon: LIB_KIND[main.kind] || ['doc', '', 'Item'], workers: workers, wkeys: wkeys, asker: asker, vis: vis, rated: rated ? rated.rating : null, rate: rated ? rated.rating.useful ? 'useful' : 'notuseful' : 'none', took: tookMs };
+  }
+
+  /// The Library: finished work as pieces of work, a ticket's updates and
+  /// wrap-ups in one row, by day, newest first; a day's quick answers fold
+  /// into one row. The sidebar narrows it, with counts; a row opens in place
+  /// on what it delivered, a piece of work on its steps.
   function viewLibrary() {
     // The newest LIB_MAX come down at once and are filtered here. Past that,
     // a search asks the server, which looks through everything.
@@ -13964,25 +14924,49 @@ export const CONSOLE_JS = String.raw`
     return Promise.all([api('GET', '/api/library?documents=1&limit=' + LIB_MAX), api('GET', '/api/workers'), api('GET', '/api/teams').catch(function () { return []; })]).then(function (r) {
       var newest = Array.isArray(r[0]) ? r[0] : r[0].items || [], workers = r[1], teams = Array.isArray(r[2]) ? r[2] : [];
       var all = newest, more = newest.length >= LIB_MAX, asked = '', askTimer = null;
-      var tab = state.libTab || 'all';
       var opened = {};
       var showing = LIB_PAGE;
-      var from = h('select', { 'aria-label': 'From' }, h('option', { value: '', text: 'Every worker and team' }),
-        workers.map(function (w) { return h('option', { value: 'w:' + w.id, text: w.name }); }),
-        teams.map(function (t) { return h('option', { value: 't:' + t.id, text: t.name + ' (team)' }); }));
-      var seen = h('select', { 'aria-label': 'Who can see' }, h('option', { value: '', text: 'Anyone who can see it' }),
-        Object.keys(LIB_VIS).map(function (k) { return h('option', { value: k, text: LIB_VIS[k][0] }); }));
-      var q = h('input', { type: 'search', placeholder: 'Search everything delivered', 'aria-label': 'Search the Library' });
+      var shownUnits = [];
+      // Choices live in state, so coming back to the Library finds them as left.
+      var lb = state.lib = state.lib || { range: '7', sort: 'new', kinds: null, workers: [], vis: [], rate: [], q: '' };
+      var q = h('input', { type: 'search', placeholder: 'Search everything delivered', 'aria-label': 'Search the Library', value: lb.q || '' });
+      var facets = h('aside', { class: 'lb-facets', 'aria-label': 'Filters' });
       var body = h('div', { class: 'librows' });
       var foot = h('div', { class: 'tfoot' });
-      // Documents are the task's files over again, so Everything lists them only
-      // when you're looking for something. A quick reply isn't delivered work,
-      // and a team learning its job isn't anything anyone asked for.
-      var TABS = [['all', 'Everything', function (x) { return x.kind !== 'document' || searchWords().length > 0; }], ['task', 'Team tasks', function (x) { return x.kind === 'task' && !x.answered && !x.learning; }],
-        ['document', 'Documents', function (x) { return x.kind === 'document' || x.kind === 'file'; }], ['report', 'Reports', function (x) { return x.kind === 'work' || x.kind === 'event'; }],
-        ['answer', 'Answers', function (x) { return x.kind === 'answer' || !!x.answered; }]];
-      var tabsEl = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' });
+      var count = h('span', { class: 'lb-count' });
+      var cols = h('div', { class: 'lb-cols', 'aria-hidden': 'true' });
+      var card = h('section', { class: 'tcard lb-card', 'aria-label': 'Library' });
       var searchWords = function () { return q.value.trim().toLowerCase().split(/\s+/).filter(function (w) { return w.length > 1; }); };
+      var nameFor = {};
+      workers.forEach(function (w) { nameFor['w:' + w.id] = w.name; });
+      teams.forEach(function (t) { nameFor['t:' + t.id] = t.name + ' (team)'; });
+      // Grouping is the costly part; it's redone only when the items change.
+      var unitsOf = null, units = [];
+      var hay = {};
+      var hayOf = function (x) { return hay[x.id] || (hay[x.id] = (nameOf(x) + ' ' + x.title + ' ' + x.workerName + ' ' + wordsOf(x) + ' ' + libSource(x).join(' ')).toLowerCase()); };
+      var kindsNow = function (words) { return lb.kinds || ['ticket', 'task', 'report', 'answer'].concat(words.length ? ['document'] : []); };
+      var pass = function (u, skip, words) {
+        if (skip !== 'kind' && kindsNow(words).indexOf(u.kind) < 0) return false;
+        if (skip !== 'worker' && lb.workers.length && !u.wkeys.some(function (k) { return lb.workers.indexOf(k) >= 0; })) return false;
+        if (skip !== 'vis' && lb.vis.length && lb.vis.indexOf(u.vis) < 0) return false;
+        if (skip !== 'rate' && lb.rate.length && lb.rate.indexOf(u.rate) < 0) return false;
+        return true;
+      };
+      var toggle = function (list, v) { var i = list.indexOf(v); if (i >= 0) list.splice(i, 1); else list.push(v); };
+      // Each choice redraws the sidebar and the card, never the page; the box
+      // just ticked keeps the focus.
+      var refilter = function (focusKey) {
+        showing = LIB_PAGE;
+        draw();
+        if (focusKey) { var el = facets.querySelector('[data-f="' + focusKey + '"]'); if (el) el.focus(); }
+      };
+      var facetGroup = function (title, entries) {
+        if (!entries.length) return null;
+        return h('div', { class: 'lb-fgroup', role: 'group', 'aria-label': title }, h('h3', { text: title }), entries.map(function (e) {
+          var box = h('input', { type: 'checkbox', checked: e.on, 'data-f': e.f, onchange: function () { e.flip(); refilter(e.f); } });
+          return h('label', { class: 'lb-facet' + (e.n ? '' : ' zero') }, box, h('span', { text: e.label }), h('span', { class: 'n', text: String(e.n) }));
+        }));
+      };
       var draw = function () {
         var words = searchWords();
         if (more) {
@@ -13996,54 +14980,142 @@ export const CONSOLE_JS = String.raw`
             }, 300);
           }
         }
-        var fit = TABS.filter(function (t) { return t[0] === tab; })[0][2];
-        var match = function (x) {
-          var o = libOrigin(x);
-          if (from.value) {
-            var id = from.value.slice(2);
-            if (from.value[0] === 'w' && x.workerId !== id) return false;
-            if (from.value[0] === 't' && o.teamId !== id) return false;
-          }
-          if (seen.value && (x.visibility || 'private') !== seen.value) return false;
-          return words.every(function (w) { return (nameOf(x) + ' ' + x.title + ' ' + x.workerName + ' ' + wordsOf(x) + ' ' + libSource(x).join(' ')).toLowerCase().indexOf(w) >= 0; });
-        };
-        var pool = all.filter(match);
-        tabsEl.replaceChildren.apply(tabsEl, TABS.map(function (t) {
-          return h('button', { 'aria-pressed': tab === t[0] ? 'true' : 'false', onclick: function () { tab = t[0]; state.libTab = tab; showing = LIB_PAGE; draw(); } }, t[1], h('span', { class: 'c', text: String(pool.filter(t[2]).length) }));
-        }));
-        var shown = pool.filter(fit);
-        var page = shown.slice(0, showing);
-        body.replaceChildren.apply(body, shown.length ? page.map(libRow).concat(shown.length > page.length ? [h('div', { class: 'libmore' }, h('button', { class: 'btn small', text: 'Show ' + Math.min(LIB_PAGE, shown.length - page.length) + ' more', onclick: function () { showing += LIB_PAGE; draw(); } }))] : []) : [h('div', { class: 'empty' }, h('div', { class: 'quote', text: all.length ? 'Nothing matches.' : 'Nothing delivered yet.' }),
-          h('p', { text: all.length ? 'Try other words, another tab, or every worker.' : 'What workers and teams finish lands here, with where it came from and who can see it.' }))]);
-        foot.replaceChildren(h('span', { text: 'Showing ' + page.length + ' of ' + shown.length + (more && !words.length ? ' · the newest ' + LIB_MAX + '; search to find older work' : '') }), h('span', { text: 'A team task’s working files stay in its folder.' }));
+        if (unitsOf !== all) {
+          unitsOf = all;
+          units = workGroups(all.slice().sort(function (a, b) { return b.at - a.at; })).map(lbUnit);
+        }
+        var since = lb.range === 'all' ? 0 : Date.now() - Number(lb.range) * 86400000;
+        var base = units.filter(function (u) {
+          return u.at >= since && (!words.length || u.items.some(function (x) { return words.every(function (w) { return hayOf(x).indexOf(w) >= 0; }); }));
+        });
+        var countBy = function (skip, of) { var n = {}; base.forEach(function (u) { if (pass(u, skip, words)) [].concat(of(u)).forEach(function (k) { n[k] = (n[k] || 0) + 1; }); }); return n; };
+        var nk = countBy('kind', function (u) { return u.kind; }), nw = countBy('worker', function (u) { return u.wkeys; }), nv = countBy('vis', function (u) { return u.vis; }), nr = countBy('rate', function (u) { return u.rate; });
+        var kinds = kindsNow(words);
+        var wkeys = Object.keys(nw).concat(lb.workers.filter(function (k) { return !nw[k]; })).filter(function (k) { return nameFor[k]; })
+          .sort(function (a, b) { return (nw[b] || 0) - (nw[a] || 0) || nameFor[a].localeCompare(nameFor[b]); });
+        var anyRated = units.some(function (u) { return u.rated; });
+        var picked = lb.kinds || lb.workers.length || lb.vis.length || lb.rate.length;
+        fill(facets, [
+          picked ? h('button', { type: 'button', class: 'linkish lb-clear', text: 'Clear filters', onclick: function () { lb.kinds = null; lb.workers = []; lb.vis = []; lb.rate = []; refilter(); } }) : null,
+          facetGroup('Kind', LB_KINDS.map(function (k) {
+            return { f: 'k:' + k[0], label: k[1], n: nk[k[0]] || 0, on: kinds.indexOf(k[0]) >= 0, flip: function () { lb.kinds = kindsNow(searchWords()).slice(); toggle(lb.kinds, k[0]); } };
+          })),
+          facetGroup('Worker', wkeys.map(function (k) {
+            return { f: k, label: nameFor[k], n: nw[k] || 0, on: lb.workers.indexOf(k) >= 0, flip: function () { toggle(lb.workers, k); } };
+          })),
+          facetGroup('Shared with', ['org', 'team', 'private'].map(function (v) {
+            return { f: 'v:' + v, label: LIB_VIS[v][0], n: nv[v] || 0, on: lb.vis.indexOf(v) >= 0, flip: function () { toggle(lb.vis, v); } };
+          })),
+          anyRated ? facetGroup('Rating', LB_RATE.map(function (v) {
+            return { f: 'r:' + v[0], label: v[1], n: nr[v[0]] || 0, on: lb.rate.indexOf(v[0]) >= 0, flip: function () { toggle(lb.rate, v[0]); } };
+          })) : null]);
+        var list = base.filter(function (u) { return pass(u, null, words); });
+        list.sort(lb.sort === 'old' ? function (a, b) { return a.at - b.at; } : lb.sort === 'long' ? function (a, b) { return (b.took || 0) - (a.took || 0) || b.at - a.at; } : function (a, b) { return b.at - a.at; });
+        shownUnits = list;
+        // The Rated column only when something in view has been rated.
+        var showRated = list.some(function (u) { return u.rated; });
+        card.classList.toggle('rated', showRated);
+        fill(cols, [h('span', { text: 'Work' }), h('span', { text: 'Ticket' }), h('span', { text: 'Worker' }), h('span', { text: 'Asked by' }), h('span', { class: 'r', text: 'When' }), showRated ? h('span', { class: 'r', text: 'Rated' }) : null]);
+        var quickOff = kinds.indexOf('answer') < 0 && nk.answer;
+        count.textContent = plural(list.length, 'piece of work', 'pieces of work') + (quickOff ? ' · quick answers hidden' : '');
+        var rows = [], budget = showing, placed = 0;
+        var put = function (u) { if (budget <= 0) return null; budget--; placed++; return lbRow(u, words, showRated); };
+        if (lb.sort === 'long') rows = list.map(put).filter(Boolean);
+        else {
+          var days = [];
+          list.forEach(function (u) {
+            var label = dayLabel(u.at), d = days[days.length - 1];
+            if (!d || d.label !== label) days.push(d = { label: label, work: [], quick: [] });
+            (isQuick(u.g) ? d.quick : d.work).push(u);
+          });
+          days.forEach(function (d) {
+            // One quick answer is just a row; two or more fold into one.
+            if (d.quick.length === 1) { d.work.push(d.quick[0]); d.quick = []; d.work.sort(lb.sort === 'old' ? function (a, b) { return a.at - b.at; } : function (a, b) { return b.at - a.at; }); }
+            var here = d.work.map(put).filter(Boolean);
+            if (d.quick.length && budget > 0) { budget--; placed += d.quick.length; here.push(h('div', { class: 'lb-quick' }, quickAnswersRow('lib ' + d.label, d.quick.map(function (u) { return u.g; })))); }
+            if (here.length) rows.push(h('div', { class: 'ib-day lb-day', text: d.label + ' · ' + (d.work.length ? plural(d.work.length, 'piece of work', 'pieces of work') : '') + (d.work.length && d.quick.length ? ', ' : '') + (d.quick.length ? plural(d.quick.length, 'quick answer', 'quick answers') : '') }), here);
+          });
+        }
+        var left = list.length - placed;
+        if (!list.length) rows = [h('div', { class: 'empty' }, h('div', { class: 'quote', text: all.length ? 'Nothing matches.' : 'Nothing delivered yet.' }),
+          h('p', { text: all.length ? 'Try other words, untick a filter, or look further back.' : 'What workers and teams finish lands here, with where it came from and who can see it.' }),
+          all.length && lb.range !== 'all' ? h('div', { style: 'margin-top:12px' }, h('button', { class: 'btn small', text: 'Look at all time', onclick: function () { lb.range = 'all'; fill(rangeSeg, rangeButtons()); refilter(); } })) : null)];
+        else if (left > 0) rows.push(h('div', { class: 'libmore' }, h('button', { class: 'btn small', text: 'Show ' + Math.min(LIB_PAGE, left) + ' more', onclick: function () { showing += LIB_PAGE; draw(); } })));
+        fill(body, rows);
+        fill(foot, [h('span', { text: 'Showing ' + Math.min(placed, list.length) + ' of ' + list.length + (more && !words.length ? ' · the newest ' + LIB_MAX + ' items; search to find older work' : '') }), h('span', { text: 'A team task’s working files stay in its folder.' })]);
       };
-      var libRow = function (x) {
-        var k = LIB_KIND[x.kind] || ['doc', '', 'Item'];
-        var src = libSource(x);
-        var vis = LIB_VIS[x.visibility || 'private'];
-        var words = searchWords();
-        var name = nameOf(x);
-        var inTitle = words.some(function (w) { return name.toLowerCase().indexOf(w) >= 0; });
-        var snip = words.length ? snippetOf(wordsOf(x), words) : null;
-        var where = !words.length ? null : snip ? 'In what it delivered' : inTitle ? null : 'In where it came from';
-        var detail = h('div', { class: 'libopen', hidden: !opened[x.id] });
-        var row = h('button', { class: 'librow', 'aria-expanded': opened[x.id] ? 'true' : 'false', onclick: function () {
-          opened[x.id] = !opened[x.id];
-          detail.hidden = !opened[x.id];
-          row.setAttribute('aria-expanded', opened[x.id] ? 'true' : 'false');
-          if (opened[x.id] && !detail.firstChild) detail.appendChild(libDetail(x));
+      /// A piece of work as one row: what it was and what came of it, its
+      /// ticket, who did it, who asked, and when. It opens in place.
+      var lbRow = function (u, words, showRated) {
+        var x = u.newest, k = u.icon;
+        var detail = h('div', { class: 'libopen', hidden: !opened[u.id] });
+        var fillDetail = function () { if (!detail.firstChild) detail.appendChild(u.items.length > 1 ? lbSteps(u) : libDetail(x)); };
+        var hit = words.length ? u.items.filter(function (y) { return snippetOf(wordsOf(y), words); })[0] : null;
+        var snip = hit ? snippetOf(wordsOf(hit), words) : null;
+        // What came of it, from what the items carry; nothing made up.
+        var out = [];
+        if (u.items.some(function (y) { return y.status === 'failed'; })) out.push(h('span', { class: 'tag bad', text: 'Failed' }));
+        if (u.items.some(function (y) { return y.status === 'held'; })) out.push(h('span', { class: 'tag need', text: 'Waiting for you' }));
+        var prs = [];
+        u.items.forEach(function (y) { (y.links || []).forEach(function (l) { var m = /\/pull\/(\d+)/.exec(l); if (m && prs.indexOf(m[1]) < 0) prs.push(m[1]); }); });
+        prs.slice(0, 3).forEach(function (n) { out.push(h('span', { class: 'tag go', text: 'PR #' + n })); });
+        if (x.kind === 'task' && x.pack && x.pack.files.length) out.push(h('span', { class: 'tag', text: plural(x.pack.files.length, 'deliverable', 'deliverables') }));
+        var to = [];
+        u.items.forEach(function (y) { (y.deliveredTo || []).forEach(function (d) { if (to.indexOf(d) < 0) to.push(d); }); });
+        if (to.length) out.push(h('span', { class: 'tag', text: 'Delivered to ' + to[0] + (to.length > 1 ? ' +' + (to.length - 1) : '') }));
+        if (u.vis !== 'private') out.push(h('span', { class: 'badge ' + LIB_VIS[u.vis][1], title: x.visibleTo || '', text: LIB_VIS[u.vis][0] }));
+        var trail = null;
+        if (u.items.length > 1) {
+          var names = [];
+          u.steps.forEach(function (y) { var n = stepName(y), last = names[names.length - 1]; if (last && last.name === n) last.times++; else names.push({ name: n, times: 1 }); });
+          trail = h('span', { class: 'came-path lb-trail' }, names.map(function (n, i) { return h('span', { class: i === names.length - 1 ? 'came-last' : null, text: n.name + (n.times > 1 ? ' ×' + n.times : '') }); }));
+        } else if (!u.ask) {
+          // The worker has its own column, so a run says its playbook and how
+          // it started, a trigger just its name.
+          var src = libSource(x), o = libOrigin(x);
+          var rest = o.kind === 'run' ? [o.flowName, src[2]] : o.kind === 'event' ? [src[1]] : [src[1], src[2]];
+          trail = h('span', { class: 'lb-trail' }, h('span', { class: 'libtag ' + k[1], text: src[0] }), ' ', rest.filter(Boolean).join(' · '));
+        }
+        var w0 = u.workers[0];
+        var row = h('button', { type: 'button', class: 'lb-row', 'aria-expanded': opened[u.id] ? 'true' : 'false', onclick: function () {
+          opened[u.id] = !opened[u.id];
+          detail.hidden = !opened[u.id];
+          row.setAttribute('aria-expanded', opened[u.id] ? 'true' : 'false');
+          if (opened[u.id]) fillDetail();
         } },
-          h('span', { class: 'kpi-ic libkind ' + k[1], title: k[2], 'aria-label': k[2] }, icon(k[0], 17)),
-          h('span', { class: 'libmain' },
-            marked(name, words, h('span', { class: 'libtitle' })),
-            h('span', { class: 'libsrc' }, h('span', { class: 'libtag ' + k[1], text: src[0] }), marked(src[1], words, h('b')), src[2] ? marked('· ' + src[2], words, h('span')) : null),
-            snip ? h('span', { class: 'libsnip' }, h('span', { class: 'libwhere', text: where }), marked(snip, words, h('span'))) : where ? h('span', { class: 'libsnip' }, h('span', { class: 'libwhere', text: where })) : null),
-          h('span', { class: 'libfrom' }, avatar(x.workerId, x.workerName, 's'), h('span', { text: x.kind === 'task' || x.kind === 'file' || x.kind === 'document' ? (libOrigin(x).teamName || x.workerName) : x.workerName })),
-          h('span', { class: 'badge ' + vis[1], title: x.visibleTo || '', text: vis[0] }),
-          h('span', { class: 'faint libwhen', text: ago(x.at) }),
-          h('span', { class: 'librate' + (x.rating ? x.rating.useful ? ' yes' : ' no' : ''), text: x.status === 'failed' ? 'Failed' : x.status === 'held' ? 'Waiting for you' : x.rating ? (x.rating.useful ? 'Useful' : 'Not useful') : '' }));
-        if (opened[x.id]) detail.appendChild(libDetail(x));
+          h('span', { class: 'lb-work' },
+            h('span', { class: 'kpi-ic libkind ' + k[1], title: k[2], 'aria-label': k[2] }, icon(k[0], 15)),
+            h('span', { class: 'lb-main' },
+              marked(u.title, words, h('span', { class: 'lb-title' })),
+              u.ask ? marked('“' + u.ask + '”', words, h('span', { class: 'lb-ask' })) : null,
+              snip ? h('span', { class: 'libsnip' }, h('span', { class: 'libwhere', text: 'In what it delivered' }), marked(snip, words, h('span'))) : null,
+              out.length || trail || u.key ? h('span', { class: 'lb-out' + (out.length || trail ? '' : ' lb-mobonly') }, u.key ? h('span', { class: 'lb-kmob', text: u.key }) : null, out, trail) : null)),
+          h('span', { class: 'lb-key' + (u.key ? '' : ' none'), text: u.key || '—' }),
+          w0 ? h('span', { class: 'lb-who' }, avatar(w0.id, w0.name, 'xs'), h('span', { text: w0.name + (u.workers.length > 1 ? ' +' + (u.workers.length - 1) : ''), title: u.workers.map(function (w) { return w.name; }).join(', ') })) : h('span', { class: 'lb-who faint', text: '—' }),
+          h('span', { class: 'lb-who lb-asker' }, u.asker ? u.asker.el : h('span', { class: 'faint', text: '—' })),
+          h('span', { class: 'lb-when' }, ago(u.at), u.took != null ? h('span', { class: 'faint', text: 'took ' + took(u.took) }) : null),
+          showRated ? h('span', { class: 'librate lb-rate' + (u.rated ? u.rated.useful ? ' yes' : ' no' : ''), text: u.rated ? (u.rated.useful ? 'Useful' : 'Not useful') : '' }) : null);
+        if (opened[u.id]) fillDetail();
         return h('div', null, row, detail);
+      };
+      /// A piece of work opened: its steps in the order they started, each
+      /// opening on what it delivered, rating and all.
+      var lbSteps = function (u) {
+        return h('div', { class: 'lb-steps' }, u.steps.map(function (x) {
+          var d = h('div', { class: 'lb-stepopen', hidden: !opened[x.id] });
+          if (opened[x.id]) d.appendChild(libDetail(x));
+          var b = h('button', { type: 'button', class: 'lb-step', 'aria-expanded': opened[x.id] ? 'true' : 'false', onclick: function () {
+            opened[x.id] = !opened[x.id];
+            d.hidden = !opened[x.id];
+            b.setAttribute('aria-expanded', opened[x.id] ? 'true' : 'false');
+            if (opened[x.id] && !d.firstChild) d.appendChild(libDetail(x));
+          } },
+            h('span', { class: 'lb-stepat', text: clock(startOf(x)) }),
+            h('span', { class: 'libtag ' + (LIB_KIND[x.kind] || ['', ''])[1], text: stepName(x) }),
+            h('span', { class: 'lb-steptitle', text: lbClean(nameOf(x)) }),
+            h('span', { class: 'faint', text: x.kind !== 'event' && x.minutes != null ? 'took ' + took(x.minutes * 60000) : '' }));
+          return h('div', null, b, d);
+        }), h('p', { class: 'lb-span faint', text: 'Started ' + clock(u.began) + ' · finished ' + clock(u.ended) + ' · ' + took(u.ended - u.began) + ' start to finish' }));
       };
       var libDetail = function (x) {
         var o = libOrigin(x);
@@ -14134,17 +15206,32 @@ export const CONSOLE_JS = String.raw`
         parts.push(h('span', { class: 'faint', text: 'Who can see it: ' + (x.visibleTo || LIB_VIS[x.visibility || 'private'][0]) }), out);
         return h('div', { class: 'stack', style: 'gap:10px' }, parts);
       };
-      var refilter = function () { showing = LIB_PAGE; draw(); };
-      from.onchange = refilter; seen.onchange = refilter; q.oninput = refilter;
+      var rangeButtons = function () {
+        return LB_RANGE.map(function (o) {
+          return h('button', { type: 'button', 'aria-pressed': lb.range === o[0] ? 'true' : 'false', onclick: function () { lb.range = o[0]; pressSeg(this); refilter(); } }, o[1]);
+        });
+      };
+      var rangeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Range' }, rangeButtons());
+      var sortSel = h('select', { 'aria-label': 'Sort', onchange: function () { lb.sort = sortSel.value; refilter(); } },
+        LB_SORT.map(function (o) { return h('option', { value: o[0], text: o[1], selected: lb.sort === o[0] }); }));
+      var typing = null;
+      q.oninput = function () { lb.q = q.value; clearTimeout(typing); typing = setTimeout(function () { refilter(); }, 120); };
+      // What's in view, a row per piece of work, for a spreadsheet.
+      var exportCsv = function () {
+        var rows = [['When', 'Work', 'Ticket', 'Kind', 'Worker', 'Asked by', 'Took (min)', 'Shared with', 'Rated', 'Updates']].concat(shownUnits.map(function (u) {
+          return [new Date(u.at).toISOString(), u.title, u.key || '', (LB_KINDS.filter(function (k) { return k[0] === u.kind; })[0] || ['', ''])[1], u.workers.map(function (w) { return w.name; }).join('; '),
+            u.asker ? u.asker.text : '', u.took != null ? Math.round(u.took / 60000) : '', LIB_VIS[u.vis][0], u.rated ? (u.rated.useful ? 'Useful' : 'Not useful') : '', u.items.length];
+        })).map(function (row) { return row.map(csvCell).join(','); }).join('\n');
+        var a = h('a', { href: URL.createObjectURL(new Blob([rows], { type: 'text/csv' })), download: 'library-' + (lb.range === 'all' ? 'all' : lb.range + 'd') + '.csv' });
+        document.body.appendChild(a); a.click(); a.remove();
+      };
       draw();
+      append(card, [h('div', { class: 'lb-head' }, rangeSeg, count, sortSel), cols, body, foot]);
       return [h('header', { class: 'page-head' },
           h('div', null, h('div', { class: 'eyebrow', text: 'Workspace' }), h('h1', { class: 'page-title', text: 'Library' }),
-            h('p', { class: 'page-sub', text: 'The finished work your workers and teams delivered, that you’re allowed to see.' })),
-          h('label', { class: 'search lib-search' }, icon('search', 15), q)),
-        h('section', { class: 'tcard', 'aria-label': 'Library' },
-          h('div', { class: 'tbar' }, tabsEl, h('div', { class: 'tools' }, from, seen)),
-          h('div', { class: 'libhead', 'aria-hidden': 'true' }, h('span'), h('span', { text: 'What, and where it came from' }), h('span', { text: 'From' }), h('span', { text: 'Who can see' }), h('span', { class: 'r', text: 'When' }), h('span', { class: 'r', text: 'Rated' })),
-          body, foot)];
+            h('p', { class: 'page-sub', text: 'Everything your workers and teams delivered that you’re allowed to see, grouped by the piece of work it belongs to.' })),
+          h('div', { class: 'lb-tools' }, h('label', { class: 'search lib-search' }, icon('search', 15), q), h('button', { type: 'button', class: 'btn', text: 'Export CSV', onclick: exportCsv }))),
+        h('div', { class: 'lb' }, facets, card)];
     });
   }
 
@@ -14423,15 +15510,15 @@ export const CONSOLE_JS = String.raw`
     // Who test-mode answers go to, in a few words.
     var rehearseWho = function () {
       if (!w.managerOnSlack) return 'no one yet (' + w.name + '’s manager isn’t on Slack)';
-      return state.me && state.me.slackUserId && state.me.slackUserId === w.managerSlackUserId ? 'you' : w.manager;
+      return state.me && state.me.slackUserId && state.me.slackUserId === w.managerSlackUserId ? 'you' : who(w.manager);
     };
     var rehearseTo = function () {
       var settings = h('button', { type: 'button', class: 'linkish', text: w.name + '’s Settings', onclick: function () { go('worker', { workerId: w.id, workerTab: 'settings' }); } });
       if (!w.managerOnSlack) return h('p', { class: 'msg need', style: 'margin:4px 0 0 26px' },
-        w.manager ? w.manager + ' isn’t linked to Slack, so test-mode answers have nowhere to go and none will post. Add their Slack member ID in ' : w.name + ' has no manager, so test-mode answers have nowhere to go and none will post. Set one in ', settings, '.');
+        w.manager ? who(w.manager) + ' isn’t linked to Slack, so test-mode answers have nowhere to go and none will post. Add their Slack member ID in ' : w.name + ' has no manager, so test-mode answers have nowhere to go and none will post. Set one in ', settings, '.');
       var me = state.me && state.me.slackUserId && state.me.slackUserId === w.managerSlackUserId;
       return h('p', { class: 'faint', style: 'margin:4px 0 0 26px;font-size:13px' },
-        'Answers go to ', h('b', { text: me ? 'you' : w.manager }), w.managerInherited ? ' (' + w.name + '’s manager, through its boss)' : ' (' + w.name + '’s manager)',
+        'Answers go to ', h('b', { text: me ? 'you' : who(w.manager) }), w.managerInherited ? ' (' + w.name + '’s manager, through its boss)' : ' (' + w.name + '’s manager)',
         ' by Slack DM. Only they can post, set aside or change them. To change who, go to ', settings, '.');
     };
     var rehearse = h('input', { type: 'checkbox' });
@@ -14706,7 +15793,7 @@ export const CONSOLE_JS = String.raw`
     SETUP.forEach(function (g) { g.pages.forEach(function (p) { if (p[0] === tab) { page = p; group = g.group; } }); });
     if (!page) { tab = 'ready'; page = SETUP[0].pages[0]; }
     var pick = function (id) { state.setupTab = id; state.tsEdit = null; render(); };
-    var buttons = {};
+    var buttons = setupButtons = {};
     var rail = h('nav', { class: 'nav setup-rail', 'aria-label': 'Setup pages' }, SETUP.map(function (g) {
       return [g.group ? h('div', { class: 'group', text: g.group }) : null].concat(g.pages.map(function (p) {
         return (buttons[p[0]] = h('button', { 'aria-current': p[0] === tab ? 'page' : null, onclick: function () { pick(p[0]); } }, p[1]));
@@ -14718,11 +15805,14 @@ export const CONSOLE_JS = String.raw`
     }));
     // What still needs doing, as a light beside its page.
     Promise.all([api('GET', '/api/admin/health').catch(function () { return { ok: false }; }), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
-      var mark = function (id, cls, why) { var b = buttons[id]; if (b && !b.querySelector('.light')) b.appendChild(h('span', { class: 'light ' + cls, title: why, 'aria-label': why })); };
+      var mark = function (id, cls, why) { var b = buttons[id]; if (b && !b.querySelector('.light, .rd-navm')) b.appendChild(h('span', { class: 'light ' + cls, title: why, 'aria-label': why })); };
       var items = r[0].ok === false ? [] : r[0].items || [];
       var sso = items.filter(function (i) { return i.name === 'Company sign-in'; })[0];
       var missing = r[1].ok === false ? [] : r[1].missing || [];
-      if (missing.length) { mark('tools', 'bad', plural(missing.length, 'tool missing', 'tools missing')); mark('ready', 'need', 'Something needs setting up'); }
+      var installed = r[1].ok === false || !r[1].tools ? 0 : r[1].tools.length;
+      // Tools: how many, or how many are missing, from the list already here.
+      if (missing.length) { setupNavNote('tools', missing.length + ' missing', 'bad'); mark('ready', 'need', 'Something needs setting up'); }
+      else if (installed) setupNavNote('tools', '✓ ' + installed);
       if (items.some(function (i) { return !i.ok && i.name !== 'Company sign-in'; })) mark('ready', 'need', 'Something needs setting up');
       if (sso && !sso.ok) mark('signin', '', 'Off');
     });
@@ -16070,63 +17160,210 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'row', style: 'gap:10px' }, save), out);
   }
 
-  function readiness(rechecked) {
+  /// A quiet note beside a Setup page in the left nav: a count, or what's
+  /// wrong. Pages fill it from data they already loaded.
+  /// Set Setup's nav buttons by page, so a page can mark them before they're on screen.
+  var setupButtons = {};
+  function setupNavNote(id, text, cls) {
+    var b = setupButtons[id];
+    if (!b) return;
+    // A note says what the light would: one or the other.
+    var light = b.querySelector('.light');
+    if (light && text) light.remove();
+    var m = b.querySelector('.rd-navm');
+    if (!text) { if (m) m.remove(); return; }
+    if (!m) b.appendChild(m = h('span', { class: 'rd-navm' }));
+    m.className = 'rd-navm' + (cls ? ' ' + cls : '');
+    m.textContent = text;
+  }
+
+  /// How many of how many, as a ring.
+  function rdRing(done, total) {
+    var C = 2 * Math.PI * 34;
+    var svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 84 84'); svg.setAttribute('width', '84'); svg.setAttribute('height', '84');
+    svg.setAttribute('class', 'rd-ring' + (done === total ? ' all' : ''));
+    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', done + ' of ' + total + ' required items ready');
+    var circle = function (cls, dash) {
+      var c = document.createElementNS(SVG, 'circle');
+      c.setAttribute('cx', '42'); c.setAttribute('cy', '42'); c.setAttribute('r', '34'); c.setAttribute('class', cls);
+      if (dash != null) { c.setAttribute('stroke-dasharray', dash.toFixed(1) + ' ' + C.toFixed(1)); c.setAttribute('transform', 'rotate(-90 42 42)'); }
+      return c;
+    };
+    svg.appendChild(circle('track'));
+    if (done) svg.appendChild(circle('fill', total ? (done / total) * C : 0));
+    var t = document.createElementNS(SVG, 'text');
+    t.setAttribute('x', '42'); t.setAttribute('y', '49'); t.setAttribute('text-anchor', 'middle');
+    t.textContent = done + '/' + total;
+    svg.appendChild(t);
+    return svg;
+  }
+
+  /// Readiness: what still needs someone first, then what's ready, small;
+  /// the disk and anything kept for unpushed work; and, on the right, this
+  /// server and the latest changes to it.
+  function readiness() {
+    return readyCard(false).then(function (cardNode) {
+      return [h('div', { class: 'rd-layout' },
+        h('div', { class: 'rd-main' }, cardNode, storagePanel(), metricsPanel()),
+        h('aside', { class: 'rd-rail', 'aria-label': 'This server' }, serverCard(), recentChanges()))];
+    });
+  }
+
+  function readyCard(rechecked) {
     return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/tools'), api('GET', '/api/projects'), api('GET', '/api/admin/people'), api('GET', '/api/admin/requests'), api('GET', '/api/admin/org-setup')]).then(function (r) {
       var hl = r[0], tl = r[1], places = r[2] || [], ppl = r[3], req = r[4];
       var os = r[5] && r[5].ok !== false ? r[5].org : null;
-      var orgBox = h('div');
+      var orgBox = h('div', { class: 'rd-orgbox' });
       if (os && !os.exists) orgBox.appendChild(orgSetupForm(os));
-      if (hl.ok === false) return [msg(hl)];
+      if (hl.ok === false) return msg(hl);
       var item = function (name) { return hl.items.filter(function (i) { return i.name === name; })[0]; };
       var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in');
       var missing = tl.ok === false ? [] : tl.missing;
+      var toolCount = tl.ok === false || !tl.tools ? null : tl.tools.length;
       var people = ppl.ok === false ? [] : ppl.people;
       var asking = req.ok === false ? 0 : req.requests.length;
+      var spaces = places.filter(function (p) { return p.kind === 'workspace'; }).length;
+      var repos = places.length - spaces;
       var orgOk = !!(os && os.exists && os.name && !os.slackMismatch && !(os.slackConnectedTo && !os.slackTeamId));
-      var orgDetail = !os ? 'Checking…'
-        : !os.exists ? 'Not set yet. Until it is, only admins can hire, and Slack doesn’t know who the admins are.'
-        : os.slackMismatch ? 'Slack is connected to a different workspace than this org is pinned to, so Slack is refused.'
-        : [os.name || 'No name', os.timezone || 'the server’s time zone', os.slackTeamId ? 'Slack workspace pinned' : os.slackConnectedTo ? 'Slack workspace not pinned yet' : null].filter(Boolean).join(' · ');
+      var unpinned = !!(os && os.exists && os.slackConnectedTo && !os.slackTeamId);
+      var toggleOrg = function () {
+        if (orgBox.firstChild) { orgBox.textContent = ''; return; }
+        orgBox.appendChild(orgSetupForm(os)); var first = orgBox.querySelector('input'); if (first) first.focus();
+      };
+      var trim = function (s) { return String(s || '').replace(/\.$/, ''); };
+      // Each check: a short line when ready, the whole story when not, and
+      // the one thing to do about it.
       var checks = [
-        { ok: orgOk, title: 'Who the org is', detail: orgDetail, optional: false, bad: !!(os && os.slackMismatch),
-          action: os ? [os.exists ? (orgOk ? 'Change' : 'Fix it') : 'Set it up', function () {
-            if (orgBox.firstChild) { orgBox.textContent = ''; return; }
-            orgBox.appendChild(orgSetupForm(os)); var first = orgBox.querySelector('input'); if (first) first.focus();
-          }] : null },
-        { ok: !!(model && model.ok), title: 'A model to think with', detail: model ? model.detail : 'Checking…', optional: false },
-        { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? slack.detail : 'Not connected.', optional: false,
-          action: slack && slack.ok ? null : ['How to connect it', function () { go('connect', { connectTab: 'slack' }); }] },
-        { ok: places.length > 0, title: 'A place to work', detail: places.length ? places.map(function (p) { return p.name; }).join(', ') : 'No repo or folder yet. Connect a repo on the Repos tab, or an operator adds a folder with: overcli projects add <folder>', optional: false,
-          action: places.length ? null : ['Connect a repo', function () { state.setupTab = 'repos'; render(); }] },
-        { ok: !missing.length, title: 'The tools workers need', detail: missing.length ? missing.map(function (m) { return m.name + ' is missing — ' + m.workers.join(', ') + (m.workers.length === 1 ? ' needs' : ' need') + ' it'; }).join('; ') : 'Every tool a worker lists is installed.', optional: false,
-          action: missing.length ? ['Install ' + missing[0].name, function () { state.setupTab = 'tools'; render(); }] : null, bad: missing.length > 0 },
-        { ok: people.length > 1 && !asking, title: 'People', detail: plural(people.length, 'person', 'people') + ' in' + (asking ? ', ' + asking + ' asking to join' : ''), optional: false,
-          action: asking ? ['Let them in', function () { go('people'); }] : people.length < 2 ? ['Invite people', function () { go('people'); }] : null },
-        { ok: !!(sso && sso.ok), title: 'Company sign-in', detail: sso ? sso.detail : 'Optional. People sign in through Slack links until you set it up.', optional: true,
-          action: sso && sso.ok ? null : ['Set it up', function () { state.setupTab = 'signin'; render(); }] }
+        { ok: orgOk, title: 'Who the org is', bad: !!(os && os.slackMismatch),
+          detail: os ? [os.name, os.timezone || 'Server time zone', os.slackTeamId ? 'Slack pinned' : null].filter(Boolean).join(' · ') : '',
+          problem: !os ? 'Checking…'
+            : !os.exists ? 'Not set yet. Until it is, only admins can hire, and Slack doesn’t know who the admins are.'
+            : os.slackMismatch ? 'Slack is connected to a different workspace than this org is pinned to, so Slack is refused.'
+            : unpinned ? 'The Slack workspace isn’t pinned, so the bot would answer in any workspace its tokens reach.'
+            : 'The org has no name yet.',
+          chips: os && os.exists ? [[!!os.name, 'Name: ' + (os.name || 'not set')], [true, 'Time zone: ' + (os.timezone || 'server default')], os.slackConnectedTo || os.slackTeamId ? [!!os.slackTeamId && !os.slackMismatch, 'Slack workspace: ' + (os.slackMismatch ? 'wrong one' : os.slackTeamId ? 'pinned' : 'not pinned')] : null].filter(Boolean) : null,
+          action: os ? [!os.exists ? 'Set it up' : unpinned ? 'Pin workspace' : 'Fix it', toggleOrg] : null,
+          link: os ? ['Change', toggleOrg] : null },
+        { ok: !!(model && model.ok), title: 'A model to think with', detail: model ? trim(model.detail) : 'Checking…', problem: model ? model.detail : 'Checking which models are signed in…' },
+        { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? trim(slack.detail) : '', problem: slack ? slack.detail : 'Not connected.',
+          action: ['How to connect it', function () { go('connect', { connectTab: 'slack' }); }],
+          link: ['Open', function () { go('connect', { connectTab: 'slack' }); }] },
+        { ok: places.length > 0, title: 'A place to work', detail: [repos ? plural(repos, 'repo', 'repos') : null, spaces ? plural(spaces, 'workspace', 'workspaces') : null].filter(Boolean).join(' · '),
+          problem: 'No repo or folder yet. Connect a repo on the Repos tab, or an operator adds a folder with: overcli projects add <folder>',
+          action: ['Connect a repo', function () { state.setupTab = 'repos'; render(); }],
+          link: ['View all', function () { state.setupTab = 'repos'; render(); }] },
+        { ok: !missing.length, title: 'The tools workers need', bad: missing.length > 0,
+          detail: toolCount ? 'All ' + plural(toolCount, 'listed tool', 'listed tools') + ' installed' : 'Every tool a worker lists is installed',
+          problem: missing.map(function (m) { return m.name + ' is missing — ' + m.workers.join(', ') + (m.workers.length === 1 ? ' needs' : ' need') + ' it'; }).join('; '),
+          action: missing.length ? ['Install ' + missing[0].name, function () { state.setupTab = 'tools'; render(); }] : null,
+          link: ['Tools', function () { state.setupTab = 'tools'; render(); }] },
+        { ok: people.length > 1 && !asking, title: 'People', detail: plural(people.length, 'person', 'people') + ' with access',
+          problem: plural(people.length, 'person', 'people') + ' in' + (asking ? ', ' + asking + ' asking to join.' : '. Invite the people who will manage workers.'),
+          action: asking ? ['Let them in', function () { go('people'); }] : ['Invite people', function () { go('people'); }],
+          link: ['People', function () { go('people'); }] }
       ];
-      var core = checks.filter(function (c) { return !c.optional; });
-      var done = core.filter(function (c) { return c.ok; }).length;
-      return [h('section', { class: 'panel pad stack', 'aria-labelledby': 'ready' },
-        h('div', { class: 'spread' }, h('h2', { id: 'ready', class: 'section-title', style: 'font-size:18px', text: done === core.length ? 'Ready' : done + ' of ' + core.length + ' ready' }),
-          h('span', { class: 'row', style: 'gap:12px' },
-            h('span', { class: 'faint' + (rechecked ? ' rechecked' : ''), style: 'font-size:12.5px;display:inline-flex;align-items:center;gap:5px' }, rechecked ? icon('check', 14) : null, rechecked ? 'Checked just now' : 'Checked at ' + clock(Date.now())),
-            h('button', { class: 'btn small', text: 'Check again', onclick: function (e) {
-              // Check in place, and long enough to see: a re-render alone is a flash.
-              var b = e.currentTarget, sec = b.closest('section'), restore = busy(b, 'Checking…'), t0 = Date.now();
-              sec.classList.add('checking');
-              readiness(true).then(function (next) {
-                setTimeout(function () { if (sec.isConnected && next[0]) sec.replaceWith(next[0]); else { restore(); sec.classList.remove('checking'); } }, Math.max(0, 700 - (Date.now() - t0)));
-              }, function () { restore(); sec.classList.remove('checking'); });
-            } }))),
-        h('div', { class: 'meter', style: 'height:8px' }, h('span', { style: 'width:' + Math.round((done / core.length) * 100) + '%' })),
-        h('ul', { class: 'checklist' }, checks.map(function (c) {
-          return h('li', null,
-            h('span', { class: c.ok ? 'ck-ok' : c.bad ? 'ck-bad' : 'ck-off', style: 'flex:none;display:inline-flex' }, icon(c.ok ? 'check' : 'alert', 20)),
-            h('span', null, h('span', { style: 'font-weight:550', text: c.title + (c.optional ? ' (optional)' : '') }), h('span', { class: 'faint', style: c.bad ? 'color:var(--bad)' : '', text: c.detail })),
-            c.action ? h('button', { class: 'btn small' + (c.bad ? ' bad' : ''), text: c.action[0], onclick: c.action[1] }) : null);
-        })), orgBox), storagePanel(), metricsPanel()];
+      var optional = [
+        { ok: !!(sso && sso.ok), title: 'Company sign-in', detail: sso && sso.ok ? trim(sso.detail) : sso ? sso.detail : 'People sign in through Slack links until you set it up.',
+          action: ['Set up sign-in', function () { state.setupTab = 'signin'; render(); }] }
+      ];
+      var todo = checks.filter(function (c) { return !c.ok; });
+      var ready = checks.filter(function (c) { return c.ok; });
+      var optOff = optional.filter(function (c) { return !c.ok; }).length;
+      var done = ready.length, total = checks.length;
+      setupNavNote('ready', done + '/' + total, done === total ? '' : 'need');
+      if (places.length) setupNavNote('repos', String(places.length));
+
+      var checkedAt = h('span', { class: 'faint rd-checked' + (rechecked ? ' rechecked' : '') }, rechecked ? icon('check', 14) : null, rechecked ? 'Checked just now' : 'Checked at ' + clock(Date.now()));
+      var again = h('button', { class: 'btn small', text: 'Check again', onclick: function (e) {
+        // Check in place, and long enough to see: a re-render alone is a flash.
+        var b = e.currentTarget, sec = b.closest('section'), restore = busy(b, 'Checking…'), t0 = Date.now();
+        sec.classList.add('checking');
+        readyCard(true).then(function (next) {
+          setTimeout(function () { if (sec.isConnected && next) sec.replaceWith(next); else { restore(); sec.classList.remove('checking'); } }, Math.max(0, 700 - (Date.now() - t0)));
+        }, function () { restore(); sec.classList.remove('checking'); });
+      } });
+      var okIcon = function () { return h('span', { class: 'rd-ok', 'aria-hidden': 'true' }, icon('tick', 12)); };
+      return h('section', { class: 'sec rd-card', 'aria-labelledby': 'ready' },
+        h('div', { class: 'rd-hero' },
+          rdRing(done, total),
+          h('div', { class: 'rd-hero-text' },
+            h('h2', { id: 'ready', class: 'rd-hero-title', text: done === total ? 'Ready' : 'Almost ready — ' + plural(total - done, 'item needs', 'items need') + ' you' }),
+            h('p', { class: 'faint', text: done + ' of ' + total + ' required items are ready.' + (optOff ? ' ' + plural(optOff, 'optional item isn’t', 'optional items aren’t') + ' set up yet.' : '') })),
+          h('div', { class: 'rd-hero-act' }, checkedAt, again)),
+        todo.length ? h('div', { class: 'rd-label need', text: 'Needs attention' }) : null,
+        todo.map(function (c) {
+          return h('div', { class: 'rd-attn' + (c.bad ? ' bad' : '') },
+            h('span', { class: 'rd-bang', 'aria-hidden': 'true', text: '!' }),
+            h('div', { class: 'rd-attn-text' },
+              h('div', { class: 'rd-attn-title', text: c.title }),
+              h('p', { class: 'faint', text: c.problem }),
+              c.chips ? h('div', { class: 'rd-chips' }, c.chips.map(function (x) { return h('span', { class: 'rd-chip' + (x[0] ? '' : ' off'), text: (x[0] ? '✓ ' : '') + x[1] }); })) : null),
+            c.action ? h('button', { class: 'btn small ' + (c.bad ? 'bad' : 'go'), text: c.action[0], onclick: c.action[1] }) : null);
+        }),
+        ready.length ? h('div', { class: 'rd-label', text: todo.length ? 'Ready' : 'Everything required' }) : null,
+        ready.length ? h('div', { class: 'rd-grid' }, ready.map(function (c) {
+          return h('div', { class: 'rd-cell' }, okIcon(),
+            h('div', { class: 'rd-cell-text' }, h('div', { class: 'rd-cell-title', text: c.title }), h('div', { class: 'faint rd-cell-detail', text: c.detail, title: c.detail })),
+            c.link ? h('button', { class: 'linkish rd-link', text: c.link[0], onclick: c.link[1] }) : null);
+        })) : null,
+        optional.map(function (c) {
+          return h('div', { class: 'rd-opt' },
+            h('span', { class: 'rd-chip', text: 'Optional' }),
+            c.ok ? okIcon() : null,
+            h('div', { class: 'rd-opt-text' }, h('b', { text: c.title }), h('span', { class: 'faint', text: ' · ' + c.detail })),
+            c.ok ? null : h('button', { class: 'btn small', text: c.action[0], onclick: c.action[1] }));
+        }),
+        orgBox);
     });
+  }
+
+  /// This server at a glance, from what health already reports: the build,
+  /// the models, the workers, and whether anything is unwell.
+  function serverCard() {
+    var body = h('div', null, h('p', { class: 'faint rd-pad', text: 'Checking…' }));
+    var status = h('span', { class: 'faint' }), dot = h('span', { class: 'light' });
+    var sec = h('section', { class: 'sec rd-side', 'aria-labelledby': 'rd-server' },
+      h('div', { class: 'sec-head' }, h('span', { class: 'row', style: 'gap:8px' }, dot, h('h2', { id: 'rd-server', class: 'label', text: 'This server' })), status), body);
+    api('GET', '/api/admin/health').then(function (hl) {
+      if (hl.ok === false) { fill(body, msg(hl)); return; }
+      var item = function (name) { return hl.items.filter(function (i) { return i.name === name; })[0]; };
+      var model = item('Models'), wk = item('Workers'), slack = item('Slack');
+      var unwell = hl.items.filter(function (i) { return i.ok === false; });
+      dot.className = 'light ' + (unwell.length ? 'bad' : 'ok');
+      status.textContent = unwell.length ? plural(unwell.length, 'problem', 'problems') : 'Healthy';
+      // The server's own words for its workers: "2 working, 0 waiting …".
+      var m = wk && /^(\d+) working.*?(\d+) stuck/.exec(wk.detail);
+      var n = state.totals && state.totals.workers;
+      var row = function (k, v, title) { return v ? h('div', { class: 'rd-kv' }, h('span', { text: k }), h('span', { text: v, title: title || v })) : null; };
+      fill(body, [
+        row('Version', state.me && state.me.version ? 'v' + state.me.version : ''),
+        row('Organization', hl.org && hl.org.name),
+        row('Models', model ? String(model.detail).replace(/^Signed in: /, '').replace(/\.$/, '') : '', model && model.detail),
+        row('Workers', m ? (n ? n + ' · ' : '') + m[1] + ' working' + (+m[2] ? ', ' + m[2] + ' stuck' : '') : wk ? wk.detail : '', wk && wk.detail),
+        row('Slack', slack ? (slack.ok ? 'Connected' : slack.ok === false ? 'Not connected' : 'Off') : '', slack && slack.detail),
+        row('Spend this month', money(hl.spend.spentUSD || 0) + (hl.spend.orgBudgetUSD ? ' of ' + money(hl.spend.orgBudgetUSD) : '')),
+        unwell.length ? h('div', { class: 'rd-pad' }, unwell.map(function (i) { return h('p', { class: 'faint', style: 'color:var(--bad);font-size:12.5px', text: i.name + ': ' + i.detail }); })) : null,
+        h('div', { class: 'rd-pad' }, h('button', { class: 'btn small quiet', text: 'Health details →', onclick: function () { go('admin'); } }))]);
+    }, function () { fill(body, h('p', { class: 'faint rd-pad', text: 'Couldn’t reach the server.' })); });
+    return sec;
+  }
+
+  /// The latest few entries of the decision log, who and what.
+  function recentChanges() {
+    var body = h('div', null, h('p', { class: 'faint rd-pad', text: 'Loading…' }));
+    var sec = h('section', { class: 'sec rd-side', 'aria-labelledby': 'rd-changes' },
+      h('div', { class: 'sec-head' }, h('h2', { id: 'rd-changes', class: 'label', text: 'Recent changes' }), h('button', { class: 'linkish', text: 'Audit log →', onclick: function () { go('log'); } })), body);
+    api('GET', '/api/admin/audit?limit=5').then(function (au) {
+      if (au.ok === false) { fill(body, h('div', { class: 'rd-pad' }, msg(au))); return; }
+      if (!au.entries.length) { fill(body, h('p', { class: 'faint rd-pad', text: 'Nothing changed yet.' })); return; }
+      fill(body, au.entries.slice(0, 5).map(function (e) {
+        return h('div', { class: 'rd-change' },
+          whoChip(e.slackUserId || e.by),
+          h('div', { class: 'rd-change-text' }, h('span', { text: e.what }), h('span', { class: 'faint rd-when', text: ago(e.at) })));
+      }));
+    }, function () { fill(body, h('p', { class: 'faint rd-pad', text: 'Couldn’t load the log.' })); });
+    return sec;
   }
 
   /// Whether /metrics is on, and whether anything scrapes it: with the two
@@ -16193,63 +17430,118 @@ export const CONSOLE_JS = String.raw`
     return sec;
   }
 
-  /// What's using the server's disk: checkouts, connected repos and the
-  /// tools' package cache, against what's free; and anything kept for work
-  /// that was never pushed, to open or let go.
+  /// What's using the server's disk, by what it holds, against what's free;
+  /// and anything kept for work that was never pushed, to open or let go.
+  /// Two cards from one measurement.
   function storagePanel() {
-    var body = h('div', { class: 'stack', style: 'gap:12px' }, h('p', { class: 'faint', text: 'Measuring…' }));
-    var sec = h('section', { class: 'panel pad stack', 'aria-labelledby': 'storage' },
-      h('div', { class: 'spread' }, h('h2', { id: 'storage', class: 'section-title', style: 'font-size:18px', text: 'Storage' })), body);
-    var size = function (b) { return b == null ? '–' : b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? Math.round(b / 1e6) + ' MB' : Math.round(b / 1e3) + ' KB'; };
+    var body = h('div', null, h('p', { class: 'faint rd-pad', text: 'Measuring…' }));
+    var total = h('span', { class: 'rd-total' });
+    var sec = h('section', { class: 'sec rd-storage', 'aria-labelledby': 'storage' },
+      h('div', { class: 'sec-head' }, h('h2', { id: 'storage', class: 'label', text: 'Storage' }), total), body);
+    var keptBody = h('div'), keptCount = h('span', { class: 'rd-count' }), picked = h('span', { class: 'faint', style: 'font-size:12.5px' }), out = h('div', { 'aria-live': 'polite' });
+    var delBtn = h('button', { class: 'btn small rd-danger', text: 'Delete selected…', disabled: true });
+    var kept = h('section', { class: 'sec', 'aria-labelledby': 'kept', hidden: true },
+      h('div', { class: 'sec-head' }, h('span', { class: 'row', style: 'gap:8px' }, h('h2', { id: 'kept', class: 'label', text: 'Kept for work that was never pushed' }), keptCount),
+        h('span', { class: 'row', style: 'gap:10px' }, picked, delBtn)), keptBody, out);
+    var parts = function (b) {
+      if (b == null) return ['–', ''];
+      return b >= 1e9 ? [(b / 1e9).toFixed(1), 'GB'] : b >= 1e6 ? [String(Math.round(b / 1e6)), 'MB'] : [String(Math.round(b / 1e3)), 'KB'];
+    };
+    var size = function (b) { var p = parts(b); return p[0] + (p[1] ? ' ' + p[1] : ''); };
+    var sizeCell = function (b) { var p = parts(b); return h('td', { class: 'r rd-size' }, p[0], p[1] ? h('span', { class: 'rd-unit', text: ' ' + p[1] }) : null); };
+    var clearBtn = function (ask, path) {
+      return h('button', { class: 'btn small quiet', text: 'Clear…', onclick: function (e) {
+        if (!window.confirm(ask)) return;
+        var restore = busy(e.currentTarget, 'Clearing…');
+        api('POST', path, {}).then(function (x) { restore(); if (x && x.ok === false) alert(x.error); draw(); });
+      } });
+    };
     var draw = function () {
       api('GET', '/api/admin/storage').then(function (r) {
-        body.textContent = '';
-        if (r.ok === false) { body.appendChild(msg(r)); return; }
+        if (r.ok === false) { fill(body, h('div', { class: 'rd-pad' }, msg(r))); return; }
         var s = r.report, v = s.volume;
         var used = v ? v.totalBytes - v.freeBytes : null;
-        var pct = v && v.totalBytes ? Math.min(100, (used / v.totalBytes) * 100) : 0;
-        var line = function (label, value, note, action) {
-          return h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap;padding:8px 0;border-bottom:1px solid var(--line)' },
-            h('span', { style: 'flex:1;min-width:0' }, h('span', { style: 'font-weight:550', text: label }), note ? h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: note }) : null),
-            h('span', { class: 'mono', style: 'font-size:13px;flex:none', text: value }), action || null);
-        };
-        var clear = h('button', { class: 'btn small quiet', text: 'Clear', onclick: function (e) {
-          if (!window.confirm('Empty the tools’ package cache? They download again in the background, and a tool may take a minute to start meanwhile.')) return;
-          var restore = busy(e.target, 'Clearing…');
-          api('POST', '/api/admin/storage/clear-cache', {}).then(function () { restore(); draw(); });
-        } });
-        append(body, [
-          v ? h('div', { class: 'stack', style: 'gap:6px' },
-            h('div', { class: 'spread' }, h('span', { text: size(used) + ' used of ' + size(v.totalBytes) }), h('span', { class: 'faint', text: size(v.freeBytes) + ' free' })),
-            h('div', { class: 'meter' + (pct >= 85 ? ' high' : ''), style: 'height:8px' }, h('span', { style: 'width:' + pct.toFixed(0) + '%' }))) : null,
-          h('div', null,
-            line('Run checkouts', size(s.checkouts.bytes), plural(s.checkouts.count, 'checkout', 'checkouts') + '. Removed by themselves once nothing in them can be lost.'),
-            line('Connected repos', size(s.repos), 'The server’s own copy of each repo, kept up to date hourly.'),
-            line('Tools’ package cache', size(s.toolCache), 'What npx-run tools downloaded. Clear it if a tool won’t start with “Cannot find module”.', clear),
-            s.buildCache !== undefined ? line('Build caches', size(s.buildCache), 'What builds downloaded: Gradle, Maven, npm, pip, uv and Go, shared by every run so each build doesn’t fetch it all again. Clear it if a build keeps failing on a corrupt download.', h('button', { class: 'btn small quiet', text: 'Clear', onclick: function (e) {
-              if (!window.confirm('Empty the build caches? The next build of each repo downloads its dependencies again, which can take a while.')) return;
-              var restore = busy(e.target, 'Clearing…');
-              api('POST', '/api/admin/storage/clear-build-cache', {}).then(function (x) { restore(); if (x.ok === false) alert(x.error); draw(); });
-            } })) : null),
-          s.kept.length ? h('div', { class: 'stack', style: 'gap:6px' },
-            h('span', { style: 'font-weight:550', text: 'Kept for work that was never pushed' }),
-            s.kept.map(function (k) {
-              var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
-              return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' },
-                h('span', { style: 'flex:1;min-width:200px;font-size:13.5px', text: (k.worker ? k.worker + ': ' : '') + k.title }),
-                h('span', { class: 'faint', style: 'font-size:12.5px', text: 'since ' + when(k.since) }),
-                k.workerId ? h('button', { class: 'btn small quiet', text: 'Open the run', onclick: function () { openRun(k.runId); } }) : null,
-                h('button', { class: 'btn small bad', text: 'Delete it', onclick: function (e) {
-                  if (!window.confirm('Delete the checkouts of “' + k.title + '”? Its changes were never pushed, so they’re lost for good.')) return;
-                  var restore = busy(e.target, 'Deleting…');
-                  api('POST', '/api/admin/storage/discard', { runId: k.runId }).then(function (x) { restore(); if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else draw(); });
-                } }), out);
-            })) : null,
-          h('p', { class: 'faint', style: 'font-size:12px;margin:0', text: 'Measured ' + ago(s.measuredAt) + '.' })]);
+        total.textContent = v ? size(used) + ' of ' + size(v.totalBytes) + ' · ' + size(v.freeBytes) + ' free' : '';
+        // By what it holds, the biggest first; the rest of what's used on
+        // the volume is everything else (the system, logs, other data).
+        var cats = [
+          s.buildCache !== undefined ? { key: 'build', name: 'Build caches', what: 'What builds downloaded: Gradle, Maven, npm, pip, uv and Go, shared by every run so each build doesn’t fetch it all again. Clear it if a build keeps failing on a corrupt download.', bytes: s.buildCache,
+            clear: clearBtn('Empty the build caches? The next build of each repo downloads its dependencies again, which can take a while.', '/api/admin/storage/clear-build-cache') } : null,
+          { key: 'runs', name: 'Run checkouts', what: plural(s.checkouts.count, 'checkout', 'checkouts') + '. Removed by themselves once nothing in them can be lost.', bytes: s.checkouts.bytes },
+          { key: 'repos', name: 'Connected repos', what: 'The server’s own copy of each repo, kept up to date hourly.', bytes: s.repos },
+          { key: 'tools', name: 'Tools’ package cache', what: 'What npx-run tools downloaded. Clear it if a tool won’t start with “Cannot find module”.', bytes: s.toolCache,
+            clear: clearBtn('Empty the tools’ package cache? They download again in the background, and a tool may take a minute to start meanwhile.', '/api/admin/storage/clear-cache') }
+        ].filter(Boolean);
+        var known = cats.reduce(function (n, c) { return n + (c.bytes || 0); }, 0);
+        if (used != null && used > known) cats.push({ key: 'other', name: 'Everything else', what: 'The operating system, logs and other data on the volume.', bytes: used - known });
+        var whole = v && v.totalBytes ? v.totalBytes : known;
+        fill(body, [
+          h('div', { class: 'rd-pad' }, h('div', { class: 'rd-bar', role: 'img', 'aria-label': 'Storage use by category' + (v ? ', ' + size(v.freeBytes) + ' free' : '') },
+            cats.map(function (c) { return whole && c.bytes ? h('span', { class: 'rd-sw-' + c.key, title: c.name + ': ' + size(c.bytes), style: 'width:' + Math.max(0.4, (c.bytes / whole) * 100).toFixed(1) + '%' }) : null; }))),
+          h('div', { class: 'tscroll' }, h('table', { class: 'data rd-table' },
+            h('thead', null, h('tr', null, h('th', { text: 'Category' }), h('th', { text: 'What it holds' }), h('th', { class: 'r', text: 'Size' }), h('th', null, h('span', { class: 'sr', text: 'Actions' })))),
+            h('tbody', null, cats.map(function (c) {
+              return h('tr', null,
+                h('td', null, h('span', { class: 'rd-cat' }, h('span', { class: 'rd-sw rd-sw-' + c.key }), c.name)),
+                h('td', { class: 'wrap faint rd-what', text: c.what }),
+                sizeCell(c.bytes),
+                h('td', { class: 'r' }, c.clear || null));
+            })))),
+          h('p', { class: 'faint rd-pad', style: 'font-size:12px', text: 'Measured ' + ago(s.measuredAt) + '.' })]);
+        drawKept(s.kept);
+      });
+    };
+    // A ticked box per run, one delete for the lot: their changes were never
+    // pushed, so each delete loses work for good. Sizes aren't measured per run.
+    var sel = {};
+    var drawKept = function (list) {
+      kept.hidden = !list.length;
+      keptCount.textContent = list.length ? String(list.length) : '';
+      sel = {};
+      var sync = function () {
+        var n = Object.keys(sel).length;
+        picked.textContent = n ? n + ' selected' : '';
+        delBtn.disabled = !n;
+        all.checked = n > 0 && n === list.length;
+        all.indeterminate = n > 0 && n < list.length;
+      };
+      var boxes = [];
+      var all = h('input', { type: 'checkbox', 'aria-label': 'Select all', onchange: function () {
+        boxes.forEach(function (b) { b.box.checked = all.checked; if (all.checked) sel[b.id] = b.k; else delete sel[b.id]; });
+        sync();
+      } });
+      var rows = list.map(function (k) {
+        var box = h('input', { type: 'checkbox', 'aria-label': 'Select ' + k.title, onchange: function () { if (box.checked) sel[k.runId] = k; else delete sel[k.runId]; sync(); } });
+        boxes.push({ box: box, id: k.runId, k: k });
+        return h('tr', null,
+          h('td', { class: 'rd-tick' }, box),
+          h('td', { class: 'wrap' }, h('b', { style: 'font-weight:600', text: k.title })),
+          h('td', null, k.worker ? h('span', { class: 'who-chip' }, avatar(k.workerId || k.worker, k.worker, 'xs'), h('span', { text: k.worker })) : h('span', { class: 'faint', text: '—' })),
+          h('td', { class: 'faint', text: when(k.since) }),
+          h('td', { class: 'r' }, k.workerId ? h('button', { class: 'btn small quiet', text: 'Open run', onclick: function () { openRun(k.runId); } }) : null));
+      });
+      fill(keptBody, list.length ? h('div', { class: 'tscroll' }, h('table', { class: 'data rd-table' },
+        h('thead', null, h('tr', null, h('th', { class: 'rd-tick' }, all), h('th', { text: 'Run' }), h('th', { text: 'Worker' }), h('th', { text: 'Kept since' }), h('th', null, h('span', { class: 'sr', text: 'Actions' })))),
+        h('tbody', null, rows))) : null);
+      sync();
+    };
+    delBtn.onclick = function (e) {
+      var list = Object.keys(sel).map(function (id) { return sel[id]; });
+      if (!list.length) return;
+      if (!window.confirm(list.length === 1 ? 'Delete the checkouts of “' + list[0].title + '”? Its changes were never pushed, so they’re lost for good.' : 'Delete the checkouts of ' + list.length + ' runs? Their changes were never pushed, so they’re lost for good.')) return;
+      var restore = busy(e.currentTarget, 'Deleting…'), failed = [];
+      out.textContent = '';
+      // One at a time: each delete walks the disk.
+      list.reduce(function (p, k) {
+        return p.then(function () { return api('POST', '/api/admin/storage/discard', { runId: k.runId }).then(function (x) { if (x && x.ok === false) failed.push(k.title + ': ' + x.error); }, function (err) { failed.push(k.title + ': ' + String((err && err.message) || err)); }); });
+      }, Promise.resolve()).then(function () {
+        restore();
+        if (failed.length) out.appendChild(h('p', { class: 'msg err rd-pad', text: failed.join(' · ') }));
+        draw();
       });
     };
     draw();
-    return sec;
+    return [sec, kept];
   }
 
   // ---- tools (MCP servers on this server) --------------------------------
@@ -16374,7 +17666,7 @@ export const CONSOLE_JS = String.raw`
     (state.dirCache ? Promise.resolve(state.dirCache) : api('GET', '/api/directory')).then(function (d) {
       var dir = d && d.ok !== false ? d : { people: [], groups: [] };
       state.dirCache = dir;
-      dir.people.forEach(function (p) { names[p.slackUserId] = p.name; });
+      dir.people.forEach(function (p) { if (p.slackUserId) names[p.slackUserId] = p.name; });
       // The old "people in my groups": the manager's groups, ticked.
       if (opts.managerGroupsOf && kind === 'picked' && !groups.length && !people.length && !roles.length) {
         dir.groups.forEach(function (g) { if (g.id.indexOf('team:') === 0 && g.members.some(function (m) { return m.slackUserId === opts.managerGroupsOf; })) groups.push(g.id); });

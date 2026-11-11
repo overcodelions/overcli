@@ -83,7 +83,7 @@ function taskFolder(): string {
   return root;
 }
 
-function harness(opts: { teamOrgMember?: boolean } = {}) {
+function harness(opts: { teamOrgMember?: boolean; asks?: AskRecord[] } = {}) {
   const roster = [
     worker('ana', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org' }),
     worker('cal', { manager: { name: 'Sam', slackUserId: SAM } }),
@@ -94,7 +94,7 @@ function harness(opts: { teamOrgMember?: boolean } = {}) {
     flowRun('sched', 'ana', NOW - 3 * DAY, { parentOrchestrationId: 'b-sched' }),
     flowRun('now', 'ana', NOW - 3 * DAY + 1000, { parentOrchestrationId: 'b-now' }),
     flowRun('trig', 'ana', NOW - 3 * DAY + 2000, { parentOrchestrationId: 'b-trig' }),
-    flowRun('asked', 'ana', NOW - 3 * DAY + 3000, { parentOrchestrationId: 'b-errand' }),
+    flowRun('asked', 'ana', NOW - 3 * DAY + 3000, { parentOrchestrationId: 'b-errand', digest: { headline: 'Listed the acme pricing changes' } }),
     flowRun('loose', 'ana', NOW - 3 * DAY + 4000),
     flowRun('solo', 'triage', NOW - 3 * DAY + 5000, { parentOrchestrationId: 'b-solo' }),
     // Pieces of the team task: one says so on the run, one only in the task.
@@ -117,6 +117,7 @@ function harness(opts: { teamOrgMember?: boolean } = {}) {
     answered('a-pat', 'ana', pat, 'What changed on the acme pricing page this week? '.repeat(4).trim(), { via: 'slack' }),
     answered('a-cal', 'cal', sam, 'How is the acme blog doing?'),
     { ...answered('a-working', 'ana', pat, 'Still thinking'), status: 'working', reply: undefined },
+    ...(opts.asks ?? []),
   ];
   const deliverables: Deliverable[] = [
     {
@@ -252,6 +253,26 @@ describe('answered errands in the Library', () => {
     const full = svc.libraryItem(pat, 'ask:a-pat');
     expect(full.ok && full.item.body).toBe('Reply to a-pat');
     expect(svc.libraryItem(sam, 'ask:a-pat').ok).toBe(false);
+  });
+});
+
+describe('what finished work came to', () => {
+  it('leads with an outcome over the raw ask: the worker’s own line, its run’s headline, or nothing', () => {
+    const lib = byId(
+      harness({
+        asks: [
+          answered('a-seed', 'ana', pat, 'paste it here', { reply: '**Outcome:** Explained how to seed acme test data\n\nRun the seed script…' }),
+          answered('a-handed', 'ana', pat, 'can you check pricing', { reply: "Sure, I'll take a look.", orchestrationId: 'b-errand' }),
+          answered('a-chat', 'ana', pat, 'thanks!', { reply: 'Any time.' }),
+        ],
+      }).library(pat),
+    );
+    expect(lib.get('ask:a-seed')).toMatchObject({ title: 'paste it here', outcome: 'Explained how to seed acme test data' });
+    expect(lib.get('ask:a-handed')?.outcome).toBe('Listed the acme pricing changes');
+    // A run listed from itself is titled by its headline already: nothing to add.
+    expect(lib.get('run:asked')).toMatchObject({ title: 'Listed the acme pricing changes' });
+    expect(lib.get('run:asked')?.outcome).toBeUndefined();
+    expect(lib.get('ask:a-chat')?.outcome).toBeUndefined();
   });
 });
 
