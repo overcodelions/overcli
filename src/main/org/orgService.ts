@@ -12,7 +12,7 @@ import { KITS, type KitDef, type KitId, type Toolchain, type ToolchainService } 
 import { collectKnownSecretValues, redactSecrets, scrubOutbound } from '../secretScrub';
 import type { LoginResult } from './toolLogin';
 import { draftPrompt, generalize, readDraft, readShape, readToolCall, setupPrompt } from './watchSetup';
-import { limitState, managerBudgets, paceFor, personSpendOn, usersByWorker, type ManagerBudget, type RunCost, type WorkerUser } from '../../shared/org/spendView';
+import { limitState, managerBudgets, paceFor, personSpendOn, spendByDay, spendDayWindow, usersByWorker, type DatedRunCost, type ManagerBudget, type RunCost, type SpendDay, type WorkerUser } from '../../shared/org/spendView';
 import { randomUUID } from 'node:crypto';
 import type { Flow, FlowRun, FlowRunState } from '../../shared/flows/schema';
 import { applyFlowModelUpgrade, planFlowModelUpgrade, shortModelChangeLabel } from '../../shared/flows/modelUpgrade';
@@ -69,6 +69,7 @@ import type { DraftedHire, HireDraftResult } from './hireDraft';
 import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
 import { TOOL_NAME, parseTemplates } from './tools';
 import { OverdbOrg, type OverdbDeps } from './overdb';
+import { OverapiOrg, type OverapiDeps } from './overapi';
 import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTool } from './toolCatalog';
 import type { Discovery, SignInSummary } from './toolSignIn';
 import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
@@ -773,7 +774,8 @@ const REPORT_WINDOWS = new Set([7, 30, 0]);
 const VISIBLE_TO: Record<WorkerVisibility, string> = { private: 'Only its manager', team: 'Its manager’s team', org: 'Everyone' };
 
 /// `OverdbDeps`: databases published from overdb — see overdb.ts.
-export interface OrgServiceDeps extends OverdbDeps {
+/// `OverapiDeps`: APIs published from overapi — see overapi.ts.
+export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   workers: {
     roster(): Worker[];
     get(id: UUID): Worker | null;
@@ -805,6 +807,9 @@ export interface OrgServiceDeps extends OverdbDeps {
     /// Each run's cost this month, with what launched it. Absent: nobody's
     /// use of a worker can be traced, so no limit on it applies.
     runCostsThisMonth?(): RunCost[];
+    /// Runs' costs and when they finished, in [fromMs, toMs). Absent: no
+    /// spend-by-day chart.
+    runCostsBetween?(fromMs: number, toMs: number): DatedRunCost[];
     workerNames(): string[];
   };
   runs: {
@@ -2023,6 +2028,49 @@ export class OrgService {
     return { state: limitState(spent, limit, policy.alertAtPercent), text: `$${spent.toFixed(2)} of your $${limit} limit` };
   }
 
+  /// Whose workers a spend page shows: the caller's own, or for an admin
+  /// who asks (or has none of their own) everyone's.
+  private spendScope(caller: OrgCaller, wantAll: boolean): { roster: Worker[]; admin: boolean; all: boolean; shown: Worker[] } {
+    const roster = this.deps.workers.roster();
+    const admin = isAdmin(this.policy(), caller);
+    const mine = roster.filter((w) => {
+      const boss = managerFor(roster, w.id);
+      return caller.slackUserId ? boss?.slackUserId === caller.slackUserId : !!boss && boss.name === caller.name;
+    });
+    // Someone who answers for no workers of their own has only the org to see.
+    const all = admin && (wantAll || !mine.length);
+    return { roster, admin, all, shown: all ? roster : mine };
+  }
+
+  /// Spend per day over a range of the viewer's days, for the same workers
+  /// the spend page shows, or just one of them.
+  spendDaysView(caller: OrgCaller, opts: { all?: boolean; from: string; to: string; tzOffsetMin: number; workerId?: string }): Result<{
+    scope: 'mine' | 'all';
+    from: string;
+    to: string;
+    totalUSD: number;
+    days: SpendDay[];
+    workers: Array<{ id: UUID; name: string }>;
+  }> {
+    const win = spendDayWindow(opts.from, opts.to, opts.tzOffsetMin);
+    if (!win) return { ok: false, error: 'Pick a start and end date, the start first, at most a year apart.' };
+    const read = this.deps.workers.runCostsBetween;
+    if (!read) return { ok: false, error: 'Spend by day isn’t available on this server.' };
+    const { all, shown } = this.spendScope(caller, !!opts.all);
+    if (opts.workerId && !shown.some((w) => w.id === opts.workerId)) return { ok: false, error: 'That worker isn’t one of the ones shown here.' };
+    const ids = new Set(opts.workerId ? [opts.workerId] : shown.map((w) => w.id));
+    const days = spendByDay(read(win.fromMs, win.toMs).filter((r) => ids.has(r.workerId)), opts.from, opts.to, opts.tzOffsetMin);
+    return {
+      ok: true,
+      scope: all ? 'all' : 'mine',
+      from: opts.from,
+      to: opts.to,
+      totalUSD: days.reduce((n, d) => n + d.totalUSD, 0),
+      days,
+      workers: shown.map((w) => ({ id: w.id, name: w.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  }
+
   /// A person's workers, or for an admin everyone's, and who is using them.
   /// Only finished runs' model cost counts: planning and chat turns don't
   /// report one, so the page says so.
@@ -2040,16 +2088,7 @@ export class OrgService {
     managers?: ManagerBudget[];
   }> {
     const policy = this.policy();
-    const roster = this.deps.workers.roster();
-    const admin = isAdmin(policy, caller);
-    const isMine = (w: Worker) => {
-      const boss = managerFor(roster, w.id);
-      return caller.slackUserId ? boss?.slackUserId === caller.slackUserId : !!boss && boss.name === caller.name;
-    };
-    const mine = roster.filter(isMine);
-    // Someone who answers for no workers of their own has only the org to see.
-    const all = admin && (!!opts.all || !mine.length);
-    const shown = all ? roster : mine;
+    const { roster, admin, all, shown } = this.spendScope(caller, !!opts.all);
     const spent = this.deps.workers.spentThisMonth();
     const users = this.workerUsers();
     const now = this.now();
@@ -2591,6 +2630,16 @@ export class OrgService {
   private overdbOrg: OverdbOrg | null = null;
   get databases(): OverdbOrg {
     return (this.overdbOrg ??= new OverdbOrg(this.deps, {
+      policy: () => this.policy(),
+      record: (caller, what) => this.record(caller, what),
+      now: () => this.now(),
+    }));
+  }
+
+  /// APIs published from overapi (Setup → APIs): overapi.ts.
+  private overapiOrg: OverapiOrg | null = null;
+  get apis(): OverapiOrg {
+    return (this.overapiOrg ??= new OverapiOrg(this.deps, {
       policy: () => this.policy(),
       record: (caller, what) => this.record(caller, what),
       now: () => this.now(),

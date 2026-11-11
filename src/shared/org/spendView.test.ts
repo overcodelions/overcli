@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ORG_POLICY, otherPeopleLimit, parseOrgPolicy } from './policy';
-import { limitState, managerBudgets, paceFor, personSpendOn, usersByWorker } from './spendView';
+import { limitState, managerBudgets, paceFor, personSpendOn, usersByWorker, spendByDay, spendDayWindow } from './spendView';
 
 describe('who a worker’s month went on', () => {
   const asks = [
@@ -114,5 +114,37 @@ describe('where the month ends at this rate', () => {
   });
   it('won’t guess in the first two days', () => {
     expect(paceFor(50, new Date(2026, 3, 2).getTime())).toBeNull();
+  });
+});
+
+describe('spendByDay', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it('buckets into the viewer’s days, every day present', () => {
+    // New York (UTC-5 in November): 03:00Z on the 3rd is still the 2nd there.
+    const days = spendByDay(
+      [
+        { workerId: 'a', costUSD: 2, at: at('2026-11-03T03:00:00Z') },
+        { workerId: 'b', costUSD: 1, at: at('2026-11-02T15:00:00Z') },
+        { workerId: 'a', costUSD: 4, at: at('2026-11-03T15:00:00Z') },
+      ],
+      '2026-11-01',
+      '2026-11-03',
+      300,
+    );
+    expect(days.map((d) => [d.date, d.totalUSD])).toEqual([['2026-11-01', 0], ['2026-11-02', 3], ['2026-11-03', 4]]);
+    expect(days[1].byWorker).toEqual([{ workerId: 'a', costUSD: 2 }, { workerId: 'b', costUSD: 1 }]);
+  });
+
+  it('leaves out runs outside the range', () => {
+    const days = spendByDay([{ workerId: 'a', costUSD: 5, at: at('2026-11-04T01:00:00Z') }], '2026-11-01', '2026-11-03', 0);
+    expect(days.reduce((n, d) => n + d.totalUSD, 0)).toBe(0);
+  });
+
+  it('refuses a backwards, unreal or over-long range', () => {
+    expect(spendDayWindow('2026-11-05', '2026-11-01', 0)).toBeNull();
+    expect(spendDayWindow('2026-02-30', '2026-03-01', 0)).toBeNull();
+    expect(spendDayWindow('2024-01-01', '2026-01-01', 0)).toBeNull();
+    expect(spendDayWindow('2026-11-01', '2026-11-01', -60)).toEqual({ fromMs: at('2026-10-31T23:00:00Z'), toMs: at('2026-11-01T23:00:00Z'), days: 1 });
   });
 });

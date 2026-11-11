@@ -17,6 +17,7 @@ export interface ModelPrice {
 /// First prefix match wins, so older, pricier ids sit above the family
 /// catch-alls (`claude-opus-4-1` before `claude-opus`).
 const PRICES: Array<[string, ModelPrice]> = [
+  ['claude-fable-5-2', { input: 10, output: 50, cacheRead: 0.25 }],
   ['claude-fable-5-1', { input: 10, output: 50, cacheRead: 0.25 }],
   ['claude-fable', { input: 10, output: 50 }],
   ['claude-mythos', { input: 10, output: 50 }],

@@ -145,6 +145,23 @@ The server needs overdb's built `dist` folder. The Docker image keeps it at `/op
 
 Rows a worker reads go to the model and can end up wherever that worker posts: Slack, a ticket, a pull request. Give the overdb tool to workers whose output stays where the data may go, and point production at a read replica.
 
+## Setup → APIs
+
+APIs people published from overapi, for workers to call. In overapi, someone chooses **Publish to your org's server** for one environment; their overcli app sends it here. What arrives is the API's tools, the environment's base URL and how it signs in, and the names of the variables it needs, never their values.
+
+Each one waits under **Waiting** until you finish it. The row lists its tools by what they do: **read**, **write**, or **destructive** (a destructive call must also be confirmed by the worker).
+
+- **Read-only or writes.** Read-only is the default: workers get only the read tools. **Allow writes** is there only when the publisher allowed writes for that environment; the server never allows more than was published.
+- **Secrets.** There is a field for each variable the environment reads (a token, a user and password, a header value). They go straight into the API's tool settings and nowhere else: not the project file, not the audit log. Like a tool's keys, they are only accepted over https or on this same machine.
+
+**Set up** writes the project to `org/overapi/<name>.json` and installs a tool of its own, **overapi-&lt;name&gt;**, which runs overapi's MCP server on that file. Then add that tool to the workers that should call this API, as with any tool.
+
+Published again, an API shows **Update**. Its secrets are kept, unless its base URL or the way it signs in changed: then they must be typed again, so a kept secret is never sent somewhere you didn't send it.
+
+The server needs overapi's built `dist` folder. The Docker image keeps it at `/opt/overapi` when it was built with an overapi checkout (`--build-context overapi-src=../overapi`); anywhere else, set `OVERAPI_CLI` to its `dist/cli/index.js`. Until then the tab says so and nothing can be set up.
+
+**Remove** takes an API away from workers: its tool, its secrets and its project file.
+
 ## Setup → Apps to test
 
 Apps workers can QA in a browser that's already signed in: a worker that checks a feature on its ticket's environment, say, or walks the main journeys after a release. Workers reach them through the **test-systems** tool, which you give them on Setup → Tools like any other.

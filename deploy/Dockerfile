@@ -46,6 +46,34 @@ COPY --from=overdb-src tsconfig.json tsconfig.main.json ./
 COPY --from=overdb-src src ./src
 RUN npx tsc -p tsconfig.main.json && npm prune --omit=dev && rm -rf src
 
+# ---- overapi: its CLI and core, compiled; no Electron, no UI ---------------
+# overapi's CLI serves each API published to Setup → APIs. It has no public
+# repo yet, so nothing is cloned: build with a checkout,
+#   --build-context overapi-src=../overapi
+# and without one the image builds with an empty /opt/overapi (the APIs tab
+# then says overapi isn't installed). The empty stage below is what that
+# checkout stands in for; the globs let each COPY match nothing.
+FROM scratch AS overapi-src
+
+FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS overapi
+WORKDIR /overapi
+# Electron is a dev dependency for its types; its 100 MB binary is never run.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+COPY --from=overapi-src package.jso[n] package-lock.jso[n] tsconfig.jso[n] tsconfig.main.jso[n] ./
+COPY --from=overapi-src sr[c] ./src/
+# As for overdb: electron-builder only packages the desktop app, and its
+# platform-specific peers leave a Mac-made lock file unusable by `npm ci`.
+# The compiled CLI needs only the runtime dependencies (the MCP SDK, js-yaml).
+RUN if [ -f package.json ]; then \
+      npm pkg delete devDependencies.electron-builder \
+      && npm install --ignore-scripts --no-audit --no-fund \
+      && npx tsc -p tsconfig.main.json \
+      && npm prune --omit=dev \
+      && rm -rf src; \
+    else \
+      rm -rf src; \
+    fi
+
 # ---- build: compile the CLI (tsc) with dev dependencies, then drop them ----
 FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS build
 ARG DEBIAN_MIRROR
@@ -131,6 +159,9 @@ COPY deploy/docs ./deploy/docs
 COPY deploy/README.md deploy/aws.md deploy/gcp.md ./deploy/
 # overdb's headless MCP server; Setup → Databases installs the overdb tool on it.
 COPY --from=overdb /overdb /opt/overdb
+# overapi's CLI, when the build was given a checkout; Setup → APIs installs a
+# tool on it per published API.
+COPY --from=overapi /overapi /opt/overapi
 RUN ln -s /app/dist/cli/index.js /usr/local/bin/overcli && chmod +x /app/dist/cli/index.js
 # Starts the server as node whichever user the container starts as; started
 # as root with OVERCLI_WORKER_UID, it runs workers as a user of their own.
@@ -145,7 +176,8 @@ ENV OVERCLI_HOME=/data \
     OVERCLI_CONTROL=0.0.0.0:7420 \
     OVERCLI_TOOL_GATEWAY=1 \
     JAVA_HOME=${JDKS:+/opt/jdk/default} \
-    OVERDB_HEADLESS=/opt/overdb/dist/mcp/headless.js
+    OVERDB_HEADLESS=/opt/overdb/dist/mcp/headless.js \
+    OVERAPI_CLI=/opt/overapi/dist/cli/index.js
 RUN mkdir -p /data/home \
  && chown -R node:node /data \
  && git config --system user.name "overcli workers" \

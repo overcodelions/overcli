@@ -133,9 +133,13 @@ export const claudeBackend: BackendSpec = {
       type: 'image',
       source: { type: 'base64', media_type: a.mimeType, data: a.dataBase64 },
     }));
-    // Text always comes last so the user's words aren't buried above
-    // the screenshots.
-    content.push({ type: 'text', text: args.prompt || '(no text)' });
+    // Text normally comes last so the user's words aren't buried above
+    // the screenshots. A slash command is the exception: the CLI only
+    // expands `/design …` when the message starts with it, so an image
+    // ahead of it turns the command into plain text.
+    const text = { type: 'text', text: args.prompt || '(no text)' };
+    if (args.prompt.trimStart().startsWith('/')) content.unshift(text);
+    else content.push(text);
     return JSON.stringify({
       type: 'user',
       message: { role: 'user', content },

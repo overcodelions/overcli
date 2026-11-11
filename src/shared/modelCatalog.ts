@@ -14,9 +14,10 @@ import type { Backend } from './types';
 /// stays directly behind it: nothing here falls back on its own — the id
 /// goes straight to `claude --model` — so a machine whose CLI predates
 /// 5.5 needs the previous Opus one click away in every picker.
-/// `claude-fable-5-1` is the most premium/advanced model (roughly 2x the
+/// `claude-fable-5-2` is the most premium/advanced model (roughly 2x the
 /// cost of Opus), listed after the Opus entries for anyone who
-/// explicitly wants it. Order also picks the per-tier default: the
+/// explicitly wants it; Fable 5.1 trails it for the same reason Opus 5
+/// trails Opus 5.5. Order also picks the per-tier default: the
 /// template resolver substitutes the *first* id at a given speed tier, so
 /// `claude-sonnet-5-5` leads the Sonnets to make Sonnet 5.5 the default
 /// 'fast' Claude model; Sonnet 5 stays right behind it for the same reason
@@ -26,14 +27,14 @@ import type { Backend } from './types';
 /// auto-lifted to the next-highest version in the same family on load —
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-5-5', 'claude-haiku-4-5'],
+  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-2', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-5-5', 'claude-haiku-4-5'],
   // `gpt-6.1-sol` (Sept 29 2026) is the auto-pick default: near-Astra
   // quality at a fifth of Astra's price, so it's the thinking-tier Sol
   // successor. `gpt-5.6-sol` stays right behind it for the same reason
   // Opus 5 trails Opus 5.5 — a CLI or account that predates 6.1 needs it
   // one click away. `gpt-6-astra` is OpenAI's frontier model — the GPT-6
   // generation's flagship, priced well above the Sol line — and like
-  // `claude-fable-5-1` the frontier tier is opt-in. `gpt-6.1-terra` (Oct
+  // `claude-fable-5-2` the frontier tier is opt-in. `gpt-6.1-terra` (Oct
   // 2026) is the standard-tier default; `gpt-5.6-terra` trails it for the
   // same not-rolled-out-yet reason as the Sol pair.
   codex: ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
@@ -187,7 +188,7 @@ export function newestInFamily(backend: Exclude<Backend, 'ollama'>, model: strin
 ///   - 'fast': low latency, low cost; good for workers and quick tasks
 ///   - 'standard': mid tier; balanced cost vs. quality
 ///   - 'thinking': premium reasoning models, slower + more expensive
-///   - 'frontier': the most advanced + most expensive tier (Fable 5.1,
+///   - 'frontier': the most advanced + most expensive tier (Fable 5.2,
 ///     ~2x Opus; GPT-6 Astra on codex). Kept distinct from 'thinking' so
 ///     the template resolver
 ///     only assigns it to steps that explicitly ask for it (e.g.
@@ -196,6 +197,7 @@ export type ModelSpeed = 'fast' | 'standard' | 'thinking' | 'frontier';
 
 const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Claude
+  'claude-fable-5-2': 'frontier',
   'claude-fable-5-1': 'frontier',
   // Superseded by 5.1 but kept here so a flow or conversation still pinned
   // to it renders its tier marker correctly until `liftMissingModel` moves

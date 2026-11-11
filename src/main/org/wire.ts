@@ -1,7 +1,7 @@
 // Build the org control plane over the engines — shared by the app and
 // `overcli serve`, like the Slack bridge, so both enforce one set of rules.
 
-import { workerRunCostsSince } from '../flows/runSummaryLog';
+import { workerRunCostsBetween, workerRunCostsSince } from '../flows/runSummaryLog';
 import os from 'node:os';
 import { checkoutHealth, discardCheckouts, folderBytes, keptCheckouts, sweepWorktrees, volumeOf } from './worktreeSweep';
 import type { StorageReport } from './orgService';
@@ -26,6 +26,7 @@ import type { Worker } from '../../shared/flows/worker';
 import { OrgService, type HealthItem, type OrgServiceDeps, type SetupOffer } from './orgService';
 import { OVERDB_CONNECTIONS_FILE, OVERDB_TOOL, type OverdbOffer } from './overdb';
 import { OVERDB_FILE_VERSION, type OverdbConnectionsFile } from '../../shared/overdbConnection';
+import { OVERAPI_DIR, type OverapiLive, type OverapiOffer } from './overapi';
 import type { ServerVersion } from './updateCheck';
 import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
@@ -315,6 +316,7 @@ export function createOrgService(
         const d = new Date();
         return workerRunCostsSince(new Date(d.getFullYear(), d.getMonth(), 1).getTime());
       },
+      runCostsBetween: (fromMs, toMs) => workerRunCostsBetween(fromMs, toMs),
       workerNames: () => workerEngine.workerNames(),
     },
     runs: {
@@ -441,6 +443,30 @@ export function createOrgService(
       },
       toolEnv: () => {
         const env = readClaudeMcpServers()[OVERDB_TOOL]?.env;
+        if (!env || typeof env !== 'object' || Array.isArray(env)) return {};
+        return Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === 'string'));
+      },
+    },
+    overapiOffers: jsonOrgStore<{ offers: OverapiOffer[] }>('overapi-offers.json', () => ({ offers: [] })),
+    overapiApis: jsonOrgStore<{ apis: OverapiLive[] }>('overapi-apis.json', () => ({ apis: [] })),
+    overapi: {
+      // The Docker image puts overapi here; anywhere else says so in OVERAPI_CLI.
+      cliPath: () => {
+        const at = process.env.OVERAPI_CLI?.trim() || '/opt/overapi/dist/cli/index.js';
+        return fs.existsSync(at) ? at : null;
+      },
+      projectFile: (name) => path.join(orgDir(), OVERAPI_DIR, `${name}.json`),
+      // Throws, unlike the org stores: approving must not install a tool on a file that isn't there.
+      writeProject: (name, project) => {
+        const file = path.join(orgDir(), OVERAPI_DIR, `${name}.json`);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const tmp = `${file}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(project, null, 2), { encoding: 'utf8', mode: 0o600 });
+        fs.renameSync(tmp, file);
+      },
+      removeProject: (name) => fs.rmSync(path.join(orgDir(), OVERAPI_DIR, `${name}.json`), { force: true }),
+      toolEnv: (toolName) => {
+        const env = readClaudeMcpServers()[toolName]?.env;
         if (!env || typeof env !== 'object' || Array.isArray(env)) return {};
         return Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === 'string'));
       },

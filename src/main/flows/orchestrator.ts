@@ -191,6 +191,9 @@ function producerSystemPrompt(): string {
     'Rules for the block:',
     '  - It MUST be valid JSON (double quotes, no trailing commas, no comments inside the real output).',
     '  - "prompt" is the ONLY thing the launched flow will see — make it stand on its own.',
+    '  - To add to a branch you already pushed (so its open pull request gets the commits rather than a',
+    '    second one opening), put [continue-branch: <exact branch name>] in that "prompt". Naming the branch',
+    '    or pull request any other way does not move the push: it goes to a new branch.',
     '  - Prefer 3–8 candidates. If nothing qualifies, emit an empty array: <candidates>[]</candidates>.',
     '  - Do not write anything after the closing </candidates> tag.',
   ].join('\n');

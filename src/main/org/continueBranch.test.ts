@@ -100,6 +100,30 @@ describe('continueBranchFor in a workspace', () => {
     expect(await continueBranchFor(ask('Fix CI', prompt), deps({ openBranches: open }))).toBeNull();
     expect(await continueBranchFor(ask('Fix CI', prompt), deps({ openBranches: open, fixAskedOn: () => true }))).toBe('feature/ACME-5-x');
   });
+
+  // Two pull requests for one ticket: the one the worker opened for it, and
+  // a later fix that landed beside it rather than on it.
+  const first = wsRun({ id: 'first', createdAt: 1, landed: '- Opened a pull request for acme-api: https://git.acme.test/acme-api/pull-requests/439 (branch feature/ACME-123-first)' });
+  const stray = wsRun({ id: 'stray', createdAt: 5, landed: '- Opened a pull request for acme-api: https://git.acme.test/acme-api/pull-requests/440 (branch feature/ACME-123-stray)' });
+  const both = { 'acme-api': ['feature/ACME-123-first', 'feature/ACME-123-stray'] };
+
+  it('takes the pull request the ask names over the newest one', async () => {
+    const d = deps({ runs: () => [first, stray], openBranches: both });
+    expect(await continueBranchFor(ask('ACME-123: Add the cast fix to the existing PR 439 branch'), d)).toBe('feature/ACME-123-first');
+    expect(await continueBranchFor(ask('ACME-123: Add the cast fix', 'Put it on #439, not the other one.'), d)).toBe('feature/ACME-123-first');
+    expect(await continueBranchFor(ask('ACME-123: Add the cast fix', 'Something about 439 lines'), d)).toBe('feature/ACME-123-stray');
+  });
+
+  it('a marker for a branch this worker pushed here counts, whatever the title', async () => {
+    const d = deps({ runs: () => [first, stray], openBranches: both });
+    expect(await continueBranchFor(ask('Add the cast fix', 'Fix it [continue-branch: feature/ACME-123-first]'), d)).toBe('feature/ACME-123-first');
+  });
+
+  it("a marker for a branch this worker didn't push is ignored", async () => {
+    const theirs = wsRun({ workerId: 'w2', landed: '- Opened a pull request for acme-api: https://x/9 (branch feature/ACME-9-theirs)' });
+    const d = deps({ runs: () => [theirs], openBranches: { 'acme-api': ['feature/ACME-9-theirs'] } });
+    expect(await continueBranchFor(ask('Add the cast fix', '[continue-branch: feature/ACME-9-theirs]'), d)).toBeNull();
+  });
 });
 
 describe('continueBranchFor in a repo', () => {

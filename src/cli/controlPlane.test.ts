@@ -98,6 +98,20 @@ function fakeOrg() {
         return { ok: true, waiting: true };
       },
     },
+    apis: {
+      approve: (c: OrgCaller, id: string, input: unknown, secure: boolean) => {
+        calls.push({ op: 'approveOverapi', caller: c.name, args: { id, input, secure } });
+        return { ok: true };
+      },
+      publish: (c: OrgCaller, input: unknown) => {
+        calls.push({ op: 'publishOverapi', caller: c.name, args: input });
+        return { ok: true, waiting: true };
+      },
+      remove: (c: OrgCaller, name: string) => {
+        calls.push({ op: 'removeOverapi', caller: c.name, args: { name } });
+        return { ok: true };
+      },
+    },
   } as unknown as OrgService;
   return { org, calls };
 }
@@ -254,6 +268,25 @@ describe('control plane HTTP', () => {
     expect(calls.filter((c) => c.op === 'approveOverdbConnection').at(-1)).toEqual({ op: 'approveOverdbConnection', caller: 'Pat', args: { id: 'o 1', password: 'pw', secure: true } });
     await fetch(`${base}/api/publish/overdb-connection`, { method: 'POST', headers: auth, body: JSON.stringify({ id: 'p', connection: { name: 'x' } }) });
     expect(calls.filter((c) => c.op === 'publishOverdbConnection').at(-1)).toEqual({ op: 'publishOverdbConnection', caller: 'Pat', args: { connection: { name: 'x' } } });
+  });
+
+  it('hands an API’s secrets and the writes choice to the service, with whether they came over a private channel', async () => {
+    const auth = { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' };
+    await fetch(`${base}/api/overapi/offers/o%201/approve`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ allowWrites: 'yes', secrets: { ACME_TOKEN: 'tok', lower: 'dropped', ACME_N: 3 } }),
+    });
+    expect(calls.filter((c) => c.op === 'approveOverapi').at(-1)).toEqual({
+      op: 'approveOverapi',
+      caller: 'Pat',
+      // Only a real true allows writes; only variable names with text values are passed on.
+      args: { id: 'o 1', input: { allowWrites: false, secrets: { ACME_TOKEN: 'tok' } }, secure: true },
+    });
+    await fetch(`${base}/api/publish/overapi-project`, { method: 'POST', headers: auth, body: JSON.stringify({ push: { id: 'p' } }) });
+    expect(calls.filter((c) => c.op === 'publishOverapi').at(-1)).toEqual({ op: 'publishOverapi', caller: 'Pat', args: { push: { id: 'p' } } });
+    await fetch(`${base}/api/overapi/apis/acme-orders/remove`, { method: 'POST', headers: auth, body: '{}' });
+    expect(calls.filter((c) => c.op === 'removeOverapi').at(-1)).toEqual({ op: 'removeOverapi', caller: 'Pat', args: { name: 'acme-orders' } });
   });
 
   it('passes the report window through, defaulting to 30 days', async () => {

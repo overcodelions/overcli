@@ -110,6 +110,10 @@ describe('friendlyModelLabel — claude', () => {
     expect(friendlyModelLabel('claude', 'claude-opus-4-7')).toBe('Claude Opus 4.7');
   });
 
+  it('formats fable-5.2', () => {
+    expect(friendlyModelLabel('claude', 'claude-fable-5-2')).toBe('Claude Fable 5.2');
+  });
+
   it('formats fable-5.1', () => {
     expect(friendlyModelLabel('claude', 'claude-fable-5-1')).toBe('Claude Fable 5.1');
   });
@@ -257,6 +261,7 @@ describe('friendlyModelLabel — ollama', () => {
 
 describe('modelSpeed', () => {
   it.each([
+    ['claude-fable-5-2', 'frontier'],
     ['claude-fable-5-1', 'frontier'],
     ['claude-fable-5', 'frontier'],
     ['claude-opus-5-5', 'thinking'],
@@ -339,7 +344,7 @@ describe('latestAtTier', () => {
   it('resolves each backend to its current model per tier', () => {
     expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5-5');
     expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5-5');
-    expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-1');
+    expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-2');
     expect(latestAtTier('codex', 'thinking')).toBe('gpt-6.1-sol');
     expect(latestAtTier('codex', 'fast')).toBe('gpt-5.6-luna');
     expect(latestAtTier('codex', 'frontier')).toBe('gpt-6-astra');
@@ -418,7 +423,7 @@ describe('snapToTierDefault', () => {
 
   it('leaves a current id alone', () => {
     expect(snapToTierDefault('claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
-    expect(snapToTierDefault('claude', 'claude-fable-5-1')).toBe('claude-fable-5-1');
+    expect(snapToTierDefault('claude', 'claude-fable-5-2')).toBe('claude-fable-5-2');
   });
 
   it('respects the tier the drafter chose rather than upgrading everything', () => {
@@ -463,7 +468,7 @@ describe('newestInFamily', () => {
 
   it('leaves current and unknown ids alone', () => {
     expect(newestInFamily('claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
-    expect(newestInFamily('claude', 'claude-fable-5-1')).toBe('claude-fable-5-1');
+    expect(newestInFamily('claude', 'claude-fable-5-2')).toBe('claude-fable-5-2');
     expect(newestInFamily('claude', 'claude-opus-4-1')).toBe('claude-opus-4-1');
   });
 });

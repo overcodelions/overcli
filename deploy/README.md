@@ -62,6 +62,8 @@ cosign verify ghcr.io/overcodelions/overcli-server:0.22 \
 
 To build it yourself instead (to change the code, say): `docker build -f deploy/Dockerfile -t overcli-org .` (add `--build-arg INSTALL_CODEX=1` for Codex), and point `image:` in `docker-compose.yml` at `overcli-org`.
 
+To serve APIs published from overapi (Setup → APIs), build with an overapi checkout beside this repo: add `--build-context overapi-src=../overapi`. overapi has no public repo yet, so a build without it still succeeds, with no overapi in the image; the APIs tab then says so.
+
 In `deploy/.env`:
 
 - **The model.** Workers run through the Claude Code CLI inside the container. Give it `ANTHROPIC_API_KEY`, or Bedrock (`CLAUDE_CODE_USE_BEDROCK=1` and AWS credentials, ideally from the instance role), or Vertex. For Codex, set `OPENAI_API_KEY`: the published image has it. The console's Admin page shows which models are signed in.

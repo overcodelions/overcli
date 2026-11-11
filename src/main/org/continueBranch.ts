@@ -11,6 +11,12 @@
 // record of what it watched. Prose never does: a branch or ticket a prompt
 // merely mentions (a duplicate, the ticket it was cloned from, someone
 // else's pull request) would push this run's work into that pull request.
+//
+// A worker may name one of its own, though: a `[continue-branch: …]` marker
+// for a branch this worker's runs pushed in this place counts like the CI
+// watcher's, so "add that fix to the PR you opened" lands on that PR and not
+// on whichever of the ticket's branches was pushed last. And where a ticket
+// has several, a pull request number the ask names picks among them.
 
 import type { FlowRun } from '../../shared/flows/schema';
 import type { CiWatch } from './ciWatch';
@@ -51,32 +57,37 @@ export async function continueBranchFor(
     return unique.find((_, i) => open[i]) ?? null;
   };
 
-  // A CI fix names its branch outright, and counts only when the watcher
-  // asked this worker to fix it.
-  const marked = continueBranchOf(args.prompt);
-  if (marked && deps.fixAskedOn(args.workerId, marked, names)) return firstOpen([marked]);
-
-  // Otherwise the ticket its title names, never one its ask only mentions.
-  const ticket = ticketKey(args.title);
-  if (!ticket) return null;
-
-  // The branches earlier runs for that ticket landed here, newest first. A
-  // workspace run works in a folder of its own, and a repo run in a worktree
-  // of the repo: either way `sourceProjectPath` is the place, and
-  // `projectPath` only once the worktree is gone and the run re-pointed.
-  const landed = deps
+  // What this worker's earlier runs pushed here, newest first. A workspace
+  // run works in a folder of its own, and a repo run in a worktree of the
+  // repo: either way `sourceProjectPath` is the place, and `projectPath`
+  // only once the worktree is gone and the run re-pointed.
+  const ownRuns = deps
     .runs()
     .filter(
       (r) =>
         r.workerId === args.workerId &&
         (ws ? !!r.workspaceWorktrees?.length : !r.workspaceWorktrees?.length) &&
         (r.sourceProjectPath ?? r.projectPath) === args.projectPath &&
-        !!r.artifacts?.[LANDED_ARTIFACT] &&
-        ticketOf(r) === ticket,
+        !!r.artifacts?.[LANDED_ARTIFACT],
     )
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .flatMap((r) => landedBranches(r.artifacts![LANDED_ARTIFACT]!.body ?? ''));
-  const fromRuns = await firstOpen(landed);
+    .sort((a, b) => b.createdAt - a.createdAt);
+  const pushedBy = (runs: FlowRun[]) => runs.flatMap((r) => landedPulls(r.artifacts![LANDED_ARTIFACT]!.body ?? ''));
+
+  // A marker names its branch outright: a CI fix the watcher asked this
+  // worker for, or a branch this worker pushed here itself.
+  const marked = continueBranchOf(args.prompt);
+  if (marked && (deps.fixAskedOn(args.workerId, marked, names) || pushedBy(ownRuns).some((p) => p.branch === marked))) return firstOpen([marked]);
+
+  // Otherwise the ticket its title names, never one its ask only mentions.
+  const ticket = ticketKey(args.title);
+  if (!ticket) return null;
+
+  // The branches earlier runs for that ticket landed, newest first; one
+  // whose pull request the ask names ("onto PR 26439") ahead of the rest.
+  const landed = pushedBy(ownRuns.filter((r) => ticketOf(r) === ticket));
+  const asked = `${args.title}\n${args.prompt}`;
+  const named = landed.filter((p) => p.pr && new RegExp(`(?:#|\\bPR\\s*#?|pull request\\s*#?)${p.pr}\\b`, 'i').test(asked));
+  const fromRuns = await firstOpen([...named, ...landed].map((p) => p.branch));
   if (fromRuns) return fromRuns;
 
   // Runs are pruned after a while, and the watcher keeps what it watched:
@@ -87,4 +98,15 @@ export async function continueBranchFor(
     .sort((a, b) => b.startedAt - a.startedAt)
     .map((w) => w.branch);
   return firstOpen(watched);
+}
+
+/// Each branch a run's landed artifact names, with its pull request's number
+/// where the line links one.
+function landedPulls(text: string): Array<{ branch: string; pr?: string }> {
+  return text.split('\n').flatMap((line) => {
+    const [branch] = landedBranches(line);
+    if (!branch) return [];
+    const pr = /\/(?:pull-requests|pull|merge_requests)\/(\d+)/.exec(line)?.[1];
+    return [pr ? { branch, pr } : { branch }];
+  });
 }
