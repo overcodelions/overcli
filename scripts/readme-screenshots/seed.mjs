@@ -451,6 +451,10 @@ const state = {
   colosseums: [],
   settings: { theme: THEME },
   selectedConversationId: hero.id,
+  // Marks every CLI's daily update as just done, so the app doesn't run
+  // `claude update` or `npm i -g @openai/codex` (and open a terminal when
+  // that fails) against the CLIs installed on this machine.
+  backendUpdateChecks: { claude: now, codex: now },
 };
 fs.rmSync(USERDATA, { recursive: true, force: true });
 fs.mkdirSync(USERDATA, { recursive: true });
