@@ -34,6 +34,7 @@
   <a href="#a-quick-tour">Tour</a> ·
   <a href="#download">Download</a> ·
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#overgo-the-org-server">overgo</a> ·
   <a href="#features">Features</a> ·
   <a href="docs/guide/README.md"><strong>Guide</strong></a> ·
   <a href="#security">Security</a> ·
@@ -57,6 +58,7 @@ Coding agents are powerful, but working with them usually means half a dozen ter
 - **Keep your checkout clean.** Agents work in isolated git worktrees until you like what you read.
 - **Get a second opinion.** Loop a reviewer, on another backend if you like, onto every turn.
 - **Go beyond chat.** Chain models into flows, and hire workers that run on their own schedule.
+- **Share them with your org.** [overgo](#overgo-the-org-server) hosts the same workers on a server, so anyone can ask them from Slack, the web console or Claude.
 
 ## A quick tour
 
@@ -98,6 +100,14 @@ Hire a persona that wakes on its own schedule, proposes work, and files what it 
 
 <p align="center">
   <img alt="Workers view: hire a worker from a template, or start a team" src="docs/screenshots/workers.png" width="100%" />
+</p>
+
+### The same workers, for the whole org
+
+**overgo** runs your workers on a server. People ask them from Slack, the web console or Claude; managers approve what reaches outside. [More below](#overgo-the-org-server).
+
+<p align="center">
+  <img alt="overgo console Inbox: an approval waiting on its manager, what was delivered since yesterday, and spend" src="docs/screenshots/overgo-inbox.png" width="100%" />
 </p>
 
 ### Know what it costs
@@ -182,11 +192,50 @@ npm run dev
 | Command | What it does |
 |---|---|
 | `npm run dev` | Full development loop (vite + tsc + electron). |
+| `npm run dev:serve` | Run the overgo server locally on port 7420, rebuilding as you save. |
 | `npm run build` | Compile main process + build renderer bundle. |
 | `npm start` | Build and launch the packaged output unpackaged. |
 | `npm test` | Run the Vitest suite. |
 | `npm run test:watch` | Vitest in watch mode. |
 | `npm run test:coverage` | Vitest with v8 coverage. |
+
+## overgo, the org server
+
+> **Alpha.** It works end to end and changes quickly between versions. Back up its data volume.
+
+overgo is Overcli for a whole org: one container running `overcli serve`. It hosts the same workers and teams you build in the app, so anyone can ask them for things, and each worker's manager stays in charge of what it does.
+
+- **Ask from where you already are.** Mention `@overgo` in Slack and the answer comes back in the thread, team work included. Or use the web console, or connect Claude Code, Claude Desktop or Codex over MCP and ask *"what's waiting on me?"*
+- **Managers approve.** Anything that reaches outside the server (a push, a message, a ticket update) waits for the worker's manager, in Slack or the console. Workers start on probation and earn more room.
+- **An Access tab on every worker.** Its role, its tools and how far each reaches, how much it does alone, and its standing approvals.
+- **One handbook.** Admins keep a page every worker reads after its own job.
+- **A Tuning tab.** Says whether a worker is getting better, and suggests changes from its own runs. Nothing changes until its manager applies one.
+- **A record of everything.** The Library keeps every result with its time, cost and rating; Reports shows time saved and spend by day. Each manager gets a Monday digest in Slack.
+- **Easy to watch.** Prometheus metrics on a port of their own (`OVERCLI_METRICS`), and admins are told when a key expires or a tool's API goes away.
+
+<table>
+  <tr>
+    <td width="50%"><img alt="overgo Workers page: jobs, success rate, manager and spend against budget for each worker" src="docs/screenshots/overgo-workers.png" /></td>
+    <td width="50%"><img alt="overgo Reports page: time saved, jobs, spend, agent time and tokens over 30 days" src="docs/screenshots/overgo-reports.png" /></td>
+  </tr>
+  <tr>
+    <td><sub><b>Workers.</b> How each is doing, who it answers to, and what it costs against its budget.</sub></td>
+    <td><sub><b>Reports.</b> What workers delivered, what it cost, and where the time went.</sub></td>
+  </tr>
+</table>
+
+### Run it
+
+```sh
+cp deploy/.env.example deploy/.env       # the model: an API key, or Bedrock or Vertex
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs -f   # open the first-admin link it prints
+```
+
+The image, `ghcr.io/overcodelions/overcli-server`, is **private while overgo is in alpha**: ask for read access to the package and `docker login ghcr.io` with a `read:packages` token, or build it yourself with `docker build -f deploy/Dockerfile -t overcli-server .`. To try it on your laptop first, `npm run dev:serve`. In the desktop app, turn on **Settings → Labs → Org workers** to publish your workers to it.
+
+- **[Running overgo](deploy/README.md)** — the operator's guide: the image, the volume, Slack, tools, metrics. Cloud guides for [AWS](deploy/aws.md) and [Google Cloud](deploy/gcp.md).
+- **[overgo docs](deploy/docs/README.md)** — for people asking workers, managers and admins. Every server also serves them at `/docs`.
 
 ## Features
 
@@ -205,7 +254,7 @@ Everything in the box:
 | 09 | **File editor** | Tabs, per-file view modes, syntax highlighting, line-range highlighting, HTML & Markdown preview with local CSS and images resolved, and live rendering of `.tsx`/`.jsx` components (Tailwind included, compiled with the project's own Tailwind). <kbd>⌘</kbd>-click a symbol to jump to its definition. Open files are remembered per conversation, flow run and explorer root — leave and come back and they're still there. No context-switch to VS Code. |
 | 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Copy an MCP server from one CLI to the others in a click. Rescan on demand. |
 | 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher, <kbd>⌘1</kbd>–<kbd>⌘9</kbd> and <kbd>⌥⌘←/→</kbd> for editor tabs. |
-| 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
+| 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. **Clean up** (<kbd>⌘K</kbd>) frees old worktrees that hold no work and treats squash-merged branches as merged. |
 | 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
 | 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. Switched on in **Settings → Labs**. |
 | 15 | **Usage dashboard** | Rolling 5h / 24h / 7d stats, broken down by backend, model, and project. |
@@ -217,7 +266,7 @@ Everything in the box:
 | 21 | **Teams** | Put workers together on one task. Write a brief and a coordinator plans the stages — who contributes, who challenges — for you to approve, hiring any member the plan is missing. Members work in the team's project on one shared branch per task, files land in a shared folder, and the coordinator writes the final pack. Afterwards, ask the team follow-up questions in its room and hand work back to a member. Members keep their own permissions unless you say otherwise, and a budget per task caps the spend. Lives in the Workers view. |
 | 22 | **Documents projects** | Overcli without a repo. **Open a folder** of documents and Overcli offers the documents view, or **Start something new**: describe what you want and get a prepared folder in `~/Documents/Overcli Projects/` — one flat folder, deliberately no `inbox/` or `output/` — with an undo history it sets up for you, and starter flows for documents rather than code. |
 | 23 | **Headless CLI** | The same flows and workers, run from a command line instead of the app — one shot in CI or on a box you own, driving the same runtime the GUI does. Deploy a flow or a worker cadence straight to GitHub Actions or Jenkins as a generated pipeline. |
-| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack, the web console or Claude, with managers approving what they do. Each worker has an Access tab (tools and their scope, how much it does alone, standing approvals), a history you can restore from, and notes from going through its own tools; admins keep one handbook every worker reads. Expired keys and retired tool APIs alert the admins, and a Monday digest tells managers how the week went. See [`deploy/docs/`](deploy/docs/README.md). |
+| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack (teams work in the thread), the web console or Claude over MCP, with managers approving what they do. Each worker has a role, an Access tab and a Tuning tab; admins keep one handbook every worker reads, offer APIs published from overapi, and watch the server through Prometheus metrics. A Monday digest tells managers how the week went. See [overgo](#overgo-the-org-server). |
 
 ## Build & package
 
@@ -254,8 +303,9 @@ src/
     index.ts             app lifecycle, IPC handlers, window
     runner.ts            subprocess manager per conversation
     codex-app-server.ts  Codex app-server transport (replaces stdio for codex)
-    backends/            per-backend adapters (claude / codex / gemini / ollama)
+    backends/            per-backend adapters (claude / codex / gemini / copilot / ollama)
     parsers/             stream-event parsers, one per backend
+    geminiAcp.ts         Gemini's ACP session transport
     history.ts           load prior transcripts from disk
     store.ts             on-disk persistence (single overcli.json)
     git.ts               worktree ops for agent conversations
@@ -265,9 +315,17 @@ src/
     reviewer.ts          rebound-review orchestration
     ollama.ts            Ollama model catalog + server control
     mcpConfig.ts         cross-CLI MCP server config sync
+    flows/               flows, workers, teams and their stores
+    org/                 the org server's services (overgo)
+    slack/               the Slack bridge
   preload/       contextBridge exposing `window.overcli`
   renderer/      React app
     App.tsx, components/, store.ts (Zustand), theme.ts, hooks.ts
+  cli/           the headless `overcli` command and `overcli serve`
+    serve.ts             the org server: engines, Slack, control plane
+    controlPlane.ts      the console's /api, MCP at /mcp
+    consoleAssets.ts     the web console (one dependency-free page)
+deploy/          overgo's Dockerfile, compose file and docs
 ```
 
 **Tech** — Electron 45, React 18, TypeScript, Vite, Tailwind, Zustand.
@@ -275,7 +333,7 @@ src/
 ### How a turn flows
 
 1. User types in the composer; the renderer IPCs the message to main.
-2. The matching backend adapter in `backends/` opens (or reuses) a session — a CLI subprocess for claude/gemini/ollama, the app-server channel for codex.
+2. The matching backend adapter in `backends/` opens (or reuses) a session — a CLI subprocess for claude and copilot, an ACP session for gemini (or `gemini -p` on older CLIs), the app-server channel for codex, and Ollama's HTTP API.
 3. Stream events hit `parsers/<backend>.ts`, which normalise them into a backend-agnostic `TurnEvent` stream.
 4. Those events flow back to the renderer and become tool cards, message bubbles, approval cards, and diffs in `ChatView.tsx`.
 5. On completion, `stats.ts` records the turn; `reviewer.ts` optionally kicks off a rebound review on a second backend.
