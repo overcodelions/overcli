@@ -28,6 +28,7 @@ import { describeTrigger, type ScheduleTrigger } from '../../shared/flows/schedu
 import type { Orchestration } from '../../shared/flows/orchestration';
 import { buildOrgTree, managerFor, type OrgNode } from '../../shared/flows/org';
 import {
+  reportDayKey,
   rollUpWorkerReport,
   WORKER_HUMAN_TIME_SAVED_MULTIPLIER,
   type WorkerReport,
@@ -87,6 +88,8 @@ import type { ServerVersion } from './updateCheck';
 import { SLACK_BUDGET } from '../slack/deliver';
 import { escapeMrkdwn } from '../slack/slackApi';
 import { TRIGGER_STARTS } from './askPreface';
+import { outcomeOf } from './outcome';
+import { buildPeopleDirectory, type DirectoryPerson, type PersonSighting } from './peopleDirectory';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -202,6 +205,9 @@ export interface WorkerSummary {
   spentThisMonthUSD: number;
   /// This month so far: runs started, runs that failed, pull requests opened.
   month: { runs: number; failed: number; pullRequests: number };
+  /// The last 30 days of its runs that ended: how many, how many failed, the
+  /// 30 days before for a trend, and how its newest one went.
+  last30: { jobs: number; failed: number; prior: number; lastRun?: { at: number; outcome: 'done' | 'failed' | 'stopped' } };
   waiting: number;
   youManage: boolean;
   /// What it is doing now: working, waiting on a person, paused, stuck, idle.
@@ -333,7 +339,20 @@ export interface TeamTaskSummary {
   code?: { branch: string; repos: Array<{ name: string; ahead?: number; pushed?: { url?: string } }> };
   /// What the person who asked said about the work, and what came of each.
   comments?: TeamComment[];
+  /// When it was asked for and when it finished: its cycle time.
+  createdAt: number;
+  finishedAt?: number;
   updatedAt: number;
+}
+
+/// A team's last 30 days, for its card: tasks asked for in that time (the
+/// one-off questions too), the median ask-to-finish time of the staged ones
+/// that finished, and what they spent against what they were given.
+export interface TeamMonth {
+  tasks: number;
+  medianCycleMs?: number;
+  spentUSD: number;
+  budgetUSD: number;
 }
 
 /// A desktop's setup, published to the org: its tools as templates, the
@@ -592,6 +611,9 @@ export interface LibraryItem {
   workerName: string;
   at: number;
   title: string;
+  /// What it came to, in one line, when that says more than the title (often
+  /// the raw ask): "Explained how to seed test data". See outcome.ts.
+  outcome?: string;
   status: Deliverable['status'];
   /// The run it came from, for a work item: reading it in full fetches the report.
   runId?: UUID;
@@ -766,6 +788,19 @@ export interface ReportSaved {
   prRuns: number;
   prMultiplier: number;
   prMinHours: number;
+}
+
+/// The window of equal length just before the report's, for "▲ 18% vs prior":
+/// the same measures over the same visible workers. None for all time.
+export interface ReportPrior {
+  sinceMs: number;
+  untilMs: number;
+  itemsDone: number;
+  costUSD: number;
+  workedMs: number;
+  tokens: number;
+  pullRequests: number;
+  savedMs: number;
 }
 
 const REPORT_WINDOWS = new Set([7, 30, 0]);
@@ -1472,6 +1507,7 @@ export class OrgService {
           budgetUSDPerMonth: w.budgetUSDPerMonth,
           spentThisMonthUSD: spent.get(w.id) ?? 0,
           month: this.monthOf(runsBy.get(w.id) ?? []),
+          last30: this.last30Of(runsBy.get(w.id) ?? []),
           waiting: waiting.get(w.id) ?? 0,
           youManage: canManage(policy, roster, w.id, caller),
           schedule: scheduleText(w.cadence),
@@ -1571,7 +1607,7 @@ export class OrgService {
   /// narrowed to the workers the caller can see. Totals and the day-by-day
   /// are re-added from the visible rows only, so a hidden worker's cost never
   /// shows up in a number the caller can read.
-  report(caller: OrgCaller, days: number): Result<{ report: OrgReport; savedMultiplier: number; saved: ReportSaved }> {
+  report(caller: OrgCaller, days: number): Result<{ report: OrgReport; savedMultiplier: number; saved: ReportSaved; prior?: ReportPrior }> {
     if (!this.deps.report) return { ok: false, error: 'Reports are not available on this server.' };
     const span = Number.isFinite(days) ? days : 30;
     if (!REPORT_WINDOWS.has(span)) return { ok: false, error: 'Pick 7 days, 30 days or all time (0).' };
@@ -1588,8 +1624,22 @@ export class OrgService {
     const prs = new Map<UUID, number>();
     // Runs that opened a pull request, with their agent time, for time saved.
     const prRuns: Array<{ workerId: UUID; ms: number }> = [];
+    // The window before, the same length: what "vs prior" compares against.
+    const priorSince = span > 0 ? (() => {
+      const d = new Date(sinceMs);
+      d.setDate(d.getDate() - span);
+      return d.getTime();
+    })() : 0;
+    const priorPrRuns: Array<{ workerId: UUID; ms: number; opened: number }> = [];
     for (const r of this.deps.runs.listRuns()) {
-      if (!r.workerId || r.createdAt < sinceMs) continue;
+      if (!r.workerId) continue;
+      if (r.createdAt < sinceMs) {
+        if (span > 0 && r.createdAt >= priorSince) {
+          const opened = OrgService.prsOpened(r);
+          if (opened) priorPrRuns.push({ workerId: r.workerId, ms: OrgService.agentMs(r), opened });
+        }
+        continue;
+      }
       const opened = OrgService.prsOpened(r);
       if (!opened) continue;
       prs.set(r.workerId, (prs.get(r.workerId) ?? 0) + opened);
@@ -1634,14 +1684,36 @@ export class OrgService {
     const shown = new Set(byWorker.map((r) => r.workerId));
     const base = WORKER_HUMAN_TIME_SAVED_MULTIPLIER;
     const floorMs = policy.prSavedMinHours * 3_600_000;
+    const topUpOf = (runs: ReadonlyArray<{ ms: number }>) => runs.reduce((n, x) => n + Math.max(0, Math.max(x.ms * policy.prSavedMultiplier, floorMs) - x.ms * base), 0);
     const counted = prRuns.filter((x) => shown.has(x.workerId));
-    const topUp = counted.reduce((n, x) => n + Math.max(0, Math.max(x.ms * policy.prSavedMultiplier, floorMs) - x.ms * base), 0);
-    const saved: ReportSaved = { ms: totals.workedMs * base + topUp, prRuns: counted.length, prMultiplier: policy.prSavedMultiplier, prMinHours: policy.prSavedMinHours };
+    const saved: ReportSaved = { ms: totals.workedMs * base + topUpOf(counted), prRuns: counted.length, prMultiplier: policy.prSavedMultiplier, prMinHours: policy.prSavedMinHours };
+    // The prior window from the host's report over both windows, its days
+    // before this window's first, for the same visible workers only.
+    let prior: ReportPrior | undefined;
+    if (span > 0) {
+      const both = this.deps.report(priorSince);
+      const firstDay = reportDayKey(sinceMs);
+      prior = { sinceMs: priorSince, untilMs: sinceMs, itemsDone: 0, costUSD: 0, workedMs: 0, tokens: 0, pullRequests: 0, savedMs: 0 };
+      for (const row of both.byWorker) {
+        if (!shown.has(row.workerId)) continue;
+        for (const d of row.daily) {
+          if (d.day >= firstDay) continue;
+          prior.itemsDone += d.itemsDone;
+          prior.costUSD += d.costUSD;
+          prior.workedMs += d.workedMs;
+          prior.tokens += d.tokens;
+        }
+      }
+      const priorCounted = priorPrRuns.filter((x) => shown.has(x.workerId));
+      prior.pullRequests = priorCounted.reduce((n, x) => n + x.opened, 0);
+      prior.savedMs = prior.workedMs * base + topUpOf(priorCounted);
+    }
     return {
       ok: true,
       report: { generatedAt: full.generatedAt, sinceMs: full.sinceMs, days: span, byWorker, totals: { ...totals, pullRequests: byWorker.reduce((n, r) => n + r.pullRequests, 0) }, daily },
       savedMultiplier: WORKER_HUMAN_TIME_SAVED_MULTIPLIER,
       saved,
+      ...(prior ? { prior } : {}),
     };
   }
 
@@ -3499,11 +3571,33 @@ export class OrgService {
                 };
               });
           });
+    // What each came to, to lead with over the raw ask: the worker's own
+    // headline for the run (or the newest run an answer handed off to), else
+    // what its text opens with. A document is a file, named as it is.
+    const headlineByBatch = new Map<string, { at: number; headline: string }>();
+    for (const r of runs.values()) {
+      const at = OrgService.runEndedAt(r);
+      if (r.parentOrchestrationId && r.digest?.headline && (headlineByBatch.get(r.parentOrchestrationId)?.at ?? -1) <= at) headlineByBatch.set(r.parentOrchestrationId, { at, headline: r.digest.headline });
+    }
+    const askById = new Map(asks.map((a) => [a.id, a]));
+    const askOfEvent = new Map(deliverables.filter((d) => d.askId).map((d) => [d.id, d.askId!]));
+    const headlineFor = (x: LibraryItem): string | undefined => {
+      if (x.runId) return runs.get(x.runId)?.digest?.headline;
+      const askId = x.origin.kind === 'errand' ? x.origin.askId : x.kind === 'event' ? askOfEvent.get(x.id) : undefined;
+      const batch = askId ? askById.get(askId)?.orchestrationId : undefined;
+      return batch ? headlineByBatch.get(batch)?.headline : undefined;
+    };
+    const withOutcome = (x: LibraryItem): LibraryItem => {
+      if (x.kind === 'document' || x.kind === 'file' || x.status === 'failed') return x;
+      const outcome = outcomeOf({ title: x.title, body: x.body, headline: headlineFor(x) });
+      return outcome ? { ...x, outcome } : x;
+    };
     return [...fromEvents, ...fromWork, ...fromAnswers, ...fromTasks, ...fromFiles, ...fromDocuments]
       .filter((x) => !opts.workerId || x.workerId === opts.workerId)
       .filter((x) => !opts.kind || x.kind === opts.kind)
       .filter((x) => !opts.visibility || x.visibility === opts.visibility)
-      .filter((x) => words.every((w) => `${x.title} ${x.workerName} ${x.body ?? ''}`.toLowerCase().includes(w)))
+      .map(withOutcome)
+      .filter((x) => words.every((w) => `${x.title} ${x.outcome ?? ''} ${x.workerName} ${x.body ?? ''}`.toLowerCase().includes(w)))
       .sort((a, b) => b.at - a.at)
       .slice(0, Math.min(500, opts.limit ?? 200));
   }
@@ -4960,6 +5054,22 @@ export class OrgService {
       runs: mine.length,
       failed: ended.filter((r) => OrgService.runOutcome(r) === 'failed').length,
       pullRequests: mine.reduce((n, r) => n + OrgService.prsOpened(r), 0),
+    };
+  }
+
+  /// Its last 30 days, from its ended runs: the Workers list's jobs, success
+  /// rate and last run. Outcomes as runOutcome says, like the Runs tab.
+  private last30Of(runs: FlowRun[]): WorkerSummary['last30'] {
+    const now = this.now();
+    const DAY = 86_400_000;
+    const ended = runs.filter((r) => r.state.kind === 'done' || r.state.kind === 'aborted');
+    const recent = ended.filter((r) => now - r.createdAt <= 30 * DAY);
+    const newest = ended.reduce<FlowRun | undefined>((a, r) => (!a || r.createdAt > a.createdAt ? r : a), undefined);
+    return {
+      jobs: recent.length,
+      failed: recent.filter((r) => OrgService.runOutcome(r) === 'failed').length,
+      prior: ended.filter((r) => now - r.createdAt > 30 * DAY && now - r.createdAt <= 60 * DAY).length,
+      ...(newest ? { lastRun: { at: OrgService.runEndedAt(newest), outcome: OrgService.runOutcome(newest) } } : {}),
     };
   }
 
@@ -7480,6 +7590,8 @@ export class OrgService {
           }
         : {}),
       ...(task.comments?.length ? { comments: task.comments } : {}),
+      createdAt: task.createdAt,
+      ...(task.finishedAt ? { finishedAt: task.finishedAt } : {}),
       updatedAt: task.updatedAt,
     };
   }
@@ -8052,6 +8164,33 @@ export class OrgService {
     return false;
   }
 
+  /// Each visible team's last 30 days, by team id. From every task, not the
+  /// 40 newest the task list carries. Learning isn't anyone's task.
+  teamMonth(caller: OrgCaller): Record<UUID, TeamMonth> {
+    if (!this.deps.teams) return {};
+    const since = this.now() - 30 * 86_400_000;
+    const out: Record<UUID, TeamMonth> = {};
+    const cycles: Record<UUID, number[]> = {};
+    for (const t of this.teams(caller)) {
+      out[t.id] = { tasks: 0, spentUSD: 0, budgetUSD: 0 };
+      cycles[t.id] = [];
+    }
+    for (const task of this.deps.teams.list().tasks) {
+      const m = out[task.teamId];
+      if (!m || task.kind === 'learn' || task.createdAt < since) continue;
+      m.tasks++;
+      m.spentUSD += task.spentUSD || 0;
+      m.budgetUSD += task.budgetUSD || 0;
+      if (task.status === 'done' && task.finishedAt && !task.answered && task.stages.length) cycles[task.teamId].push(task.finishedAt - task.createdAt);
+    }
+    for (const id of Object.keys(out)) {
+      const xs = cycles[id].sort((a, b) => a - b);
+      const n = xs.length;
+      if (n) out[id].medianCycleMs = n % 2 ? xs[(n - 1) / 2] : (xs[n / 2 - 1] + xs[n / 2]) / 2;
+    }
+    return out;
+  }
+
   teamTasks(caller: OrgCaller): TeamTaskSummary[] {
     if (!this.deps.teams) return [];
     const roster = this.deps.workers.roster();
@@ -8440,6 +8579,22 @@ export class OrgService {
         { id: 'approvers', name: 'Hire approvers', members: members(approversFor(policy)) },
       ].filter((g) => g.members.length),
     };
+  }
+
+  /// Everyone the org knows, one entry each, with every name they've been
+  /// written down under: sign-ins, managers, askers, requesters, org.json's
+  /// emails, and the org's Slack when it's passed. For the console to show a
+  /// person by the name they go by wherever a handle or device name was kept.
+  peopleDirectory(slack: ReadonlyArray<{ id: string; name: string; handle?: string }> = []): DirectoryPerson[] {
+    const policy = this.policy();
+    const seen: PersonSighting[] = [];
+    for (const t of this.deps.people?.() ?? []) seen.push({ name: t.name, ...(t.slackUserId ? { slackUserId: t.slackUserId } : {}) });
+    for (const id of [...policy.admins, ...approversFor(policy), ...(policy.hirers === '*' ? [] : policy.hirers), ...Object.values(policy.teams).flat()]) seen.push({ slackUserId: id });
+    for (const [email, id] of Object.entries(policy.people ?? {})) seen.push({ email, slackUserId: id });
+    for (const w of this.deps.workers.roster()) if (w.manager) seen.push({ name: w.manager.name, ...(w.manager.slackUserId ? { slackUserId: w.manager.slackUserId } : {}) });
+    for (const a of this.allAsks()) if (a.via !== 'trigger') seen.push({ name: a.by, ...(a.slackUserId ? { slackUserId: a.slackUserId } : {}) });
+    for (const t of this.deps.teams?.list().tasks ?? []) if (t.requestedBy) seen.push({ name: t.requestedBy.name, ...(t.requestedBy.slackUserId ? { slackUserId: t.requestedBy.slackUserId } : {}) });
+    return buildPeopleDirectory({ seen, slack });
   }
 
   /// A person's name, learned from Slack: workers saved with their bare

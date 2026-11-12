@@ -122,6 +122,15 @@ export function browserMissing(text: string): boolean {
 export const NO_BROWSER =
   'This server has no browser for apps to test yet. The Docker image installs Chromium when it is built: rebuild it from this version (without INSTALL_BROWSER=0). Anywhere else, run: npx playwright install --with-deps chromium';
 
+/// A screenshot file this small is almost one flat colour: a page still
+/// behind its loading screen, or blank. Real pages come out at tens of KB.
+export const LIKELY_BLANK_BYTES = 20_000;
+/// How long to give such a page before taking it once more.
+export const BLANK_RETRY_MS = 2500;
+/// The largest screenshot sent back for the worker to look at; a bigger one
+/// (a very long full page) is still kept, just not shown.
+export const MAX_INLINE_IMAGE_BYTES = 3_500_000;
+
 /// Signing in again when a page lands on the sign-in page, at most this often
 /// per open: a sign-in that never sticks would otherwise loop.
 export const MAX_SIGN_INS_AGAIN = 3;
@@ -394,8 +403,20 @@ export class TestSystemsSession {
       saved = screenshotName(args.filename, args.type, this.now());
       args = { ...args, filename: path.join(this.deps.tempDir(), saved) };
     }
-    const result = await this.callBrowser(name, args);
-    if (saved && !result.isError) return this.redact(this.keep(saved, result));
+    let result = await this.callBrowser(name, args);
+    if (saved && !result.isError) {
+      // A screenshot taken while the app is still behind its loading screen:
+      // a wait for text can pass on text already in the page underneath it.
+      // Give it a moment and take it once more, and say so if it's no better.
+      let blank = this.looksBlank(saved);
+      if (blank) {
+        await this.sleep(BLANK_RETRY_MS);
+        const again = await this.callBrowser(name, args);
+        if (!again.isError) result = again;
+        blank = this.looksBlank(saved);
+      }
+      return this.redact(this.keep(saved, result, blank));
+    }
     const at = pageUrlOf(result);
     if (this.open && at && this.isSignedOut(at)) {
       if (this.signInsAgain >= MAX_SIGN_INS_AGAIN) {
@@ -414,7 +435,7 @@ export class TestSystemsSession {
 
   /// A screenshot taken: copied to the run's evidence, and the worker told
   /// where it went, by name.
-  private keep(name: string, result: ToolResult): ToolResult {
+  private keep(name: string, result: ToolResult, blank = false): ToolResult {
     let said = `Saved the screenshot as ${name}.`;
     const dir = this.deps.filesDir;
     if (dir) {
@@ -434,8 +455,36 @@ export class TestSystemsSession {
     const content = result.content
       .map((c) => (typeof c.text === 'string' ? { ...c, text: c.text.split('\n').filter((line) => !line.includes(dirName) && !line.includes(name)).join('\n') } : c))
       .filter((c) => typeof c.text !== 'string' || c.text.trim());
-    const look = 'You can see it here, in this step only: describe what it shows in this step’s output. A later step can’t open it; people see it on the run’s page.';
-    return { ...result, content: [{ type: 'text', text: `${said} ${look}` }, ...content] };
+    // Playwright returns the picture only when it isn't given a file name, and
+    // it always is one here: send the picture back from the file.
+    let image: ToolContent | undefined;
+    if (!content.some((c) => c.type === 'image')) {
+      try {
+        const file = path.join(dirName, name);
+        if (fs.statSync(file).size <= MAX_INLINE_IMAGE_BYTES) {
+          image = { type: 'image', data: fs.readFileSync(file).toString('base64'), mimeType: /\.jpe?g$/i.test(name) ? 'image/jpeg' : 'image/png' };
+        }
+      } catch {
+        // Not readable: the worker is told it can't see it, below.
+      }
+    }
+    const seen = image || content.some((c) => c.type === 'image');
+    const look = seen
+      ? 'It is shown below, in this step only: look at it and describe what it shows in this step’s output. A later step can’t open it; people see it on the run’s page.'
+      : 'It is too large to show here; people see it on the run’s page.';
+    const warn = blank
+      ? ' It is almost empty, even taken a second time a moment later: the page is likely still loading or blank. Don’t use it as evidence. Wait for something only the loaded page shows, then take it again.'
+      : '';
+    return { ...result, content: [{ type: 'text', text: `${said} ${look}${warn}` }, ...content, ...(image ? [image] : [])] };
+  }
+
+  /// The screenshot just taken, in the browser's folder, is suspiciously small.
+  private looksBlank(name: string): boolean {
+    try {
+      return fs.statSync(path.join(this.deps.tempDir(), name)).size < LIKELY_BLANK_BYTES;
+    } catch {
+      return false;
+    }
   }
 
   private isSignedOut(url: string): boolean {

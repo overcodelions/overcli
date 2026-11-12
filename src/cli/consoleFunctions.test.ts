@@ -283,9 +283,9 @@ describe('the inbox, as pieces of work', () => {
     if (a < 0 || b < 0) throw new Error('moved: ' + from);
     return CONSOLE_JS.slice(a, b);
   };
-  type Item = { title: string; at: number; minutes?: number; kind?: string };
+  type Item = { title: string; at: number; minutes?: number; kind?: string; outcome?: string };
   const code = part('  function startOf(', '  /// A row whose title is the button') + part("  /// A ticket's key at the head", '  /// One step of a piece of work');
-  const { workGroups, workSteps } = new Function('nameOf', 'when', `${code}; return { workGroups, workSteps };`)((x: Item) => x.title, () => '') as {
+  const { workGroups, workSteps } = new Function('nameOf', 'askedTitle', 'when', `${code}; return { workGroups, workSteps };`)((x: Item) => x.outcome || x.title, (x: Item) => x.title, () => '') as {
     workGroups: (items: Item[]) => Array<{ key?: string; title?: string; items: Item[] }>;
     workSteps: (items: Item[]) => { steps: Item[]; began: number; ended: number };
   };
@@ -314,6 +314,11 @@ describe('the inbox, as pieces of work', () => {
   it('keeps the same scheduled job on different days apart, and a burst of it together', () => {
     expect(shape([at(1, 'Daily exception filing'), at(25, 'Daily exception filing')])).toEqual([['Daily exception filing'], ['Daily exception filing']]);
     expect(shape([at(1, 'Daily exception filing'), at(1.5, 'Daily exception filing', { minutes: 20 })])).toEqual([['Daily exception filing', 'Daily exception filing']]);
+  });
+
+  it('groups by what was asked, not by the outcome each run came to', () => {
+    expect(shape([at(1, 'Daily exception filing', { outcome: 'Filed 3 exceptions' }), at(1.5, 'Daily exception filing', { outcome: 'Filed nothing new today' })])).toEqual([['Daily exception filing', 'Daily exception filing']]);
+    expect(workGroups([at(1, 'ACME-7 is stuck', { outcome: 'Restarted the acme sync job' })])[0].key).toBe('ACME-7');
   });
 
   it('reads the steps from what set it off, and spans first start to last finish', () => {
@@ -354,5 +359,30 @@ describe('changing every worker’s budget at once', () => {
     const after = caps.reduce((sum, w) => sum + (changes.find((c) => c.id === w.id)?.to ?? w.capUSD), 0);
     expect(after).toBeGreaterThan(990);
     expect(after).toBeLessThan(1010);
+  });
+});
+
+describe('the teams and processes board', () => {
+  const fn = (name: string) => {
+    const at = CONSOLE_JS.indexOf(`  function ${name}(`);
+    return CONSOLE_JS.slice(at, CONSOLE_JS.indexOf('\n  }\n', at) + 4);
+  };
+  const spanShort = new Function(`${fn('spanShort')}\nreturn spanShort;`)() as (ms: number) => string;
+  const isQuestion = new Function(`${CONSOLE_JS.match(/function isTeamQuestion\(k\) \{[^\n]*\}/)![0]}\nreturn isTeamQuestion;`)() as (k: object) => boolean;
+
+  it('says a length of time the way the table and the figures do', () => {
+    const MIN = 60_000;
+    expect(spanShort(18 * MIN)).toBe('18m');
+    expect(spanShort(6 * 60 * MIN + 40 * MIN)).toBe('6h 40m');
+    expect(spanShort(5 * 1440 * MIN + 2 * 60 * MIN)).toBe('5d 2h');
+    expect(spanShort(2 * 1440 * MIN)).toBe('2d');
+  });
+
+  it('keeps one-off questions out of the staged work, and never calls a finished one planning', () => {
+    expect(isQuestion({ answered: true, status: 'done', stages: [] })).toBe(true);
+    expect(isQuestion({ status: 'done', stages: [] })).toBe(true);
+    expect(isQuestion({ status: 'planning', stages: [] })).toBe(false);
+    expect(isQuestion({ status: 'cancelled', stages: [] })).toBe(false);
+    expect(isQuestion({ status: 'done', stages: [{ state: 'done' }] })).toBe(false);
   });
 });
