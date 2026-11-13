@@ -721,6 +721,29 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
   };
   return [
     { method: 'GET', path: /^\/api\/processes$/, handle: (c) => ({ ok: true, processes: processes.list(c) }) },
+    // For the bar's working list: process items in flight, and those that
+    // finished in the last day.
+    {
+      method: 'GET',
+      path: /^\/api\/processes\/now$/,
+      handle: (c) => ({
+        ok: true,
+        active: processes.inFlight(c).map((x) => ({
+          id: x.item.id,
+          processId: x.processId,
+          process: x.process,
+          title: x.item.title,
+          stage: x.item.stageName,
+          stageIndex: x.item.stageIndex,
+          stages: x.stages,
+          note: x.item.blocked ? 'Stuck' : (x.item.stageNote ?? ''),
+          needsYou: x.decide,
+          stuck: !!x.item.blocked,
+          since: x.item.updatedAt,
+        })),
+        finished: processes.finishedSince(c, Date.now() - 24 * 60 * 60 * 1000),
+      }),
+    },
     // Everything in flight for the Inbox: worker runs, team tasks and process
     // items in one list, and the process decisions waiting on this person.
     {

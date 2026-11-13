@@ -253,6 +253,10 @@ export class OrchestratorImpl {
   /// A worker's run that follows up a change already pushed starts on that
   /// change's branch (the server's, see engines). Null: the usual base.
   continueBranch?: (args: { projectPath: string; workerId: string; title: string; prompt: string }) => Promise<string | null>;
+  /// Why that branch's latest build failed, read by the server (failing tests,
+  /// the end of the step's log), or '' when it didn't fail or can't be read.
+  /// A worker's own tool may not read build logs at all.
+  buildFailureOf?: (args: { projectPath: string; branch: string }) => Promise<string>;
   /// Where a worker's run would be put now (workerEngine.runInFor). A batch
   /// queued to run in place whose worker has since gained a step that edits
   /// code gets a worktree after all, or its edits land on the checked-out
@@ -937,6 +941,7 @@ export class OrchestratorImpl {
             ? await this.continueBranch({ projectPath: o.projectPath, workerId: worker.workerId, title: next.candidate.title, prompt: next.candidate.prompt }).catch(() => null)
             : null;
         if (continued) baseBranch = continued;
+        const failure = continued && this.buildFailureOf ? await this.buildFailureOf({ projectPath: o.projectPath, branch: continued }).catch(() => '') : '';
         const worktreeName =
           !adoptWorktrees && worker?.team && baseBranch?.startsWith('team/')
             ? teamPieceSlug(baseBranch, worker.team.stage, worker.workerName)
@@ -948,7 +953,7 @@ export class OrchestratorImpl {
             o.runIn === 'shared' && adoptWorktrees
               ? next.candidate.prompt + sharedBranchInstruction(adoptWorktrees.branch)
               : continued
-                ? `${next.candidate.prompt}\n\nThis follows up ${continued}, already pushed with its pull request open: your checkout starts from it, so its commits are here. Build on them; the server adds what you change to that branch.`
+                ? `${next.candidate.prompt}\n\nThis follows up ${continued}, already pushed with its pull request open: your checkout starts from it, so its commits are here. Build on them; the server adds what you change to that branch.${failure ? `\n\nWHY ITS LATEST BUILD FAILED (read by the server from the build itself)\n${failure}` : ''}`
                 : next.candidate.prompt,
           runIn,
           baseBranch,

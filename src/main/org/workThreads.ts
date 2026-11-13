@@ -95,7 +95,7 @@ export interface WorkThread {
   /// Set when it was a piece of a team's task.
   team?: { id: UUID; name: string; taskId: UUID };
   /// A follow-up overcli started after a push: which kind.
-  followUp?: 'ci' | 'ticket';
+  followUp?: 'ci' | 'ticket' | 'replies';
 }
 
 export interface ThreadInputs {
@@ -335,7 +335,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     batch?: Orchestration;
     extraRuns?: FlowRun[];
     choices?: string[];
-    followUp?: 'ci' | 'ticket';
+    followUp?: 'ci' | 'ticket' | 'replies';
   }): WorkThread => {
     const b = base.batch;
     if (b) usedBatches.add(b.id);

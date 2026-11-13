@@ -1727,14 +1727,17 @@ export class WorkerEngine {
   /// the red branch, see continueBranch): in place, its project is the
   /// workspace whose repos are the shared clones every run forks from, and a
   /// fix that checked its branch out there left them on it.
-  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+  /// A ticket update carries the worker's job description: moving a ticket
+  /// often needs fields only the job says how to fill (a problem type, whether
+  /// automation is required), and without it the move stops at "requires …".
+  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' | 'replies' }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     const res = await this.deps.parker.parkDirect({
       origin: { ...{ ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w) }, followUp: args.kind },
       projectPath: w.projectPath,
-      prompt: args.prompt,
+      prompt: args.kind !== 'ci' ? this.buildDirectPrompt(w, args.prompt, { files: false }) : args.prompt,
       title: args.title,
       flowId: args.flowId,
       runIn: args.kind === 'ci' ? 'worktree' : 'cwd',

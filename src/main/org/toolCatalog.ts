@@ -130,7 +130,7 @@ export const TOOL_CATALOG: CatalogTool[] = [
       CONFLUENCE_URL: 'https://your-site.atlassian.net/wiki — leave the Confluence lines out to skip it',
     },
   }),
-  command('bitbucket', ['npx', '-y', '@aashari/mcp-server-atlassian-bitbucket'], ['ATLASSIAN_USER_EMAIL', 'ATLASSIAN_API_TOKEN'], {
+  command('bitbucket', ['npx', '-y', '@aashari/mcp-server-atlassian-bitbucket@3.1.0'], ['ATLASSIAN_USER_EMAIL', 'ATLASSIAN_API_TOKEN'], {
     title: 'Bitbucket',
     blurb: 'Repositories, pull requests, comments and diffs on Bitbucket Cloud, with an API token. Atlassian Rovo covers Bitbucket too, with a sign-in.',
     category: 'Code',

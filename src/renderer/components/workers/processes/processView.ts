@@ -465,6 +465,7 @@ export const OWNER_TURN: Record<NonNullable<ProcessItemView["ownerTurn"]>, { tit
   plan: { title: "Approve the plan", doing: "approve the plan" },
   pack: { title: "Sign off the pack", doing: "sign off the pack" },
   paused: { title: "Unblock the run", doing: "unblock the paused run" },
+  approval: { title: "OK what the worker will do", doing: "OK what the worker will do" },
 };
 
 /// What an item is doing now, in one line that never contradicts itself:

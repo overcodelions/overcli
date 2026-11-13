@@ -61,9 +61,9 @@ import { SERVER_PR_STEP } from './serverFlow';
 import { aroundChange, impactLine, scoreRuns, watchReasons, type ScoredRun, type TuningScore } from '../../shared/org/tuningScore';
 import { describeScope, inToolScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
 import { answerOptions, projectMonthEnd, trustReadiness, workerState, type TrustReadiness, type WorkerState } from '../../shared/org/insights';
-import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
+import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamKnowledgeRefresh, TeamStageKind, TeamTask } from '../../shared/flows/team';
 import { resolveShortNames } from '../../shared/shortName';
-import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
+import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
 import { CARRIED_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
 import type { Attachment, Backend, UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
@@ -224,6 +224,11 @@ export interface WorkerSummary {
   answersAtOnce: number;
   /// Runs through its flows' own checkpoints without stopping.
   skipCheckpoints?: boolean;
+  /// Works on the team's open pull requests (WorkerCaps.continueOpenPrs).
+  continueOpenPrs?: boolean;
+  /// Whose (WorkerCaps.prAuthors), and whose review comments (prCommentAuthors).
+  prAuthors?: string[];
+  prCommentAuthors?: string[];
   /// Steps it always runs without asking, `flowId/stepId`.
   alwaysAllow?: string[];
   /// Set by hand: whether it changes code. Absent: from its flows (`coding`).
@@ -902,7 +907,7 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
     /// Ask an answered question again, as work.
     planAsTask?(taskId: UUID): Result<{ task: TeamTask }>;
     /// Weekly refresh of what the team knows, or only when asked.
-    setKnowledgeRefresh?(teamId: UUID, mode: 'weekly' | 'off'): Result;
+    setKnowledgeRefresh?(teamId: UUID, mode: TeamKnowledgeRefresh): Result;
     /// Retire a team, keeping what it delivered (`TeamEngine.disband`).
     disband?(teamId: UUID, by: string): Result<{ cancelled: number }>;
     /// Delete a team and every task it ran, files and all.
@@ -1517,6 +1522,9 @@ export class OrgService {
           tools,
           answersAtOnce: w.caps.answersAtOnce ?? ANSWERS_AT_ONCE,
           ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
+          ...(w.caps.continueOpenPrs ? { continueOpenPrs: true } : {}),
+          ...(w.caps.prAuthors?.length ? { prAuthors: [...w.caps.prAuthors] } : {}),
+          ...(w.caps.prCommentAuthors?.length ? { prCommentAuthors: [...w.caps.prCommentAuthors] } : {}),
           ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
           ...(w.projectPath ? { place: placeOf(w.projectPath) } : {}),
           ...((this.deps.workers.writesCode?.(w.id) ?? isCodingWorker(w)) ? { coding: true } : {}),
@@ -3703,6 +3711,11 @@ export class OrgService {
       answersAtOnce?: number;
       /// Run through its flows' own checkpoints. An admin's call.
       skipCheckpoints?: boolean;
+      /// Work on the team's open pull requests. An admin's call.
+      continueOpenPrs?: boolean;
+      /// Whose pull requests, and whose review comments; names, or [] for the default.
+      prAuthors?: string[];
+      prCommentAuthors?: string[];
       /// Steps it may always run without asking, `flowId/stepId`.
       alwaysAllow?: string[];
       /// Whether it changes code; null for "from its flows" again.
@@ -3772,6 +3785,27 @@ export class OrgService {
       const caps = { ...next.caps };
       if (patch.skipCheckpoints) caps.skipCheckpoints = true;
       else delete caps.skipCheckpoints;
+      next.caps = caps;
+    }
+    if (patch.continueOpenPrs !== undefined && patch.continueOpenPrs !== (w.caps.continueOpenPrs === true)) {
+      // It pushes onto branches other people opened: an admin says it may.
+      if (!admin) return { ok: false, error: 'Only an admin can let a worker push to the team’s open pull requests.' };
+      const caps = { ...next.caps };
+      if (patch.continueOpenPrs) caps.continueOpenPrs = true;
+      else delete caps.continueOpenPrs;
+      next.caps = caps;
+    }
+    for (const key of ['prAuthors', 'prCommentAuthors'] as const) {
+      const given = patch[key];
+      if (given === undefined) continue;
+      const people = [...new Set((Array.isArray(given) ? given : []).map((n) => String(n).replace(/\s+/g, ' ').trim()).filter(Boolean))];
+      // Only a change is an admin's call: a restore hands back what's already there.
+      if (JSON.stringify(people) === JSON.stringify(w.caps[key] ?? [])) continue;
+      if (!admin) return { ok: false, error: 'Only an admin can change whose pull requests a worker works on.' };
+      if (people.length > 50 || people.some((n) => n.length > 80)) return { ok: false, error: 'Name up to 50 people, each as the git host shows them.' };
+      const caps = { ...next.caps };
+      if (people.length) caps[key] = people;
+      else delete caps[key];
       next.caps = caps;
     }
     if (patch.audience !== undefined) {
@@ -6181,6 +6215,9 @@ export class OrgService {
       ...(w.preferredFlowId ? { preferredFlowId: w.preferredFlowId } : {}),
       ...(w.caps.answersAtOnce ? { answersAtOnce: w.caps.answersAtOnce } : {}),
       ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
+      ...(w.caps.continueOpenPrs ? { continueOpenPrs: true } : {}),
+      ...(w.caps.prAuthors?.length ? { prAuthors: [...w.caps.prAuthors] } : {}),
+      ...(w.caps.prCommentAuthors?.length ? { prCommentAuthors: [...w.caps.prCommentAuthors] } : {}),
       ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
     };
   }
@@ -6193,7 +6230,7 @@ export class OrgService {
     const WORDS: Record<keyof WorkerConfig, string> = {
       jobDescription: 'its job', tagline: 'its tagline', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
       budgetUSDPerMonth: 'its budget', cadence: 'when it runs', preferredFlowId: 'its usual flow', answersAtOnce: 'answers at once',
-      skipCheckpoints: 'checkpoints', alwaysAllow: 'what it may always do',
+      skipCheckpoints: 'checkpoints', continueOpenPrs: 'the team\u2019s pull requests', prAuthors: 'whose pull requests', prCommentAuthors: 'whose review comments', alwaysAllow: 'what it may always do',
     };
     const keys = [...new Set([...Object.keys(was), ...Object.keys(now)])] as Array<keyof WorkerConfig>;
     const changed = keys.filter((k) => JSON.stringify(was[k] ?? null) !== JSON.stringify(now[k] ?? null)).map((k) => WORDS[k]);
@@ -6295,6 +6332,9 @@ export class OrgService {
       preferredFlowId: c.preferredFlowId ?? null,
       answersAtOnce: c.answersAtOnce ?? ANSWERS_AT_ONCE,
       skipCheckpoints: c.skipCheckpoints === true,
+      continueOpenPrs: c.continueOpenPrs === true,
+      prAuthors: c.prAuthors ?? [],
+      prCommentAuthors: c.prCommentAuthors ?? [],
       alwaysAllow: c.alwaysAllow ?? [],
     });
     if (!res.ok) return res;
@@ -7601,7 +7641,7 @@ export class OrgService {
   /// approval it waits on) and the pack. `now` says what the team is doing
   /// this moment, in a sentence.
   teamPage(caller: OrgCaller, teamIdOrName: string): Result<{
-    team: { id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; workIn?: string; workInLabel?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
+    team: { id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; workIn?: string; workInLabel?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: TeamKnowledgeRefresh } };
     tasks: TeamTaskDetail[];
     now: { sentence: string; taskId: UUID; waitingOnYou: boolean } | null;
   }> {
@@ -8266,16 +8306,16 @@ export class OrgService {
     return { ok: true, task: this.summarizeTask(res.task, caller, this.deps.workers.roster()) };
   }
 
-  /// Whether what a team knows refreshes weekly, for whoever can change the team.
+  /// How often what a team knows refreshes, for whoever can change the team.
   setTeamKnowledgeRefresh(caller: OrgCaller, teamId: string, mode: string): Result {
     const teams = this.deps.teams;
     if (!teams?.setKnowledgeRefresh) return { ok: false, error: 'Not available on this server.' };
-    if (mode !== 'weekly' && mode !== 'off') return { ok: false, error: 'Weekly, or off.' };
+    if (!(TEAM_KNOWLEDGE_REFRESH_MODES as readonly string[]).includes(mode)) return { ok: false, error: 'Daily, weekly, or off.' };
     const team = teams.list().teams.find((t) => t.id === teamId);
     if (!team || !this.teams(caller).some((t) => t.id === teamId)) return { ok: false, error: 'No team by that name that you can see.' };
     if (!this.canChangeTeam(caller, team)) return { ok: false, error: `Only people who manage someone on ${team.name} can change that.` };
-    const res = teams.setKnowledgeRefresh(team.id, mode);
-    if (res.ok) this.record(caller, `Set ${team.name} to refresh what it knows ${mode === 'weekly' ? 'weekly' : 'only when asked'}.`);
+    const res = teams.setKnowledgeRefresh(team.id, mode as TeamKnowledgeRefresh);
+    if (res.ok) this.record(caller, `Set ${team.name} to refresh what it knows ${mode === 'off' ? 'only when asked' : mode}.`);
     return res;
   }
 

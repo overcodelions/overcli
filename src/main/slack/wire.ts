@@ -30,12 +30,12 @@ import type { AboutCard } from './aboutCards';
 import { isMissingScope, listPeople, unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { answerGeneral, routeRequest } from './frontDoorRoute';
-import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
+import { freshEnough, libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
 import { answerFromWork, type AnswerSource } from './existingAnswer';
 import { drafterDepsFor } from '../org/hireDraft';
 import { canManage, canSee, inAudience, isAdmin, type AudienceRole, type OrgCaller } from '../../shared/org/policy';
 import { managerFor } from '../../shared/flows/org';
-import type { ProcessPerson, ProcessState } from '../../shared/org/process';
+import { asksForOk, type ProcessPerson, type ProcessState } from '../../shared/org/process';
 import { ProcessService } from '../org/processes';
 import { jsonOrgStore } from '../org/orgStores';
 import fs from 'node:fs';
@@ -405,8 +405,8 @@ export function createOrgControl(
     // checks), so its visibility doesn't stop it now. It acts on the work as
     // from its manager only when its manager put it there; otherwise it
     // takes it as a proposal, as from anyone else.
-    askWorker: (workerId, text, by, trusted) => {
-      const started = org.startAsk({ name: by.name, ...(by.slackUserId ? { slackUserId: by.slackUserId } : {}), admin: true }, workerId, text, 'console', undefined, undefined, undefined, undefined, !trusted);
+    askWorker: (workerId, text, by, trusted, conversation) => {
+      const started = org.startAsk({ name: by.name, ...(by.slackUserId ? { slackUserId: by.slackUserId } : {}), admin: true }, workerId, text, 'console', undefined, undefined, conversation, undefined, !trusted);
       if (!started.ok) return started;
       started.done.catch(() => {});
       return { ok: true, askId: started.askId };
@@ -424,6 +424,9 @@ export function createOrgControl(
         const paused = progress.items.find((i) => i.paused);
         return paused ? { status: 'waiting', waiting: paused.paused } : { status: 'running' };
       }
+      // It answered without starting anything, and stops for an OK: the
+      // process asks the stage's owner rather than handing the proposal on.
+      if (!ask.orchestrationId && !ask.launched && asksForOk(ask.reply)) return { status: 'waiting', waiting: 'it asks for an OK before it goes ahead', asksApproval: ask.reply ?? '' };
       const links = progress?.links ?? [];
       return {
         status: 'done',
@@ -434,7 +437,7 @@ export function createOrgControl(
     isAdmin: (caller) => isAdmin(loadOrgPolicy().policy, caller),
     groupMembers: (groupId) => org.directory().groups.find((g) => g.id === groupId)?.members ?? [],
     hasRole: (person, roles) => inAudience(loadOrgPolicy().policy, { name: person.name, admin: false, ...(person.slackUserId ? { slackUserId: person.slackUserId } : {}) }, { roles: roles as AudienceRole[] }),
-    notify: (to, text, decide) => void commands?.processNotify(to, text, decide),
+    notify: (to, text, decide, thread) => void commands?.processNotify(to, text, decide, thread),
     decided: (itemId, stageId, text, final) => void commands?.processDecided(itemId, stageId, text, final),
     log: (message) => log('info', 'org', message),
   });
@@ -587,6 +590,8 @@ export function createOrgControl(
       // Replies under the card change the answer (setReviewReply below).
       return { channel: res.data.channel, ts: inThread ? inThread.ts : res.data.ts };
     },
+    // On the console's Slack page too, not only what came through the door.
+    heard: (m) => void frontDoor.heard(m).catch((err: unknown) => log('warn', 'slack', `A trigger's Slack message could not be logged: ${String(err)}`)),
     log: (message) => log('info', 'org', message),
   });
   slack.setEventTap((ev) => triggers?.slackEvent(ev) ?? false);
@@ -709,9 +714,13 @@ export function createOrgControl(
     processes: (caller) =>
       processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.shortName ? { shortName: p.shortName, ...(p.shortNameAuto ? { shortNameAuto: true } : {}) } : {}), ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
     aboutCard: (caller, name): AboutCard | null => commands?.aboutFor(caller, name) ?? null,
-    submitProcess: (caller, processId, brief, thread) => {
-      const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack', ...(thread ? { slackThread: thread } : {}) });
-      return res.ok ? { ok: true, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;
+    submitProcess: (caller, processId, brief, thread, updates) => {
+      const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack', ...(thread ? { slackThread: thread } : {}), ...(updates ? { updatesThread: updates } : {}) });
+      return res.ok ? { ok: true, itemId: res.item.id, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;
+    },
+    processReply: (caller, itemId, text) => {
+      const res = processes.reply(caller, itemId, text);
+      return res.ok ? res.said : res.error;
     },
     status: (caller) => statusReply(org.today(caller), loadOrgPolicy().policy.publicUrl, processes.waitingOn(caller)),
     admin: (caller, text) =>
@@ -737,10 +746,12 @@ export function createOrgControl(
       return (await answerFromWork(drafterDepsFor(engines.runner), question, sources))?.text ?? null;
     },
     // The finished work that matches, and what each team the caller can see
-    // knows: read, and the question answered from them.
+    // knows: read, and the question answered from them. A question that wants
+    // the latest is answered only from what is a day old at most; anything
+    // older and the team looks again.
     answer: async (caller, text, { shared }) => {
       const now = Date.now();
-      const work = matchWork(text, candidatesFor(caller, shared), now).filter((m) => !m.weak).slice(0, 3);
+      const work = matchWork(text, candidatesFor(caller, shared), now).filter((m) => !m.weak && freshEnough(text, m.candidate.hit.at, now)).slice(0, 3);
       const seen = new Set(org.teams(shared ? EVERYONE : caller).map((t) => t.id));
       const sources: AnswerSource[] = [
         ...work.map(({ candidate: c }): AnswerSource => ({
@@ -750,7 +761,7 @@ export function createOrgControl(
           hit: { ...c.hit, summary: '' },
         })),
         ...(engines.teams?.()?.list().teams ?? [])
-          .filter((t) => seen.has(t.id) && (!shared || openToEveryone(t)) && t.knowledge?.status === 'ready' && t.knowledge.body?.trim())
+          .filter((t) => seen.has(t.id) && (!shared || openToEveryone(t)) && t.knowledge?.status === 'ready' && t.knowledge.body?.trim() && freshEnough(text, t.knowledge.updatedAt, now))
           .map((t): AnswerSource => ({ label: `What ${t.name} knows${t.knowledge!.updatedAt ? ` (as of ${whenText(t.knowledge!.updatedAt, now)})` : ''}`, who: t.name, body: t.knowledge!.body! })),
       ].filter((s) => s.body.trim());
       const got = await answerFromWork(drafterDepsFor(engines.runner), text, sources);

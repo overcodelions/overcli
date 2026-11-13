@@ -14,7 +14,7 @@
 // so Slack can do exactly what that person could do in the console or over
 // MCP — and no more.
 
-import type { OrgService, HireSummary, PendingHire, WaitingItem, WantedTool, WorkerSummary } from '../org/orgService';
+import type { OrgService, HireSummary, PendingHire, TriggerDraft, WaitingItem, WantedTool, WorkerSummary } from '../org/orgService';
 import type { AskRecord, ToolRequest } from '../org/orgStores';
 import type { ToolTrouble } from '../org/toolHealth';
 import { ROLE_TEXT, type AccessService, type Invite, type JoinRequest } from '../org/accessService';
@@ -84,6 +84,9 @@ export const JOB_USE_ACTION = 'overcli_job_use';
 export const TOOLREQ_GIVE_ACTION = 'overcli_toolreq_give';
 export const TOOLREQ_DECLINE_ACTION = 'overcli_toolreq_decline';
 export const JOB_KEEP_ACTION = 'overcli_job_keep';
+export const WATCH_DM_ACTION = 'overcli_watch_dm';
+export const WATCH_CHANNEL_ACTION = 'overcli_watch_channel';
+export const WATCH_DROP_ACTION = 'overcli_watch_drop';
 
 /// A console question answered later than this gets its answer DMed too.
 export const ASK_DM_AFTER_MS = 30_000;
@@ -178,9 +181,19 @@ interface SlashPayload {
   team_id?: string;
   response_url?: string;
   trigger_id?: string;
+  channel_id?: string;
 }
 
 const MAX_LINES = 25;
+
+/// A watch made from Slack: how often it checks, how many a day it takes on,
+/// and how long the worker gets to work out its search.
+const WATCH_EVERY_MINUTES = 15;
+const WATCH_MAX_PER_DAY = 20;
+const WATCH_DRAFT_WAIT_MS = 15 * 60 * 1000;
+/// What a watch made from Slack does with each item: say it, and no more.
+/// Its manager widens that on the Triggers tab.
+const WATCH_ALERT_INSTRUCTIONS = 'Tell whoever this goes to about it in two or three lines: what it is, why it matters to your job, and its link. Do nothing else with it.';
 
 /// Money as people write it: $8, $47.44. Budgets split from a pool carry
 /// long fractions ($47.43996) that mean nothing to anyone reading.
@@ -321,7 +334,7 @@ export class SlackCommands {
     const caller = this.caller(p.user_id, p.user_name);
     const text = (p.text ?? '').trim();
     if (p.command === '/hire') return this.hire(caller, text, p.response_url);
-    if (p.command === '/worker') return this.worker(caller, text, p.response_url, p.trigger_id);
+    if (p.command === '/worker') return this.worker(caller, text, p.response_url, p.trigger_id, p.channel_id);
     if (p.command === '/team') return this.team(caller, text, p.response_url);
     // `/overcli` is the command Slack apps installed before the rename have.
     if (p.command === '/overgo' || p.command === '/overcli') return this.join(caller, text, p.response_url);
@@ -446,10 +459,13 @@ export class SlackCommands {
 
   /// A process telling someone something, with the decision buttons when a
   /// people stage is waiting on them.
-  async processNotify(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }): Promise<void> {
+  /// `thread`: the item's own Slack thread, posted in rather than a DM; a
+  /// thread that can't be posted to falls back to the DM.
+  async processNotify(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }, thread?: { channel: string; threadTs: string }): Promise<void> {
     if (!to.slackUserId) return;
     const stage = decide ? this.deps.processes?.()?.stageOf(decide.itemId, decide.stageId) : undefined;
-    const posted = await this.dm(to.slackUserId, text, decide ? { blocks: decisionBlocks(text, decide.itemId, decide.stageId, stage) } : {});
+    const opts = decide ? { blocks: decisionBlocks(text, decide.itemId, decide.stageId, stage) } : {};
+    const posted = (thread ? await this.dm(to.slackUserId, text, { ...opts, inThread: thread }) : null) ?? (await this.dm(to.slackUserId, text, opts));
     if (!posted || !decide) return;
     const all = this.decisionDms();
     const key = `${decide.itemId}:${decide.stageId}`;
@@ -616,7 +632,74 @@ export class SlackCommands {
     };
   }
 
-  private async worker(caller: OrgCaller, text: string, responseUrl?: string, triggerId?: string): Promise<void> {
+  /// Watches worked out and waiting for a yes, by id.
+  private watchDrafts = new Map<string, { by: string; workerId: string; workerName: string; wish: string; channel?: string; draft: TriggerDraft }>();
+  /// How often the DM checks whether the search is worked out yet.
+  watchPollMs = 5000;
+
+  /// `/worker <name> watch <what to catch>`: the worker finds the search that
+  /// catches it, tries it, and the card in the DM makes it a trigger. Only its
+  /// manager can; startTriggerDraft says so.
+  private async newWatch(caller: OrgCaller, worker: Worker, wish: string, responseUrl?: string, channelId?: string): Promise<void> {
+    const { org } = this.deps;
+    if (!wish) return this.respond(responseUrl, `Say what ${worker.name} should watch for: \`/worker ${worker.name} watch new P1 bugs in the support backlog\``);
+    const started = org.startTriggerDraft(caller, worker.id, wish);
+    if (!started.ok) return this.respond(responseUrl, started.error);
+    await this.respond(responseUrl, `${worker.name} is working out the search. I'll DM you what it finds, to make it a trigger or drop it.`);
+    const head = await this.dm(caller.slackUserId!, `A watch for ${worker.name}: ${clip(wish, 200)}`, { blocks: [section(`*A watch for ${escapeMrkdwn(worker.name)}*\n${quote(wish)}`)] });
+    if (!head) return;
+    const put = await this.working(head.channel, head.ts, `${worker.name} is finding the search with its tools and trying it… a minute or two.`);
+    const now = () => this.deps.now?.() ?? Date.now();
+    const deadline = now() + WATCH_DRAFT_WAIT_MS;
+    let draft: TriggerDraft | null = null;
+    while (!draft) {
+      const got = org.triggerDraft(caller, started.draftId);
+      if (!got.ok) return put(got.error);
+      if (got.done) {
+        draft = got.draft;
+        break;
+      }
+      if (now() > deadline) return put(`${worker.name} is taking longer than it should. Set this one up on its Triggers tab in the console.`);
+      await new Promise((r) => setTimeout(r, this.watchPollMs));
+    }
+    if (!draft.listed) {
+      return put(`${worker.name} found a search, but it answers in one block rather than a list, so it can't tell new items apart. Set this one up on its Triggers tab in the console.`);
+    }
+    const id = `${caller.slackUserId}:${Date.now().toString(36)}`;
+    // A channel the command came from, not a DM: offered as where to post.
+    const channel = channelId && /^[CG][A-Z0-9]{6,}$/.test(channelId) ? channelId : undefined;
+    this.watchDrafts.set(id, { by: caller.slackUserId!, workerId: worker.id, workerName: worker.name, wish, ...(channel ? { channel } : {}), draft });
+    const drawn = this.watchDraftMessage(id);
+    await put(drawn.text, drawn.blocks);
+  }
+
+  /// A worked-out watch as its DM shows it: what it searches, what it finds
+  /// today, and where each new one would go.
+  private watchDraftMessage(id: string): { text: string; blocks: unknown[] } {
+    const d = this.watchDrafts.get(id)!;
+    const name = d.draft.name || clip(d.wish, 80);
+    const found = d.draft.items.slice(0, 5).map((i) => `• ${i.url ? `<${i.url}|${escapeMrkdwn(clip(i.id, 40))}>` : escapeMrkdwn(clip(i.id, 40))} ${escapeMrkdwn(clip(i.title, 100))}`).join('\n');
+    const count = d.draft.items.length;
+    return {
+      text: `${d.workerName} can watch for: ${name}`,
+      blocks: [
+        section(`*${escapeMrkdwn(name)}*${d.draft.means ? ` — ${escapeMrkdwn(d.draft.means)}` : ''}`),
+        context(`Every ${WATCH_EVERY_MINUTES} minutes, ${escapeMrkdwn(d.workerName)} calls \`${escapeMrkdwn(d.draft.tool)}\` on ${escapeMrkdwn(d.draft.server)}. ${count ? `It finds ${count === 25 ? '25 or more' : count} today; those count as seen, so only new ones set it off.` : 'It finds nothing today, so the first new one sets it off.'}`),
+        ...(found ? [section(`*Today*\n${found}`)] : []),
+        context(`Each new one, ${escapeMrkdwn(d.workerName)} says what it is in a few lines, at most ${WATCH_MAX_PER_DAY} a day. Unless its triggers may start on their own, each waits for your OK first. Change what it does with them on its Triggers tab.`),
+        {
+          type: 'actions',
+          elements: [
+            button('DM me each one', WATCH_DM_ACTION, id, 'primary'),
+            ...(d.channel ? [button('Post each in that channel', WATCH_CHANNEL_ACTION, id)] : []),
+            button('Cancel', WATCH_DROP_ACTION, id),
+          ],
+        },
+      ],
+    };
+  }
+
+  private async worker(caller: OrgCaller, text: string, responseUrl?: string, triggerId?: string, channelId?: string): Promise<void> {
     const { org } = this.deps;
     if (!text || text === 'list') {
       const list = org.listWorkers(caller);
@@ -672,6 +755,9 @@ export class SlackCommands {
       return this.respond(responseUrl, res.ok ? `${verb === 'track' ? 'Tracking' : 'Stopped tracking'} ${rest.trim().split(/\s+/)[0]}. ${res.worker} tracks ${res.tracked} on “${res.trigger}”.` : res.error);
     }
     if (verb === 'about' && !rest.trim()) return this.respondAbout(caller, 'worker', worker.id, responseUrl);
+    // "/worker Sam watch new P1 bugs in the support backlog": Sam works out
+    // the search with its tools, and whoever asked makes it a trigger from a DM.
+    if (verb === 'watch') return this.newWatch(caller, worker, rest.trim(), responseUrl, channelId);
     // "/worker Vantage what do you know about …" is an ask without the word.
     if (verb && verb !== 'pause' && verb !== 'resume' && verb !== 'ask' && verb !== 'changes' && !(verb === 'edit' && !rest.trim())) {
       verb = 'ask';
@@ -1377,7 +1463,9 @@ export class SlackCommands {
           if (still) await settle(`You approved “${res.item.title}”: ${res.item.stageNote}.`);
           return;
         }
-        await settle(approve ? `Approved by ${caller.name}: “${res.item.title}” moves on.` : `Stopped by ${caller.name}: “${res.item.title}”.`);
+        // A worker stage's OK sends it back to the worker; nothing entered after it.
+        const backToWorker = approve && res.item.history.at(-1)?.kind === 'approved';
+        await settle(approve ? (backToWorker ? `Approved by ${caller.name}: “${res.item.title}” goes back to the worker to go ahead.` : `Approved by ${caller.name}: “${res.item.title}” moves on.`) : `Stopped by ${caller.name}: “${res.item.title}”.`);
         return;
       }
       case PROC_FILL_ACTION: {
@@ -1572,6 +1660,38 @@ export class SlackCommands {
           return;
         }
         await openView(bot, p.trigger_id, teamEditView(draft, { id: action.value, channel, ts }), this.deps.fetchImpl);
+        return;
+      }
+      case WATCH_DM_ACTION:
+      case WATCH_CHANNEL_ACTION:
+      case WATCH_DROP_ACTION: {
+        const d = this.watchDrafts.get(action.value);
+        // Only whoever asked for it makes it.
+        if (!d || d.by !== p.user.id) {
+          await settle(d ? 'Only whoever asked for this watch can make it.' : 'This watch has expired. Ask again with `/worker <name> watch …`.');
+          return;
+        }
+        if (action.action_id === WATCH_DROP_ACTION) {
+          this.watchDrafts.delete(action.value);
+          await settle('Dropped. No trigger was made.');
+          return;
+        }
+        const toChannel = action.action_id === WATCH_CHANNEL_ACTION && !!d.channel;
+        const name = clip(d.draft.name || d.wish, 120);
+        const res = org.createTrigger(caller, d.workerId, {
+          name,
+          kind: 'watch',
+          instructions: WATCH_ALERT_INSTRUCTIONS,
+          deliver: toChannel ? [{ kind: 'slack', channel: d.channel! }] : [{ kind: 'dm', slackUserId: p.user.id }],
+          maxPerDay: WATCH_MAX_PER_DAY,
+          watch: { server: d.draft.server, tool: d.draft.tool, args: d.draft.args, everyMinutes: WATCH_EVERY_MINUTES },
+        });
+        if (!res.ok) {
+          await settle(`Couldn't make it: ${res.error}`);
+          return;
+        }
+        this.watchDrafts.delete(action.value);
+        await settle(`Made it. ${d.workerName} checks for “${name}” every ${WATCH_EVERY_MINUTES} minutes and ${toChannel ? 'posts each new one in that channel (invite overgo there if it isn’t in it yet)' : 'DMs you each new one'}. Pause or change it on its Triggers tab.`);
         return;
       }
       case TEAM_MAKE_ACTION:
@@ -2209,6 +2329,7 @@ const HELP = [
   '`/worker <name> tools add <tool>: why` — give it a tool, or ask an admin for one',
   '`/worker <name> edit` — change its job (or say what should change), trust, schedule, budget, who can ask it',
   '`/worker <name> changes [ticket or words]` — what its run changed, with the diff',
+  '`/worker <name> watch <what to catch>` — have it watch for new items (new P1 bugs, new leads) and tell you',
   '`/worker <name> track <ticket>` / `untrack <ticket>` — what its change watch follows',
   '`/hire <job description>` — hire a worker',
   '`/team` — the teams you can see, and what each is on',

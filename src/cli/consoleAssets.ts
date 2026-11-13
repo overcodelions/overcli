@@ -1110,6 +1110,7 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .working-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--go); border-radius: 999px; padding: 4px 12px; color: var(--go); }
 .work-pop { position: absolute; right: 0; top: calc(100% + 8px); width: min(460px, 92vw); max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0,0,0,.18); z-index: 40; }
 .work-pop-head { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.work-pop-head:not(:first-child) { border-top: 1px solid var(--line); margin-top: 4px; }
 .work-row { display: flex; gap: 10px; align-items: center; width: 100%; padding: 10px 14px; background: transparent; border: 0; border-top: 1px solid var(--line); color: inherit; font: inherit; cursor: pointer; text-align: left; min-height: 48px; }
 .work-row:first-child { border-top: 0; }
 .work-row:hover { background: var(--panel-2); }
@@ -1129,7 +1130,10 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wl-original > summary { font-size: 12.5px; }
 .wl-original pre { max-height: none; }
 .wl-compose { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 14px; border-top: 1px solid var(--line); background: var(--panel); border-radius: 0 0 var(--r-lg) var(--r-lg); }
-.wl-compose .seg { align-self: flex-start; }
+.wl-to { display: flex; align-items: baseline; gap: 12px; min-width: 0; font-size: 13px; color: var(--muted); }
+.wl-to-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-to b { color: var(--ink); font-weight: 600; }
+.nt-dialog .cbox textarea { min-height: 132px; font-size: 15px; }
 .cbox { display: flex; flex-direction: column; border: 1px solid var(--field-line); background: var(--field); border-radius: var(--r); transition: border-color .12s, box-shadow .12s; }
 .cbox:hover { border-color: var(--muted); }
 .cbox:focus-within { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
@@ -3526,24 +3530,53 @@ export const CONSOLE_JS = String.raw`
   // ---- what's moving, everywhere --------------------------------------------
 
   /// One poller for "work is being done", shared by the bar on every page
-  /// and the Inbox: every 5 s while something moves, every 20 s otherwise,
-  /// and not at all while the tab is hidden.
-  var nowWork = { items: [], subs: [], timer: null, started: false };
+  /// and the Inbox: every 5 s while something moves, every 20 s otherwise.
+  /// While the tab is hidden it slows to 15 s / 60 s rather than stopping,
+  /// so the tab's icon still flips when work starts or finishes.
+  // procs: process items in flight and finished in the last day, beside it.
+  var nowWork = { items: [], procs: { active: [], finished: [] }, subs: [], timer: null, started: false };
+  /// The tab's icon says what the bar's pill says, so it reads from another
+  /// tab: the mark on indigo while anything moves, an amber dot when it's
+  /// only waiting on someone, the plain mark when nothing is going on.
+  var FAVICON_MARK = '<path d="M10 9.5h12" stroke="INK" stroke-width="3" stroke-linecap="round"/><path d="M10 19h11.5M17 14.5l4.5 4.5-4.5 4.5" fill="none" stroke="INK" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>';
+  function faviconData(bg, ink, dot) {
+    return 'data:image/svg+xml,' + encodeURIComponent('<svg width="64" height="64" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">' +
+      '<rect x="0.5" y="0.5" width="31" height="31" rx="7" fill="' + bg + '" stroke="#000" stroke-opacity="0.14"/>' +
+      FAVICON_MARK.replace(/INK/g, ink) +
+      (dot ? '<circle cx="25.5" cy="6.5" r="6" fill="' + dot + '" stroke="#fff" stroke-width="1.5"/>' : '') + '</svg>');
+  }
+  var FAVICONS = { idle: '/icon.svg', working: faviconData('#5b6af0', '#ffffff', null), waiting: faviconData('#ffffff', '#111113', '#e0952f') };
+  var faviconShown = 'idle';
+  function setFavicon(items, procs) {
+    var waiting = items.filter(function (x) { return x.kind === 'waiting'; }).length;
+    var kind = items.length - waiting || procs.active.length ? 'working' : waiting ? 'waiting' : 'idle';
+    if (kind === faviconShown) return;
+    faviconShown = kind;
+    var link = document.querySelector('link[rel="icon"]');
+    if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+    link.type = 'image/svg+xml';
+    link.href = FAVICONS[kind];
+  }
   function nowPoll() {
     clearTimeout(nowWork.timer);
-    if (document.hidden || !state.me) { nowWork.timer = setTimeout(nowPoll, 5000); return; }
-    api('GET', '/api/now').then(function (items) {
+    if (!state.me) { setFavicon([], { active: [] }); nowWork.timer = setTimeout(nowPoll, 5000); return; }
+    var procs = api('GET', '/api/processes/now').then(function (x) { return x && x.ok !== false ? { active: x.active || [], finished: x.finished || [] } : nowWork.procs; }, function () { return nowWork.procs; });
+    Promise.all([api('GET', '/api/now'), procs]).then(function (got) {
+      var items = got[0];
       if (Array.isArray(items)) {
         nowWork.items = items;
+        nowWork.procs = got[1];
         nowWork.subs = nowWork.subs.filter(function (s) { return s.el.isConnected; });
-        nowWork.subs.forEach(function (s) { s.fn(items); });
+        nowWork.subs.forEach(function (s) { s.fn(items, nowWork.procs); });
+        setFavicon(items, nowWork.procs);
       }
-      nowWork.timer = setTimeout(nowPoll, nowWork.items.length ? 5000 : 20000);
-    }, function () { nowWork.timer = setTimeout(nowPoll, 20000); });
+      var moving = nowWork.items.length || nowWork.procs.active.length;
+      nowWork.timer = setTimeout(nowPoll, document.hidden ? (moving ? 15000 : 60000) : moving ? 5000 : 20000);
+    }, function () { nowWork.timer = setTimeout(nowPoll, document.hidden ? 60000 : 20000); });
   }
   function onNow(el, fn) {
     nowWork.subs.push({ el: el, fn: fn });
-    fn(nowWork.items);
+    fn(nowWork.items, nowWork.procs);
     if (!nowWork.started) { nowWork.started = true; document.addEventListener('visibilitychange', function () { if (!document.hidden) nowPoll(); }); nowPoll(); }
   }
   function openWorking(x) {
@@ -3579,14 +3612,34 @@ export const CONSOLE_JS = String.raw`
       pop.hidden = !pop.hidden; btn.setAttribute('aria-expanded', pop.hidden ? 'false' : 'true');
       if (!pop.hidden) setTimeout(function () { document.addEventListener('click', close); }, 0);
     };
-    onNow(wrap, function (items) {
+    var openItem = function (x) { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); go('process', { processId: x.processId, processItem: x.id }); };
+    // A process item: which process, where it is, and how it stands.
+    var procRow = function (x, done) {
+      var badge = done ? (x.status === 'done' ? ['ok', 'Done'] : ['', 'Stopped']) : x.stuck ? ['bad', 'Stuck'] : x.needsYou ? ['waiting', 'Your turn'] : ['working', 'Stage ' + (x.stageIndex + 1) + ' of ' + x.stages];
+      var sub = done ? x.process + (x.status === 'stopped' && x.stageName ? ' · stopped at ' + x.stageName : '') + ' · ' + secs(Date.now() - x.finishedAt) + ' ago' : x.process + ' · ' + x.stage + (x.note ? ' · ' + x.note : '');
+      return h('button', { class: 'work-row', onclick: function () { openItem(x); } },
+        h('span', { class: 'avatar s', style: 'background:var(--panel-2);color:var(--muted)', 'aria-hidden': 'true' }, icon(done ? 'tick' : 'arrow', 14)),
+        h('span', { class: 'stack', style: 'gap:2px;min-width:0;flex:1;text-align:left' },
+          h('span', { style: 'font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0', text: x.title }),
+          h('span', { class: 'faint', style: 'font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', text: sub })),
+        h('span', { class: 'badge ' + badge[0], text: badge[1] }));
+    };
+    var head = function (title, note) { return h('div', { class: 'work-pop-head' }, h('b', { text: title }), note ? h('span', { class: 'faint', text: note }) : null); };
+    onNow(wrap, function (items, procs) {
+      procs = procs || { active: [], finished: [] };
       var waiting = items.filter(function (x) { return x.kind === 'waiting'; }).length;
       var moving = items.length - waiting;
-      btn.hidden = !items.length;
-      dot.className = 'livedot' + (moving ? '' : ' need');
-      count.textContent = moving ? moving + ' working' + (waiting ? ' · ' + waiting + ' waiting' : '') : waiting + ' waiting';
-      pop.replaceChildren(h('div', { class: 'work-pop-head' }, h('b', { text: 'Working now' }), h('span', { class: 'faint', text: 'refreshes on its own' })),
-        items.length ? h('div', null, items.map(workingRow)) : h('p', { class: 'muted', style: 'padding:12px 14px', text: 'Nothing running.' }));
+      var inProc = procs.active.length;
+      btn.hidden = !items.length && !inProc;
+      dot.className = 'livedot' + (moving || inProc ? '' : ' need');
+      count.textContent = moving ? moving + ' working' + (waiting ? ' · ' + waiting + ' waiting' : '') : waiting ? waiting + ' waiting' : inProc + ' in ' + (inProc === 1 ? 'a process' : 'processes');
+      // fill, not replaceChildren: the DOM's own prints a null or an array
+      // as text.
+      var parts = [head('Working now', 'refreshes on its own'),
+        items.length ? h('div', null, items.map(workingRow)) : h('p', { class: 'muted', style: 'padding:12px 14px', text: 'Nothing running.' })];
+      if (inProc) parts.push(head('In processes', inProc + ' in flight'), h('div', null, procs.active.map(function (x) { return procRow(x, false); })));
+      if (procs.finished.length) parts.push(head('Finished recently', 'last 24 hours'), h('div', null, procs.finished.map(function (x) { return procRow(x, true); })));
+      fill(pop, parts);
     });
     return wrap;
   }
@@ -5070,7 +5123,7 @@ export const CONSOLE_JS = String.raw`
     if (t.source === 'runNow') return t.by ? (me ? 'You' : who(t.by)) + ' pressed Run now' : 'Run now';
     if (t.source === 'schedule') return 'Scheduled check';
     if (t.source === 'colleague') return (t.by ? who(t.by) : 'A colleague') + ' passed this on';
-    if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI failed, so a fix started' : 'Ticket update after a push';
+    if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI failed, so a fix started' : t.followUp === 'replies' ? 'Pull request replies after a push' : 'Ticket update after a push';
     return 'Run';
   }
 
@@ -5530,7 +5583,7 @@ export const CONSOLE_JS = String.raw`
       b.onclick = function () { send(c, b); };
       return b;
     });
-    if (ctx && ctx.merge) return choices.length ? h('div', { class: 't-replybar' }, h('div', { class: 'row', style: 'gap:8px' }, choices), out) : null;
+    if (ctx && ctx.merge && !ctx.reply) return choices.length ? h('div', { class: 't-replybar' }, h('div', { class: 'row', style: 'gap:8px' }, choices), out) : null;
     return h('div', { class: 't-replybar' },
       h('div', { class: 'row', style: 'gap:8px' }, choices, open), form, out);
   }
@@ -5723,6 +5776,8 @@ export const CONSOLE_JS = String.raw`
   /// paste or drop), as the Slack door takes them: only where the route
   /// reads them (/api/ask, see askFiles.ts).
   /// o: { label, placeholder, sendText, value, files, cls, out, onInput(text), onSend(text, files, button) }
+  /// New-task dialogs closed unsent, by worker: opened again, they're still there.
+  var newTaskDrafts = {};
   function composeBox(o) {
     var out = o.out;
     var input = h('textarea', { rows: '1', class: o.cls || null, 'aria-label': o.label, placeholder: o.placeholder || '' });
@@ -5871,45 +5926,87 @@ export const CONSOLE_JS = String.raw`
       steps.length || (broke && broke.runId) ? h('div', { class: 'wk-fail-steps' }, h('span', { class: 't-kind', text: 'What it did' }), list) : null);
   }
 
+  /// New task: a dialog of its own, from the worker's header, beside Run
+  /// now. What's typed is kept if it's closed unsent. Started, the new
+  /// thread is the one shown on the Conversation tab.
+  var taskStarted = {};
+  function newTaskDialog(w) {
+    if (!w.enabled) return;
+    var said = h('div', { 'aria-live': 'polite' });
+    var scrim = h('div', { class: 'scrim' });
+    var close = function () { scrim.remove(); document.removeEventListener('keydown', onKey); };
+    var onKey = function (e) { if (e.key === 'Escape') close(); };
+    scrim.onclick = function (e) { if (e.target === scrim) close(); };
+    document.addEventListener('keydown', onKey);
+    var box = composeBox({
+      label: 'New task for ' + w.name, files: true, out: said, value: newTaskDrafts[w.id] || '', sendText: 'Start it',
+      placeholder: 'What should ' + w.name + ' do? A ticket, a question, a link — say what done looks like.',
+      onInput: function (v) { if (v) newTaskDrafts[w.id] = v; else delete newTaskDrafts[w.id]; },
+      onSend: function (text, files, button) {
+        var restore = busy(button, 'Starting…');
+        var body = { worker: w.id, message: text };
+        if (files.length) body.files = files;
+        api('POST', '/api/ask', body).then(function (r) {
+          // Started, the dialog goes as it is: putting "Start it" back first
+          // flashed the button for a frame before it closed.
+          if (r.ok === false) { restore(); said.textContent = ''; said.appendChild(msg(r)); return; }
+          delete newTaskDrafts[w.id];
+          close();
+          var here = taskStarted[w.id];
+          if (here && here.alive()) { here.pick(r.askId); return; }
+          state.wlSel = state.wlSel || {}; state.wlSel[w.id] = 'ask:' + r.askId;
+          state.workerTab = 'talk'; render();
+        }, function () { restore(); });
+      },
+    });
+    append(scrim, h('div', { class: 'dialog nt-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'nt-title' },
+      h('div', { class: 'row', style: 'align-items:flex-start;gap:12px;flex-wrap:nowrap' },
+        h('div', { style: 'flex:1;min-width:0' },
+          h('h2', { id: 'nt-title', text: 'New task for ' + w.name }),
+          h('p', { class: 'muted', style: 'margin:4px 0 0', text: 'It starts a thread of its own, at the top of its conversation.' })),
+        h('button', { type: 'button', class: 'btn quiet', 'aria-label': 'Close', style: 'min-height:32px;padding:0 8px', onclick: close }, icon('x', 16))),
+      box.el, said,
+      h('div', { class: 'row', style: 'justify-content:flex-end' }, h('button', { class: 'btn quiet', text: 'Cancel', onclick: close }))));
+    document.body.appendChild(scrim);
+    setTimeout(function () { box.input.focus(); }, 0);
+  }
+
   function conversation(w) {
-    // One box to talk to it, under the thread that's open: a reply to that
-    // thread, or a new task. Built once and moved into each redraw, so what's
-    // typed survives the thread changing under it.
+    // The box under the open thread only ever replies to it, and says so.
+    // A new task is its own thing, in a dialog from New task at the top of
+    // the list: one box doing both, told apart by a toggle or a line above
+    // it, kept leaving people unsure where a message went. Built once and
+    // moved into each redraw, so what's typed survives the thread changing.
     var cur = null;
-    var mode = state.wlMode || 'reply';
     var out = h('div', { 'aria-live': 'polite' });
     var submit = function (text, files, send) {
-      var reply = cur && mode === 'reply';
-      var queued = reply && cur.stage === 'deciding';
+      if (!cur) return;
+      var queued = cur.stage === 'deciding';
       var restore = busy(send, 'Sending…');
-      var body = { worker: w.id, message: text };
-      if (reply) body.replyTo = cur.id;
+      var body = { worker: w.id, message: text, replyTo: cur.id };
       if (files.length) body.files = files;
       api('POST', '/api/ask', body).then(function (r) {
         restore(); out.textContent = '';
         if (r.ok === false) { out.appendChild(msg(r)); return; }
         cb.clear();
-        if (reply) { if (queued) out.appendChild(msg(r, 'Queued: ' + w.name + ' takes it once this answer is in.')); }
-        else { sel = 'ask:' + r.askId; state.wlSel = state.wlSel || {}; state.wlSel[w.id] = sel; }
+        if (queued) out.appendChild(msg(r, 'Queued: ' + w.name + ' takes it once this answer is in.'));
         livePoke(w.id, 150);
       }, function () { restore(); });
     };
+    // New task (beside Run now in the header) starts one; shown here when it does.
+    taskStarted[w.id] = { alive: function () { return list.isConnected; }, pick: function (askId) { sel = 'ask:' + askId; state.wlSel = state.wlSel || {}; state.wlSel[w.id] = sel; livePoke(w.id, 150); } };
     var cb = composeBox({ label: 'Message for ' + w.name, files: true, out: out, onSend: submit });
     var input = cb.input;
-    var modeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Where it goes' });
+    var to = h('div', { class: 'wl-to', 'aria-live': 'polite' });
     var drawComposer = function () {
-      var canReply = !!cur;
-      var m = canReply ? mode : 'new';
-      modeSeg.hidden = !canReply;
-      modeSeg.replaceChildren.apply(modeSeg, [['reply', 'Reply to this'], ['new', 'New task']].map(function (c) {
-        return h('button', { type: 'button', 'aria-pressed': m === c[0] ? 'true' : 'false', text: c[1], onclick: function () { mode = state.wlMode = c[0]; drawComposer(); input.focus(); } });
-      }));
-      var deciding = cur && (cur.stage === 'deciding' || (cur.followUps || []).some(function (f) { return f.stage === 'deciding'; }));
-      input.placeholder = m === 'new' ? 'Give ' + w.name + ' a new task, or ask it something…'
-        : deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply about this, or ask a follow-up…';
+      if (composer) composer.hidden = !cur;
+      if (!cur) return;
+      to.replaceChildren(h('span', { class: 'wl-to-what' }, 'Replying to ', h('b', { text: titleOf(cur) })));
+      var deciding = cur.stage === 'deciding' || (cur.followUps || []).some(function (f) { return f.stage === 'deciding'; });
+      input.placeholder = deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply about this, or ask a follow-up…';
     };
     var composer = w.enabled
-      ? h('div', { class: 'wl-compose' }, modeSeg, cb.el, out)
+      ? h('div', { class: 'wl-compose' }, to, cb.el, out)
       : h('div', { class: 'wl-compose' }, h('p', { class: 'muted', style: 'margin:0', text: w.name + ' is paused. Resume it to ask it things.' }));
     drawComposer();
 
@@ -5951,7 +6048,7 @@ export const CONSOLE_JS = String.raw`
       if (t.source === 'runNow') return 'Run now';
       if (t.source === 'schedule') return 'Scheduled';
       if (t.source === 'colleague') return 'From ' + (t.by || 'a colleague');
-      if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI fix' : 'Ticket update';
+      if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI fix' : t.followUp === 'replies' ? 'PR replies' : 'Ticket update';
       return 'Run';
     };
     /// What a thread came to, as a mark: a pull request, a comment, a report,
@@ -6043,14 +6140,14 @@ export const CONSOLE_JS = String.raw`
       list.replaceChildren.apply(list, nodes);
       list.scrollTop = keepScroll;
     };
-    var detailKey = '';
+    var detailKey = '', detailId = null;
     var drawDetail = function (force) {
       if (!data) return;
       var t = threadFor(data.threads, sel) || data.threads[0];
       if (t && sel && t.id !== sel) { sel = t.id; state.wlSel[w.id] = sel; drawList(); }
       if (!t) {
         cur = null; drawComposer();
-        detail.replaceChildren(h('div', { class: 'wl-detail-in' }, h('div', { class: 'wl-empty muted', text: data.threads.length ? 'Pick something on the left to see it in full.' : 'Nothing between you yet. Ask ' + w.name + ' something below, or press Run now.' }), composer));
+        detail.replaceChildren(h('div', { class: 'wl-detail-in' }, h('div', { class: 'wl-empty muted' }, data.threads.length ? 'Pick something on the left to see it in full.' : ['Nothing between you yet. ', w.enabled ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:inherit', text: 'Give ' + w.name + ' a task', onclick: function () { newTaskDialog(w); } }) : null, w.enabled ? (w.cadence ? ', or press Run now.' : '.') : '']), composer));
         return;
       }
       if (!sel) { sel = t.id; state.wlSel[w.id] = sel; }
@@ -6101,7 +6198,9 @@ export const CONSOLE_JS = String.raw`
         composer);
       var pp = prPills(t, fresh);
       if (pp) pills.replaceWith(pp); else pills.remove();
-      detail.replaceChildren(keepPlace(detail.firstChild, fresh));
+      // The same thread redrawn keeps the reader's place; another one starts at its top.
+      detail.replaceChildren(t.id === detailId ? keepPlace(detail.firstChild, fresh) : fresh);
+      detailId = t.id;
       if (hadFocus) { input.focus(); input.setSelectionRange(caret[0], caret[1]); }
       if (nowBarSync) nowBarSync();
     };
@@ -6518,6 +6617,22 @@ export const CONSOLE_JS = String.raw`
             : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing from you yet. Answer “Was this useful?” under a result and it reads that before every run.' }),
           h('p', { class: 'faint', text: 'In the last 30 days: ' + plural(d.stats.runs, 'run', 'runs') + (d.stats.failed ? ', ' + d.stats.failed + ' failed' : '') + (d.stats.usefulPct != null ? ', ' + d.stats.usefulPct + '% rated useful' : ', none rated yet') + '.' })]));
 
+      // A list of people for a team-pull-request setting, saved as typed.
+      var prPeople = function (w, key, label, none, hint) {
+        var input = h('input', { type: 'text', value: (w[key] || []).join(', '), placeholder: none, 'aria-label': label, style: 'width:320px' });
+        var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        var save = function (e) {
+          var restore = busy(e.target, 'Saving…');
+          var people = input.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+          var patch = {}; patch[key] = people;
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch }).then(function (x) { restore(); out.textContent = ''; if (x.ok !== false) w[key] = people; out.appendChild(msg(x, 'Saved. The next check uses it.')); });
+        };
+        input.disabled = !state.me.admin;
+        return h('div', { class: 'stack', style: 'gap:4px;margin-top:10px' }, h('b', { style: 'font-size:13px', text: label }),
+          h('div', { class: 'inline-form', style: 'max-width:440px' }, input, state.me.admin ? h('button', { class: 'btn small', text: 'Save', onclick: save }) : null), out,
+          h('span', { class: 'faint', style: 'font-size:12.5px', text: hint }));
+      };
+
       // Access: what it may use and how much it does without asking.
       var accessView = function () {
         var section = function (title, sub, body) {
@@ -6530,6 +6645,15 @@ export const CONSOLE_JS = String.raw`
           api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { skipCheckpoints: skip.checked } }).then(function (x) {
             skip.disabled = false; skipOut.textContent = '';
             if (x.ok === false) { skip.checked = !skip.checked; skipOut.appendChild(msg(x)); } else { w.skipCheckpoints = skip.checked; skipOut.appendChild(msg(x, 'Saved. It applies from its next run.')); }
+          });
+        };
+        var prs = state.me.admin ? h('input', { type: 'checkbox', checked: !!w.continueOpenPrs }) : null;
+        var prsOut = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        if (prs) prs.onchange = function () {
+          prs.disabled = true;
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { continueOpenPrs: prs.checked } }).then(function (x) {
+            prs.disabled = false; prsOut.textContent = '';
+            if (x.ok === false) { prs.checked = !prs.checked; prsOut.appendChild(msg(x)); } else { w.continueOpenPrs = prs.checked; prsOut.appendChild(msg(x, 'Saved. It applies from its next run.')); }
           });
         };
         var toolsList = h('div');
@@ -6561,6 +6685,11 @@ export const CONSOLE_JS = String.raw`
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
             })()),
           trustCard,
+          section('Team pull requests', 'Whether it may add its fixes to pull requests other people opened, when its work names one. Only a branch with an open pull request; never forced, and a conflict it leaves unresolved is never pushed.',
+            [prs ? h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, prs, h('span', { text: 'Push fixes to the team’s open pull requests' })), prsOut)
+              : h('p', { class: 'faint', style: 'font-size:13px', text: w.continueOpenPrs ? 'It pushes fixes to the team’s open pull requests. An admin set this.' : 'It only adds to pull requests it opened. Only an admin can change that.' }),
+            w.continueOpenPrs ? prPeople(w, 'prAuthors', 'Only pull requests by', 'Everyone’s', 'Whose pull requests it fixes broken builds and conflicts on, as Bitbucket or GitHub names them, comma separated. Empty: everyone’s.') : null,
+            w.continueOpenPrs ? prPeople(w, 'prCommentAuthors', 'Also fix review comments on pull requests by', 'Nobody’s', 'Whose pull requests it also fixes valid, quick review comments on, AI reviewers’ included. Empty: none; it leaves review comments to people.') : null]),
           section('Always allowed', 'Steps you said it may always run without asking, from “Always allow” on an approval. Take one off and it asks again.',
             (w.alwaysAllow || []).length ? h('div', { class: 'stack', style: 'gap:6px' }, w.alwaysAllow.map(function (k) {
               return h('div', { class: 'row', style: 'gap:10px' }, h('code', { style: 'font-size:12.5px', text: k.replace('/', ' → ') }),
@@ -6659,7 +6788,11 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'page-actions' },
             w.youManage ? h('button', { class: 'btn quiet', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
-            w.youManage && w.enabled ? h('button', { class: 'btn go', text: 'Run now', onclick: function (e) {
+            // The everyday action: give it something to do. Run now is for
+            // a worker on a schedule, to do its round early; one that only
+            // works when asked has no round, so no Run now.
+            w.enabled ? h('button', { class: 'btn go', onclick: function () { newTaskDialog(w); } }, icon('plus', 14), 'New task') : null,
+            w.youManage && w.enabled && w.cadence ? h('button', { class: 'btn', text: 'Run now', onclick: function (e) {
               // Starting a run takes a few seconds; say so at once rather
               // than leave the button looking unpressed.
               var restore = busy(e.target, 'Starting…');
@@ -7813,7 +7946,7 @@ export const CONSOLE_JS = String.raw`
     };
 
     // A team or worker stage stopped for its owner: what they're asked to do.
-    var TURN = { questions: ['answer the questions', 'answers the questions'], plan: ['approve the plan', 'approves the plan'], pack: ['sign off the pack', 'signs off the pack'], paused: ['unblock the run', 'unblocks the run'] };
+    var TURN = { questions: ['answer the questions', 'answers the questions'], plan: ['approve the plan', 'approves the plan'], pack: ['sign off the pack', 'signs off the pack'], paused: ['unblock the run', 'unblocks the run'], approval: ['OK what it proposes', 'OKs what it proposes'] };
     var turn = active && !it.blocked && it.ownerTurn && TURN[it.ownerTurn] ? TURN[it.ownerTurn] : null;
     var waitsOn = it.waitsOn || who(stage);
     var mineNow = !!(it.canDecide || it.yourTurn);
@@ -8005,6 +8138,25 @@ export const CONSOLE_JS = String.raw`
             prUrl ? h('a', { class: 'btn', href: prUrl, target: '_blank', rel: 'noopener', text: prLabel }) : null)),
         askBox,
         earlier.length ? sendBox : null);
+    } else if (turn && it.ownerTurn === 'approval') {
+      // A worker that answered with what it would do, and waits for an OK.
+      var okNote = h('textarea', { rows: '2', 'aria-label': 'Anything to add or change', placeholder: 'Anything to add, or what to change (needed to send it back)' });
+      var okBtn = h('button', { class: 'btn go', text: 'Approve' });
+      okBtn.onclick = function () { act('approve', okNote.value.trim() ? { note: okNote.value } : {}, 'Approving…', okBtn, function () { state.procFlash = { id: it.id, text: 'Approved: back to ' + who(stage) + ' to go ahead.' }; }); };
+      var changeBtn = h('button', { class: 'btn', text: 'Send back…' });
+      changeBtn.onclick = function () {
+        if (!okNote.value.trim()) { fill(out, msg({ ok: false, error: 'Say what to change, so it knows.' })); okNote.focus(); return; }
+        act('sendBack', { note: okNote.value }, 'Sending back…', changeBtn);
+      };
+      band = h('section', { class: 'pi-band ' + (it.canDecide ? 'need' : 'wait'), 'aria-label': it.canDecide ? 'Your call' : 'Waiting' },
+        h('div', { class: 'pi-bandrow' },
+          h('span', { class: 'pi-bandic' }, icon(it.canDecide ? 'check' : 'clock', 18)),
+          h('div', { class: 'pi-bandtext' },
+            h('b', { text: (it.canDecide ? 'Your call: ' : 'Waiting on ' + waitsOn + ': ') + who(stage) + ' asks for an OK before it goes ahead' }),
+            h('span', { class: 'pi-bandsub', text: stage.name + '. Waiting ' + dur(now_ - enteredAt) + '.' })),
+          it.canDecide ? h('div', { class: 'row', style: 'gap:8px' }, okBtn, changeBtn) : null),
+        it.proposal ? h('div', { class: 'pi-send' }, md(it.proposal)) : null,
+        it.canDecide ? h('div', { class: 'pi-send' }, okNote) : null);
     } else if (turn) {
       var primary = stage.kind === 'worker' ? (stage.workerId ? 'Open ' + who(stage) : null) : it.taskId ? (it.ownerTurn === 'pack' ? 'Review the pack' : 'Open the task') : null;
       band = h('section', { class: 'pi-band ' + (it.yourTurn ? 'need' : 'wait'), 'aria-label': it.yourTurn ? 'Your turn' : 'Waiting' },
@@ -9406,9 +9558,11 @@ export const CONSOLE_JS = String.raw`
     if (!oldNode || oldNode === newNode) return newNode;
     var opened = [].map.call(oldNode.querySelectorAll('details'), function (d) { return d.open; });
     [].forEach.call(newNode.querySelectorAll('details'), function (d, i) { if (opened[i] && !d.open) { d.open = true; if (d.ontoggle) d.ontoggle(); } });
-    var scrolled = [].map.call(oldNode.querySelectorAll('.wc-out, .tl-list'), function (el) { return el.scrollTop; });
+    // The thread's own body scrolls too (a worker's Conversation): kept with the rest.
+    var BOXES = '.wl-detail-body, .wc-out, .tl-list';
+    var scrolled = [].map.call(oldNode.querySelectorAll(BOXES), function (el) { return el.scrollTop; });
     requestAnimationFrame(function () {
-      [].forEach.call(newNode.querySelectorAll('.wc-out, .tl-list'), function (el, i) { if (scrolled[i]) el.scrollTop = scrolled[i]; });
+      [].forEach.call(newNode.querySelectorAll(BOXES), function (el, i) { if (scrolled[i]) el.scrollTop = scrolled[i]; });
     });
     return newNode;
   }
@@ -11104,11 +11258,14 @@ export const CONSOLE_JS = String.raw`
       body = [h('p', { class: 'row', style: 'margin:0;gap:8px;font-size:13.5px' }, h('span', { class: 'livedot' }), 'Learning: each member is looking through its tools.'),
         k.taskId ? h('div', null, h('button', { class: 'linkish', text: 'Watch it →', onclick: function () { openTask(k.taskId); } })) : null];
     } else {
-      // Weekly unless someone said only when asked; up to its learning cap each time.
+      // Weekly unless someone said daily or only when asked; up to its learning cap each time.
+      var mode = k.refresh === 'daily' || k.refresh === 'off' ? k.refresh : 'weekly';
       var every = t.canChange ? h('select', { 'aria-label': 'When ' + t.name + ' refreshes what it knows', style: 'width:auto;font-size:13px' },
-        h('option', { value: 'weekly', text: 'Refreshes weekly', selected: k.refresh !== 'off' }), h('option', { value: 'off', text: 'Only when I ask', selected: k.refresh === 'off' })) : null;
+        h('option', { value: 'daily', text: 'Refreshes daily', selected: mode === 'daily' }), h('option', { value: 'weekly', text: 'Refreshes weekly', selected: mode === 'weekly' }), h('option', { value: 'off', text: 'Only when I ask', selected: mode === 'off' })) : null;
       if (every) every.onchange = function () {
-        api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/refresh', { mode: every.value }).then(function (x) { out.textContent = ''; out.appendChild(msg(x, every.value === 'weekly' ? 'It refreshes when what it knows is a week old, once the team is free. Up to ' + money(Math.min(t.budgetUSDPerTask, 10)) + ' each time.' : 'It refreshes only when you press Refresh.')); });
+        var cap = ' Up to ' + money(Math.min(t.budgetUSDPerTask, 10)) + ' each time.';
+        var said = every.value === 'off' ? 'It refreshes only when you press Refresh.' : 'It refreshes when what it knows is a ' + (every.value === 'daily' ? 'day' : 'week') + ' old, once the team is free.' + cap;
+        api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/refresh', { mode: every.value }).then(function (x) { out.textContent = ''; out.appendChild(msg(x, said)); });
       };
       body = [h('p', { style: 'margin:0;font-size:13.5px', text: 'Updated ' + (k.updatedAt ? ago(k.updatedAt) : 'recently') + (k.words ? ' · ' + k.words.toLocaleString() + ' words' : '') + '. Every task starts from it.' }),
         k.error ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: k.error }) : null,
@@ -14669,7 +14826,9 @@ export const CONSOLE_JS = String.raw`
         var url = location.origin + location.pathname + '#run/' + encodeURIComponent(r.id);
         (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(function () { link.textContent = 'Copied'; setTimeout(function () { link.textContent = 'Copy link'; }, 1500); }, function () { window.prompt('Link to this run', url); });
       };
-      var ctx = { waiting: x.waiting, youManage: x.youManage, merge: true };
+      // Merged like the conversation, but this page has no composer of its
+      // own at the bottom, so the thread keeps its Reply box.
+      var ctx = { waiting: x.waiting, youManage: x.youManage, merge: true, reply: true };
       var main = t ? h('div', { class: 'run-thread' }, threadCard(t, w, ctx)) : runStepsList(r, w);
       var facts = [
         ['Worker', h('button', { class: 'linkish', style: 'color:var(--go)', text: w.name, onclick: function () { openWorker(w.id); } })],

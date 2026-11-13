@@ -44,6 +44,8 @@ export interface ProcessTaskLook {
   branch?: string;
   error?: string;
   waiting?: string;
+  /// A worker stage's answer that stops for an OK before it acts.
+  asksApproval?: string;
 }
 
 export interface ProcessDeps {
@@ -60,7 +62,9 @@ export interface ProcessDeps {
   workerAccess?(caller: OrgCaller, workerId: string): 'manage' | 'see' | null;
   /// Ask one worker for the stage's work. `trusted`: as from its manager,
   /// who put it in the process; otherwise the worker treats it as a proposal.
-  askWorker?(workerId: string, text: string, requestedBy: ProcessPerson, trusted: boolean): Result<{ askId: string }>;
+  /// `conversation`: the item's Slack thread, as a conversation key, so the
+  /// worker keeps one conversation there and its runs report there.
+  askWorker?(workerId: string, text: string, requestedBy: ProcessPerson, trusted: boolean, conversation?: string): Result<{ askId: string }>;
   /// A worker stage's ask, read as a task: done once it answered and any work it started ended.
   workerTask?(askId: string): ProcessTaskLook | null;
   /// A pack file's text, to hand to the next stage. Absent: summaries only.
@@ -75,7 +79,8 @@ export interface ProcessDeps {
   hasRole?(person: { name: string; slackUserId?: string }, roles: string[]): boolean;
   /// A message to one person. `decide`: offer Approve / Send back / Stop,
   /// or the stage's form to fill in when it asks for something.
-  notify?(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }): void;
+  /// `thread`: post it in the item's Slack thread rather than a DM.
+  notify?(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }, thread?: { channel: string; threadTs: string }): void;
   /// A decision was made (or a vote cast): the decision messages sent for it
   /// can say so and drop their buttons once `final`.
   decided?(itemId: string, stageId: string, text: string, final: boolean): void;
@@ -283,6 +288,8 @@ export class ProcessService {
   private decides(caller: OrgCaller, def: ProcessDef, item: ProcessItem): boolean {
     if (item.status !== 'active') return false;
     const stage = def.stages[item.stageIndex];
+    // A worker stage that waits for an OK: its owner gives it.
+    if (stage?.kind === 'worker' && item.ownerTurn === 'approval') return this.steers(caller, def) || samePerson(this.stageOwner(def, stage), caller);
     if (stage?.kind !== 'people') return false;
     return this.steers(caller, def) || this.deciders(stage).some((p) => samePerson(p, caller));
   }
@@ -693,6 +700,8 @@ export class ProcessService {
       byAdmin?: boolean;
       /// The channel thread it came from, for its team stages to work in.
       slackThread?: { channel: string; threadTs: string };
+      /// The Slack thread it came from, channel or DM: where it reports and listens.
+      updatesThread?: { channel: string; threadTs: string };
     },
   ): Result<{ item: ProcessItem; process: ProcessDef }> {
     const s = this.load();
@@ -720,6 +729,7 @@ export class ProcessService {
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       ...(input.fromItemId ? { fromItemId: input.fromItemId } : {}),
       ...(input.slackThread ? { slackThread: input.slackThread } : {}),
+      ...(input.updatesThread ? { updatesThread: input.updatesThread } : {}),
       stageIndex: 0,
       status: 'active',
       artifacts: [],
@@ -744,6 +754,7 @@ export class ProcessService {
   stageOf(itemId: string, stageId: string): ProcessStage | undefined {
     const item = this.item(itemId);
     const stage = item && item.status === 'active' ? this.peek().processes.find((p) => p.id === item.processId)?.stages[item.stageIndex] : undefined;
+    if (stage?.kind === 'worker' && item?.ownerTurn === 'approval') return stage.id === stageId ? stage : undefined;
     return stage?.kind === 'people' && stage.id === stageId ? stage : undefined;
   }
 
@@ -755,6 +766,80 @@ export class ProcessService {
     if (!item || !def || !this.seesItem(caller, def, item) || !item.artifacts.some((a) => a.taskId === taskId && a.files.includes(name))) return { ok: false, error: 'No such file on that item.' };
     const body = this.deps.readFile?.(taskId, name);
     return body == null ? { ok: false, error: 'That file isn’t available any more.' } : { ok: true, name, body: body.slice(0, 200_000) };
+  }
+
+  /// Something said in the item's Slack thread, by `caller`. Waiting for an
+  /// OK: "go ahead" gives it, anything else sends the stage back with the
+  /// words. Finished or stopped: it goes back to its last worker or team
+  /// stage (or the one named) with them. Still working: kept as a note.
+  /// Returns what to say back in the thread.
+  reply(caller: OrgCaller, itemId: string, text: string): Result<{ said: string }> {
+    const said = text.trim();
+    if (!said) return { ok: false, error: 'Say what you want done.' };
+    const s = this.peek();
+    const item = s.items.find((i) => i.id === itemId);
+    const def = item ? s.processes.find((p) => p.id === item.processId) : undefined;
+    if (!item || !def || !this.seesItem(caller, def, item)) return { ok: false, error: 'That item is gone, or you can’t see it.' };
+    const stage = def.stages[item.stageIndex];
+    const yes = OK_ONLY.test(said) && !OBJECTION.test(said);
+    if (item.status === 'active') {
+      if ((stage?.kind === 'worker' && item.ownerTurn === 'approval') || (stage?.kind === 'people' && this.decides(caller, def, item))) {
+        const res = this.act(caller, item.id, yes ? 'approve' : 'sendBack', { note: said, ...(stage.kind === 'worker' && !yes ? { stageIndex: item.stageIndex } : {}) });
+        if (!res.ok) return res;
+        const now = def.stages[res.item.stageIndex];
+        return { ok: true, said: yes ? (stage.kind === 'worker' ? `Approved. Back to *${stage.name}* to go ahead.` : res.item.status === 'done' ? 'Approved: it made it through.' : `Approved: on to *${now?.name}*.`) : `Sent back to *${now?.name}* with what you said.` };
+      }
+      const res = this.act(caller, item.id, 'note', { note: said });
+      if (!res.ok) return res;
+      return { ok: true, said: `Noted on the item. It's at *${stage?.name ?? 'its stage'}*${item.stageNote ? ` (${item.stageNote.toLowerCase()})` : ''}; once that hands on, reply here to send it back with changes.` };
+    }
+    if (yes) return { ok: true, said: 'Glad it landed. Reply here any time it needs more.' };
+    return this.reopen(caller, item.id, said);
+  }
+
+  /// A finished or stopped item, back to work: at the stage the words name
+  /// (its name, or who does it), else its last worker or team stage, told
+  /// what was said. Its process's steerers, whoever put it in, or that
+  /// stage's owner.
+  reopen(caller: OrgCaller, itemId: string, note: string): Result<{ said: string; item: ProcessItem }> {
+    const s = this.load();
+    const item = s.items.find((i) => i.id === itemId);
+    const def = item ? s.processes.find((p) => p.id === item.processId) : undefined;
+    if (!item || !def || !this.seesItem(caller, def, item)) return { ok: false, error: 'That item is gone, or you can’t see it.' };
+    if (item.status === 'active') return { ok: false, error: 'It’s still going.' };
+    if (def.archived) return { ok: false, error: `${def.name} was retired, so it can’t take it back.` };
+    const doer = (st: ProcessStage) => (st.kind === 'worker' ? this.deps.workers?.().find((w) => w.id === st.workerId)?.name : st.kind === 'team' ? this.deps.teams().find((t) => t.id === st.teamId)?.name : undefined);
+    const words = note.toLowerCase();
+    const named = def.stages.findIndex((st) => st.kind !== 'people' && [st.name, doer(st)].some((n) => !!n && n.length > 2 && words.includes(n.toLowerCase())));
+    const to = named >= 0 ? named : lastWorkStage(def);
+    if (to < 0) return { ok: false, error: `${def.name} has no worker or team stage to send it back to.` };
+    const target = def.stages[to];
+    if (!this.steers(caller, def) && !samePerson(item.initiator, caller) && !samePerson(this.stageOwner(def, target), caller)) {
+      return { ok: false, error: `Only ${item.initiator.name}, ${def.owner.name} or ${target.name}’s owner can send it back.` };
+    }
+    item.status = 'active';
+    delete item.finishedAt;
+    item.feedback = { by: caller.name, note };
+    this.event(item, 'retried', { by: caller.name, note: `Reopened: ${clip(note, 300)}`, stageId: target.id });
+    this.enter(def, item, to);
+    this.put(s);
+    return { ok: true, item, said: `Back to *${target.name}*${doer(target) ? ` (${doer(target)})` : ''} with what you said. It reports here.` };
+  }
+
+  /// Items that finished or were stopped since `since`, across the processes
+  /// this person can see, newest first. For the bar's working list.
+  finishedSince(caller: OrgCaller, since: number, limit = 8): Array<{ processId: string; process: string; id: string; title: string; status: 'done' | 'stopped'; finishedAt: number; stageName: string }> {
+    const s = this.peek();
+    const out: Array<{ processId: string; process: string; id: string; title: string; status: 'done' | 'stopped'; finishedAt: number; stageName: string }> = [];
+    for (const def of s.processes) {
+      if (def.archived) continue;
+      const all = this.seesAll(caller, def);
+      for (const item of s.items) {
+        if (item.processId !== def.id || item.status === 'active' || (item.finishedAt ?? 0) < since || !this.seesItem(caller, def, item, all)) continue;
+        out.push({ processId: def.id, process: def.name, id: item.id, title: item.title, status: item.status, finishedAt: item.finishedAt!, stageName: def.stages[item.stageIndex]?.name ?? '' });
+      }
+    }
+    return out.sort((a, b) => b.finishedAt - a.finishedAt).slice(0, limit);
   }
 
   /// What's in flight across the processes this person can see: each live
@@ -866,6 +951,22 @@ export class ProcessService {
     const steer = this.steers(caller, def);
     switch (action) {
       case 'approve': {
+        if (stage?.kind === 'worker' && item.ownerTurn === 'approval') {
+          if (!this.decides(caller, def, item)) return { ok: false, error: `Only ${owner.name} or ${def.owner.name} can OK this.` };
+          // The worker goes ahead as from whoever says so, so they must be
+          // able to direct it: otherwise it would only propose again.
+          if (!caller.admin && !this.deps.isAdmin(caller) && this.deps.workerAccess && this.deps.workerAccess(caller, stage.workerId!) !== 'manage') {
+            const worker = this.deps.workers?.().find((w) => w.id === stage.workerId);
+            return { ok: false, error: `Only ${worker?.owner?.name ?? 'its manager'}, who manages ${worker?.name ?? 'the worker'}, or an admin can OK its work.` };
+          }
+          this.event(item, 'approved', { by: caller.name, ...(note ? { note } : {}) });
+          this.deps.decided?.(item.id, stage.id, `Approved by ${caller.name}: back to the worker to go ahead.`, true);
+          item.approval = { by: caller.name, proposal: item.proposal ?? '', ...(note ? { note } : {}) };
+          delete item.proposal;
+          delete item.ownerTurn;
+          this.begin(def, item, { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) });
+          break;
+        }
         if (!this.decides(caller, def, item))
           return {
             ok: false,
@@ -934,7 +1035,9 @@ export class ProcessService {
           };
         // Any earlier stage the person picked, else the stage's usual one.
         const picked = opts.stageIndex;
-        const to = typeof picked === 'number' && Number.isInteger(picked) && picked >= 0 && picked < item.stageIndex ? picked : sendBackIndex(def, item.stageIndex);
+        // A worker waiting for an OK goes again itself, told what to change.
+        const redo = stage?.kind === 'worker' && item.ownerTurn === 'approval';
+        const to = typeof picked === 'number' && Number.isInteger(picked) && picked >= 0 && picked < item.stageIndex ? picked : redo ? item.stageIndex : sendBackIndex(def, item.stageIndex);
         this.leave(stage, item, `Sent back by ${caller.name}: ${note}`);
         this.event(item, 'sentBack', {
           by: caller.name,
@@ -960,9 +1063,10 @@ export class ProcessService {
         item.finishedAt = this.now();
         delete item.taskId;
         delete item.ownerTurn;
+        delete item.proposal;
         delete item.stageNote;
         delete item.blocked;
-        this.tell(item.initiator, `_${item.title}_ was stopped at ${stage?.name ?? 'its stage'} by ${caller.name}${note ? `: ${note}` : '.'}`, caller);
+        this.tell(item.initiator, `_${item.title}_ was stopped at ${stage?.name ?? 'its stage'} by ${caller.name}${note ? `: ${note}` : '.'}`, caller, item);
         break;
       }
       case 'retry': {
@@ -1040,9 +1144,20 @@ export class ProcessService {
     item.updatedAt = this.now();
   }
 
-  private tell(to: ProcessPerson | undefined, text: string, except?: { name: string; slackUserId?: string }): void {
-    if (!to || (except && samePerson(to, except))) return;
+  /// `item`: the item it is about. Its initiator hears in the item's thread,
+  /// when it has one, and hears everything there, their own doings included:
+  /// the thread is the item's whole story.
+  private tell(to: ProcessPerson | undefined, text: string, except?: { name: string; slackUserId?: string }, item?: ProcessItem): void {
+    if (!to) return;
+    const thread = this.threadFor(item, to);
+    if (thread) return this.deps.notify?.(to, text, undefined, thread);
+    if (except && samePerson(to, except)) return;
     this.deps.notify?.(to, text);
+  }
+
+  /// The item's thread, for this person: its initiator's, only.
+  private threadFor(item: ProcessItem | undefined, to: ProcessPerson): { channel: string; threadTs: string } | undefined {
+    return item?.updatesThread && to.slackUserId && samePerson(to, item.initiator) ? item.updatesThread : undefined;
   }
 
   /// Start a stage: brief its team, or ask its people.
@@ -1052,6 +1167,8 @@ export class ProcessService {
     item.stageIndex = index;
     delete item.taskId;
     delete item.ownerTurn;
+    delete item.proposal;
+    delete item.approval;
     delete item.blocked;
     delete item.votes;
     delete item.startsAt;
@@ -1077,11 +1194,12 @@ export class ProcessService {
     item.startsAt = at;
     item.stageNote = note;
     const stage = def.stages[item.stageIndex];
-    this.tell(item.initiator, `_${item.title}_ is at *${stage.name}* in ${def.name}. It ${note.charAt(0).toLowerCase()}${note.slice(1)}.`);
+    this.tell(item.initiator, `_${item.title}_ is at *${stage.name}* in ${def.name}. It ${note.charAt(0).toLowerCase()}${note.slice(1)}.`, undefined, item);
   }
 
   /// Start the current stage's work: brief its team, ask its worker, or ask its people.
-  private begin(def: ProcessDef, item: ProcessItem): void {
+  /// `approvedBy`: a worker stage asked again with someone's OK, as from them.
+  private begin(def: ProcessDef, item: ProcessItem, approvedBy?: ProcessPerson): void {
     const stage = def.stages[item.stageIndex];
     const index = item.stageIndex;
     delete item.startsAt;
@@ -1090,9 +1208,10 @@ export class ProcessService {
       // As from its manager only when its manager put the stage in the
       // process and the item comes from them (or an admin). Anyone else's
       // item reaches the worker as a proposal from them.
-      const trusted = stage.trusted === true && this.mayDirect(item, stage.workerId!);
+      const trusted = !!approvedBy || (stage.trusted === true && this.mayDirect(item, stage.workerId!));
+      const conversation = item.updatesThread ? `slack:${item.updatesThread.channel}:${item.updatesThread.threadTs}` : undefined;
       const res = this.deps.askWorker
-        ? this.deps.askWorker(stage.workerId!, stageBrief(def, item, index, this.artifactFiles(item)), trusted ? owner : item.initiator, trusted)
+        ? this.deps.askWorker(stage.workerId!, stageBrief(def, item, index, this.artifactFiles(item)), approvedBy ?? (trusted ? owner : item.initiator), trusted, conversation)
         : { ok: false as const, error: 'Worker stages are not running here.' };
       if (!res.ok) {
         item.stageNote = 'Not started';
@@ -1102,8 +1221,9 @@ export class ProcessService {
       item.taskId = res.askId;
       item.stageNote = 'Working';
       delete item.feedback;
+      delete item.approval;
       const worker = this.deps.workers?.().find((w) => w.id === stage.workerId)?.name ?? 'A worker';
-      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}. ${worker} is on it.`, owner);
+      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}. ${worker} is on it.`, owner, item);
       return;
     }
     if (stage.kind === 'team') {
@@ -1123,7 +1243,7 @@ export class ProcessService {
       item.taskId = res.taskId;
       item.stageNote = 'Planning';
       delete item.feedback;
-      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}. ${owner.name} leads this stage.`, owner);
+      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}. ${owner.name} leads this stage.`, owner, item);
     } else {
       const who = this.deciders(stage);
       const need = this.needed(stage);
@@ -1142,9 +1262,9 @@ export class ProcessService {
       ]
         .filter(Boolean)
         .join('\n');
-      for (const p of who) this.deps.notify?.(p, text, { itemId: item.id, stageId: stage.id });
+      for (const p of who) this.deps.notify?.(p, text, { itemId: item.id, stageId: stage.id }, this.threadFor(item, p));
       const named = this.seesAll({ ...item.initiator, admin: false }, def);
-      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}, waiting on ${this.decidersText(stage, named)} to decide.`);
+      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}, waiting on ${this.decidersText(stage, named)} to decide.`, undefined, item);
     }
   }
 
@@ -1171,9 +1291,11 @@ export class ProcessService {
       item.finishedAt = this.now();
       delete item.taskId;
       delete item.ownerTurn;
+      delete item.proposal;
       delete item.stageNote;
       this.event(item, 'done');
-      this.tell(item.initiator, `_${item.title}_ made it through *${def.name}*.`);
+      const last = lastWorkStage(def);
+      this.tell(item.initiator, `_${item.title}_ made it through *${def.name}*.${item.updatesThread && last >= 0 ? ` Reply here if something's off (a failing build, a fix it needs) and it goes back to *${def.stages[last].name}* with what you say.` : ''}`, undefined, item);
       this.tell(def.owner, `_${item.title}_ finished *${def.name}*.`, item.initiator);
       return;
     }
@@ -1238,6 +1360,26 @@ export class ProcessService {
                     : task.status === 'review'
                       ? `Pack waiting on ${owner}’s sign-off`
                       : undefined;
+      // The worker answered with what it would do and waits for an OK: the
+      // stage stops for its owner, asked once, instead of handing on a
+      // proposal as if it were the work.
+      if (byWorker && task.status === 'waiting' && task.asksApproval) {
+        if (item.ownerTurn !== 'approval') {
+          const ownerP = this.stageOwner(def, stage);
+          const worker = this.deps.workers?.().find((w) => w.id === stage.workerId)?.name ?? 'The worker';
+          item.proposal = clip(task.asksApproval, 6000);
+          item.ownerTurn = 'approval';
+          item.stageNote = `Waiting for ${owner}’s OK`;
+          this.event(item, 'note', { by: worker, note: `Asks for an OK before going ahead: ${clip(task.asksApproval, 300)}`, stageId: stage.id });
+          const text = [`*${def.name}* · *${stage.name}*: ${worker} asks for your OK on _${item.title}_ before it goes ahead.`, `> ${clip(task.asksApproval, 1500).replace(/\n/g, '\n> ')}`, 'Approve and it does it; send it back to change what it does; or stop it.'].join('\n');
+          this.deps.notify?.(ownerP, text, { itemId: item.id, stageId: stage.id }, this.threadFor(item, ownerP));
+          // Asked of someone else: the thread hears it is waiting on them.
+          if (item.updatesThread && !this.threadFor(item, ownerP)) this.tell(item.initiator, `${worker} asks ${ownerP.name} for an OK before it goes ahead:\n> ${clip(task.asksApproval, 800).replace(/\n/g, '\n> ')}`, undefined, item);
+          if (!samePerson(def.owner, ownerP)) this.deps.notify?.(def.owner, text, { itemId: item.id, stageId: stage.id });
+          changed = true;
+        }
+        continue;
+      }
       const turn: ProcessItem['ownerTurn'] = task.status === 'questions' ? 'questions' : task.status === 'proposed' ? 'plan' : task.status === 'review' ? 'pack' : task.status === 'waiting' ? 'paused' : undefined;
       if (task.status === 'done') {
         const artifact: ProcessArtifact = {
@@ -1263,6 +1405,11 @@ export class ProcessService {
           stageId: stage.id,
           note: clip(artifact.summary, 300),
         });
+        // The thread reads what each stage handed on, not just that it moved.
+        if (item.updatesThread) {
+          const doer = byWorker ? (this.deps.workers?.().find((w) => w.id === stage.workerId)?.name ?? 'The worker') : (this.deps.teams().find((t) => t.id === stage.teamId)?.name ?? 'The team');
+          this.tell(item.initiator, `*${stage.name}* · ${doer} handed on:\n${clip(artifact.summary, 2500)}`, undefined, item);
+        }
         if (stage.repeat && runs < stage.repeat.times) {
           item.runs = runs;
           delete item.taskId;
@@ -1304,4 +1451,15 @@ export function processScheduleText(cadence: ScheduleTrigger): string {
     }
   }
   return scheduleText(cadence);
+}
+
+/// "ok", "go ahead", "looks good", "ship it": a yes and nothing more.
+const OK_ONLY = /^(?:(?:ok(?:ay)?|yes|yep|yeah|sure|approved?|go(?: ahead)?|lgtm|looks good|ship it|do it|proceed|perfect|great|thanks?|thank you|cheers)\b[\s!.,:;-]*)+(?:please|thanks?|thank you)?[\s!.]*$/i;
+/// A yes with a catch: "looks good but the build fails".
+const OBJECTION = /\b(?:but|however|except|instead|don'?t|not|fail(?:s|ed|ing)?|broken|fix|change|wrong)\b/i;
+
+/// The last stage that does work (a worker or a team), or -1.
+function lastWorkStage(def: Pick<ProcessDef, 'stages'>): number {
+  for (let i = def.stages.length - 1; i >= 0; i--) if (def.stages[i].kind !== 'people') return i;
+  return -1;
 }

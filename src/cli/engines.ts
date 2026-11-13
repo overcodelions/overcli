@@ -70,9 +70,11 @@ import { execFile } from 'node:child_process';
 import { setSafeFetch } from '../main/safeFetch';
 import { setWebReadsTrusted } from '../main/flows/trustedCommands';
 import { loadOrgPolicy, orgDir, fileHandbook, jsonOrgStore } from '../main/org/orgStores';
-import { CiWatcher, continueBranchOf, type CiWatch } from '../main/org/ciWatch';
+import { CiWatcher, continueBranchOf, readFailure, type CiWatch } from '../main/org/ciWatch';
 import { continueBranchFor } from '../main/org/continueBranch';
-import { openPullRequest } from '../main/org/prOpen';
+import { findOpenPullRequest, openPullRequest } from '../main/org/prOpen';
+import { gitHostOf, repliesFlowId, repliesFlowYaml, repliesPrompt } from '../main/org/prReplies';
+import { PrWatcher, prHostFor, type PrWatchState } from '../main/org/prWatch';
 import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
 import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
@@ -617,6 +619,13 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         resolve(err ? { ok: false, error: `${stderr}${stdout}`.trim() || err.message } : { ok: true, stdout: `${stdout}${stderr}` }),
       );
     });
+  // git with its exit code, for a caller that tells "no" (1) from "couldn't" (anything else).
+  const gitCode = (args: string[], cwd: string) =>
+    new Promise<{ code: number; stdout: string }>((resolve) => {
+      execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout) =>
+        resolve({ code: err ? (typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : -1) : 0, stdout: String(stdout) }),
+      );
+    });
   const connectedRepos = (): ConnectedRepo[] => {
     const list = org.repoList({ name: 'overcli', admin: true });
     return list.ok ? (list as { repos: ConnectedRepo[] }).repos : [];
@@ -634,6 +643,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       ciWatches: () => ci.list(),
       fixAskedOn: (workerId, branch, repos) => ci.fixAskedOn(workerId, branch, repos),
       // Still there on origin, and not merged yet: worth building on.
+      mayContinueOpenPrs: (workerId) => workerEngine.get(workerId)?.caps.continueOpenPrs === true,
+      hasOpenPr: async (repo, branch) => !!(await findOpenPullRequest(repo, branch, { env: (n) => process.env[n] })),
       open: async (repo, branch) => {
         await serverGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo.path);
         const there = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], repo.path);
@@ -642,6 +653,28 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         return !merged.ok;
       },
     });
+  };
+  // A run on an open pull request's branch is told why its build failed,
+  // read here with the server's token: a worker's own tool may not read logs.
+  // The connected repos a place holds: a workspace's members, or the one repo.
+  const reposAt = (projectPath: string): ConnectedRepo[] => {
+    const list = org.repoList({ name: 'overcli', admin: true });
+    if (!list.ok) return [];
+    const { repos, workspaces } = list as { repos: ConnectedRepo[]; workspaces: Array<{ rootPath: string; repos: string[] }> };
+    const ws = workspaces.find((w) => w.rootPath === projectPath);
+    return ws ? repos.filter((r) => ws.repos.includes(r.name)) : repos.filter((r) => r.path === projectPath);
+  };
+  orchestrator.buildFailureOf = async ({ projectPath, branch }) => {
+    const here = reposAt(projectPath);
+    const said = await Promise.all(
+      here.map(async (r) => {
+        const head = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], r.path);
+        if (!head.ok) return '';
+        const why = await readFailure(r, head.stdout.trim(), { env: (n) => process.env[n] }).catch(() => '');
+        return why ? `${r.name}:\n${why}` : '';
+      }),
+    );
+    return said.filter(Boolean).join('\n\n').slice(0, 8000);
   };
   // What the repo's own CI says about each pushed commit: a red build goes
   // back to the worker to fix on the same branch, a few rounds at most.
@@ -670,6 +703,19 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     log: (message) => log('info', 'org.ci', message),
   });
   ci.start();
+  // The team's open pull requests, checked every few minutes with no model:
+  // a worker that looks after them is woken only when one needs it (prWatch.ts).
+  const prWatch = new PrWatcher({
+    store: jsonOrgStore<PrWatchState>('pr-watch.json', () => ({ repos: {} })),
+    watchers: () => workerEngine.roster().filter((w) => w.enabled && w.caps.continueOpenPrs).map((w) => ({ workerId: w.id, repos: reposAt(w.projectPath), authors: w.caps.prAuthors, commentAuthors: w.caps.prCommentAuthors, perWake: w.caps.maxItemsPerShift })),
+    // Planning what it was handed, or its runs still going: the rest wait.
+    busy: (workerId) => !!workerEngine.planning(workerId) || flowRuntime.listRuns().some((r) => r.workerId === workerId && r.state.kind === 'running'),
+    host: (repo) => prHostFor(repo, { env: (n) => process.env[n], git: gitCode }),
+    ownPush: (repo, branch, head) => !!head && ci.list().some((w) => w.repo === repo.name && w.branch === branch && (w.sha.startsWith(head) || head.startsWith(w.sha))),
+    wake: (workerId, text) => workerEngine.runErrand(workerId, text),
+    log: (message) => log('info', 'org.prs', message),
+  });
+  prWatch.start();
   const watchCi = async (run: FlowRun, landed: Landed[]) => {
     const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
     if (!w || run.flowId.startsWith('org-ticket-')) return;
@@ -688,6 +734,21 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       if (!l.branch) continue;
       ci.watch({ runId: run.id, workerId: w.id, workerName: w.name, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim() });
     }
+  };
+  // The replies on a pull request's comments, once its fixes are pushed (prReplies.ts).
+  const replyOnPr = async (workerId: string, host: string, run: FlowRun, landed: Landed[]) => {
+    const flow = parseFlowYaml({ yaml: repliesFlowYaml(host), id: repliesFlowId(host), source: 'user', filePath: '' });
+    const saved = flow ? saveFlow({ flow, target: 'user' }) : { ok: false as const, error: 'the flow did not parse' };
+    if (!flow || !saved.ok) return log('warn', 'org.repos', `Couldn't set up the pull request replies: ${saved.ok ? '' : saved.error}`);
+    const withCommits = await Promise.all(
+      landed.map(async (l) => {
+        const place = run.workspaceWorktrees?.find((m: { name: string; worktreePath: string }) => m.name === l.repo)?.worktreePath ?? run.worktreePath;
+        const head = l.updated && place ? await serverGit(['rev-parse', '--short=12', 'HEAD'], place) : null;
+        return head?.ok ? { ...l, commit: head.stdout.trim() } : l;
+      }),
+    );
+    const res = await workerEngine.followUp(workerId, { title: `${flowRunTitle(run)}: reply on the pull request`, prompt: repliesPrompt(run, withCommits), flowId: flow.id, kind: 'replies' });
+    if (!res.ok) log('warn', 'org.repos', `Couldn't start the pull request replies: ${res.error}`);
   };
   const lander = new BranchLander({
     test: (command, cwd) => runRepoTests(command, cwd),
@@ -708,6 +769,11 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     onLanded: (run, landed) => {
       void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't start watching CI: ${String(err)}`));
       const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
+      // Fixes added to the team's open pull request: its comments hear what was fixed.
+      const host = w?.caps.continueOpenPrs ? gitHostOf(w.mcpServers) : null;
+      if (w && host && run.continues && !run.flowId.startsWith('org-ticket-') && !run.flowId.startsWith('org-pr-replies-') && landed.some((l) => l.updated)) {
+        void replyOnPr(w.id, host, run, landed).catch((err: unknown) => log('warn', 'org.repos', `Couldn't start the pull request replies: ${String(err)}`));
+      }
       const ticket = ticketOf(run);
       const server = trackerOf(w?.mcpServers);
       if (!w || !ticket || !server || run.flowId.startsWith('org-ticket-')) return;

@@ -149,9 +149,9 @@ export interface Team {
   /// task so the coordinator can answer from it, or ask less. Learned by a
   /// task of its own (`kind: 'learn'`); refreshed the same way.
   knowledge?: TeamKnowledge;
-  /// Learn again when what it knows is a week old: `weekly` (absent means
-  /// this) or only when someone asks (`off`).
-  knowledgeRefresh?: 'weekly' | 'off';
+  /// Learn again when what it knows is a day old (`daily`), a week old
+  /// (`weekly`, and absent means this), or only when someone asks (`off`).
+  knowledgeRefresh?: TeamKnowledgeRefresh;
   /// Disbanded: it takes no more work and is gone from every list, but kept,
   /// so what it delivered stays in the Library for the people who could see
   /// it. Its members stay hired. See `TeamEngine.disband`.
@@ -161,8 +161,14 @@ export interface Team {
 /// The longest a team's guidance may be.
 export const TEAM_GUIDANCE_MAX = 20_000;
 
+/// How often what a team knows is learned again.
+export type TeamKnowledgeRefresh = 'daily' | 'weekly' | 'off';
+export const TEAM_KNOWLEDGE_REFRESH_MODES: readonly TeamKnowledgeRefresh[] = ['daily', 'weekly', 'off'];
+
 /// How old what a team knows gets before a weekly refresh runs.
 export const TEAM_KNOWLEDGE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/// How old it gets before a daily refresh runs.
+export const TEAM_KNOWLEDGE_DAILY_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface TeamKnowledge {
   status: 'learning' | 'ready' | 'failed';
