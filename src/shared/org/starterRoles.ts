@@ -1,5 +1,8 @@
-// Starter roles: three ready-made entries for an org's role catalog, so a new
-// org can hire a Developer, a QA or an Analyst without writing the job first.
+// Starter roles: ready-made entries for an org's role catalog, so a new org
+// can hire a Developer, a QA, an Analyst, a PR Fixer or a Test Automation
+// worker without writing the job first. Each is written for any org: what's
+// particular to yours (your apps, your trackers, your house style) goes in
+// Setup, the repo's own notes, or a line added at hire.
 // They are offered, never imposed: an admin adds one to the catalog (Hire,
 // or Setup → Role catalog), and from then on it is the org's own role, to
 // edit like any other, under the same approvals and budgets.
@@ -50,6 +53,34 @@ export const STARTER_ROLES: StarterRole[] = [
     budgetUSDPerMonth: 75,
     needs: 'A database on Setup → Databases.',
   },
+  {
+    name: 'PR Fixer',
+    pitch: 'Keeps the team’s open pull requests mergeable: fixes broken builds, resolves conflicts and, for the people you choose, small review comments.',
+    job:
+      'Keep open pull requests mergeable. The server watches them and hands you the ones that need you: a build that went red, a branch that no longer merges, or new review comments on pull requests by the people you fix comments for. ' +
+      'For each one, read the pull request with your git host tool and file one proposal that fixes it on the same branch, ending with a line [continue-branch: <the pull request’s source branch>]. ' +
+      'For a failing test, work out whether the test or the code is wrong: fix the test only when the change meant to alter that behaviour, and never weaken, skip or delete a test to make it pass. A build that failed before any test ran is not yours. ' +
+      'Conflicts are always yours: the server starts the merge and you resolve the markers. ' +
+      'Fix a review comment only when it is clearly right and quick, and leave design questions and judgement calls to people. ' +
+      'Never approve, merge or decline a pull request, and never push to a default branch.',
+    tools: [],
+    budgetUSDPerMonth: 150,
+    teamPullRequests: true,
+    needs: 'A repo or workspace on Setup → Repos & workspaces, and your git host’s tool on Setup → Tools.',
+  },
+  {
+    name: 'Test Automation',
+    pitch: 'Turns shipped tickets into end-to-end tests, in the test repo’s own framework and style.',
+    job:
+      'Turn tickets that are ready for automation into end-to-end tests. ' +
+      'Find the tickets your job names (a status, a label or a linked automation request), and read each one’s acceptance criteria and comments. ' +
+      'Write tests for what it changed in the test repo’s own framework and conventions, following its contributing notes. ' +
+      'Prefer a few tests that cover the acceptance criteria end to end over many shallow ones, run them, and open one pull request per ticket that says which criteria each test covers. ' +
+      'Never weaken an existing test to make a new one pass, and skip a ticket whose criteria are too vague to test, saying what is missing.',
+    tools: ['test-systems'],
+    budgetUSDPerMonth: 100,
+    needs: 'A test repo on Setup → Repos & workspaces, and an app on Setup → Apps to test.',
+  },
 ];
 
 export function starterRole(name: string): StarterRole | undefined {
@@ -59,5 +90,5 @@ export function starterRole(name: string): StarterRole | undefined {
 
 /// The catalog entry a starter role becomes: just the role, none of the card's words.
 export function asCatalogRole(r: StarterRole): OrgRole {
-  return { name: r.name, job: r.job, tools: [...r.tools], budgetUSDPerMonth: r.budgetUSDPerMonth };
+  return { name: r.name, job: r.job, tools: [...r.tools], budgetUSDPerMonth: r.budgetUSDPerMonth, ...(r.teamPullRequests ? { teamPullRequests: true } : {}) };
 }

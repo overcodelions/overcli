@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ConnectedRepo } from './repos';
-import { changesIn, gitConflicted, markTold, MAX_WAKES_PER_DAY, OWN_MARK, prHostFor, PrWatcher, QUIET_MS, wakeText, wantsOf, type BuildState, type OpenPr, type PrHost, type PrWatchState } from './prWatch';
+import { changesIn, gitConflicted, markTold, MAX_COMMENT_ROUNDS, MAX_WAKES_PER_DAY, OWN_MARK, prHostFor, PrWatcher, QUIET_MS, wakeText, wantsOf, type BuildState, type OpenPr, type PrHost, type PrWatchState } from './prWatch';
 
 const REPO = { name: 'acme-web', url: 'https://bitbucket.org/acme/acme-web.git', host: 'bitbucket', defaultBranch: 'main', path: '/data/repos/acme-web' } as ConnectedRepo;
 const pr = (over: Partial<OpenPr> = {}): OpenPr => ({ id: '42', url: 'https://bitbucket.org/acme/acme-web/pull-requests/42', title: 'Sort by date', branch: 'feature/ACME-9-sort', head: 'abc123', updatedAt: 't1', draft: false, author: ['Dana Reviewer', 'dana'], ...over });
@@ -144,6 +144,28 @@ describe('whose pull requests', () => {
     other = await watch(g, MIN, other.now);
     expect((await watch(g, MIN + QUIET_MS, other.now)).changes).toEqual([]);
     expect(g.asked.comments).toBe(0);
+  });
+
+  it('stops raising review comments on a pull request after a few rounds, for good, but not its conflicts', async () => {
+    const f = fakeHost({ prs: [pr()], comments: 0 });
+    const both = () => ({ fixes: true, comments: true });
+    let t = 0;
+    let seen = await watch(f, t, undefined, notOurs, both);
+    let rounds = 0;
+    // Each push draws one more AI review comment, days apart so the daily cap never bites.
+    for (let i = 1; i <= MAX_COMMENT_ROUNDS + 2; i++) {
+      f.s.prs = [pr({ head: `h${i}`, updatedAt: `u${i}` })];
+      f.s.comments = i;
+      seen = await watch(f, (t += 2 * 24 * 60 * MIN), seen.now, notOurs, both);
+      seen = await watch(f, (t += QUIET_MS), seen.now, notOurs, both);
+      rounds += seen.changes.length;
+    }
+    expect(rounds).toBe(MAX_COMMENT_ROUNDS);
+    // A conflict still comes through.
+    f.s.base = 'base2';
+    f.s.conflicted = true;
+    seen = await watch(f, (t += MIN), seen.now, notOurs, both);
+    expect((await watch(f, t + QUIET_MS, seen.now, notOurs, both)).changes[0].what).toEqual(['conflicts with main']);
   });
 
   it('wakes a worker only for its own people\u2019s pull requests and comments', async () => {
