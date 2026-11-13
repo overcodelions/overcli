@@ -93,7 +93,7 @@ describe('Setup → Apps to test over HTTP', () => {
 describe('starter roles over HTTP', () => {
   it('lists them, and an admin adds one to the catalog once', async () => {
     const list = await call('GET', '/api/roles/starters');
-    expect(list.roles.map((r: { name: string }) => r.name)).toEqual(['Developer', 'QA', 'Analyst']);
+    expect(list.roles.map((r: { name: string }) => r.name)).toEqual(['Developer', 'QA', 'Analyst', 'PR Fixer', 'Test Automation']);
     expect(list.roles.every((r: { inCatalog: boolean }) => !r.inCatalog)).toBe(true);
     expect(await call('POST', '/api/roles/starters/add', { name: 'QA' })).toMatchObject({ ok: true, role: 'QA' });
     expect((await call('GET', '/api/roles/starters')).roles.find((r: { name: string }) => r.name === 'QA').inCatalog).toBe(true);

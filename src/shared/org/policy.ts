@@ -28,6 +28,10 @@ export interface OrgRole {
   /// MCP servers this role may have without approval.
   tools: string[];
   budgetUSDPerMonth: number;
+  /// Hired from this role, a worker pushes fixes onto the team's open pull
+  /// requests (WorkerCaps.continueOpenPrs). Only an admin adds a role, so only
+  /// an admin grants this.
+  teamPullRequests?: boolean;
 }
 
 export interface OrgPolicy {
@@ -266,7 +270,7 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
           warnings.push(`roles: "${name || '(unnamed)'}" needs a name, a job of a sentence or more, and a budgetUSDPerMonth above zero.`);
           continue;
         }
-        roles.push({ name, job, tools: strings(role.tools), budgetUSDPerMonth: budget });
+        roles.push({ name, job, tools: strings(role.tools), budgetUSDPerMonth: budget, ...(role.teamPullRequests === true ? { teamPullRequests: true } : {}) });
       }
     }
   }

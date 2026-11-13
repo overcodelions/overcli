@@ -4310,7 +4310,9 @@ export class OrgService {
     this.putHire(null, hire.id);
     // Its face from the start: a pixel robot, its own from a random seed. No
     // model turn; "Pick one for me" and the picker are there to change it.
-    const worker = saved.worker.avatarUrl ? saved.worker : { ...saved.worker, avatarUrl: defaultWorkerPicture(randomUUID()) };
+    // Hired from a role that works on the team's pull requests: it may push onto them (an admin made the role).
+    const pictured = saved.worker.avatarUrl ? saved.worker : { ...saved.worker, avatarUrl: defaultWorkerPicture(randomUUID()) };
+    const worker = hire.role?.teamPullRequests && !pictured.caps.continueOpenPrs ? { ...pictured, caps: { ...pictured.caps, continueOpenPrs: true } } : pictured;
     if (worker !== saved.worker) this.deps.workers.save(worker);
     // And it gets to know its tools before its first real job.
     if ((worker.mcpServers ?? []).length) void this.startLearning(worker.id);

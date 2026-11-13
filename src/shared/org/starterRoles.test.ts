@@ -25,11 +25,14 @@ function harness(start: Record<string, unknown>) {
 }
 
 describe('starter roles', () => {
-  it('are three valid catalog roles', () => {
-    expect(STARTER_ROLES.map((r) => r.name)).toEqual(['Developer', 'QA', 'Analyst']);
+  it('are valid catalog roles', () => {
+    expect(STARTER_ROLES.map((r) => r.name)).toEqual(['Developer', 'QA', 'Analyst', 'PR Fixer', 'Test Automation']);
     const { policy, warnings } = parseOrgPolicy({ name: 'Acme', admins: [], roles: STARTER_ROLES.map(asCatalogRole) });
     expect(warnings).toEqual([]);
-    expect(policy.roles).toHaveLength(3);
+    expect(policy.roles).toHaveLength(5);
+    // The PR Fixer's catalog entry keeps what makes it one.
+    expect(policy.roles.find((r) => r.name === 'PR Fixer')?.teamPullRequests).toBe(true);
+    expect(policy.roles.find((r) => r.name === 'Developer')).not.toHaveProperty('teamPullRequests');
     expect(starterRole('qa')?.tools).toEqual(['test-systems']);
     expect(starterRole('analyst')?.tools).toEqual(['overdb']);
     expect(asCatalogRole(STARTER_ROLES[1])).not.toHaveProperty('pitch');
@@ -37,7 +40,7 @@ describe('starter roles', () => {
 
   it('are added to the catalog by an admin, once, as the org’s own role', () => {
     const h = harness({ name: 'Acme', admins: ['U0ACMEBOSS'], roles: [{ name: 'Writer', job: 'Writes the release notes each week.', tools: [], budgetUSDPerMonth: 20 }] });
-    expect(h.svc.starterRoles().roles.map((r) => [r.name, r.inCatalog])).toEqual([['Developer', false], ['QA', false], ['Analyst', false]]);
+    expect(h.svc.starterRoles().roles.map((r) => [r.name, r.inCatalog])).toEqual([['Developer', false], ['QA', false], ['Analyst', false], ['PR Fixer', false], ['Test Automation', false]]);
     expect(h.svc.addStarterRole(admin, 'qa')).toEqual({ ok: true, role: 'QA' });
     expect((h.raw().roles as Array<{ name: string }>).map((r) => r.name)).toEqual(['Writer', 'QA']);
     expect(h.svc.starterRoles().roles.find((r) => r.name === 'QA')?.inCatalog).toBe(true);

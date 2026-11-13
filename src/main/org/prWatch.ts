@@ -67,6 +67,8 @@ interface Seen {
   activeAt?: number;
   /// When its worker was woken for it, the last day's.
   woken?: number[];
+  /// Times its worker was handed review comments on it, while it's open (MAX_COMMENT_ROUNDS).
+  commentRounds?: number;
 }
 
 /// Settled: nothing new for this long, and no build still running. Reviews
@@ -76,6 +78,10 @@ export const QUIET_MS = 10 * 60_000;
 /// Its own push starts a new build and a new review; past this many wakes a
 /// day for one pull request, the rest waits for a person.
 export const MAX_WAKES_PER_DAY = 3;
+/// Review comments wake its worker this many times per pull request, ever.
+/// An AI reviewer reads each new commit and always finds one more thing; past
+/// this, the rest of the review is a person's. Builds and conflicts aren't counted.
+export const MAX_COMMENT_ROUNDS = 3;
 const DAY_MS = 24 * 60 * 60_000;
 
 export interface PrWatchState {
@@ -165,7 +171,7 @@ export async function changesIn(
     if (build === 'failed') {
       if ((was?.build !== 'failed' || was.head !== pr.head) && !ownPush(repo, pr.branch, pr.head)) pending.failed = true;
     } else if (build === 'passed') delete pending.failed;
-    if (!want.comments) delete pending.comments;
+    if (!want.comments || (was?.commentRounds ?? 0) >= MAX_COMMENT_ROUNDS) delete pending.comments;
     else if (comments !== undefined && was?.comments !== undefined && comments > was.comments) pending.comments = (pending.comments ?? 0) + comments - was.comments;
     const changedNow = moved || build !== was?.build || conflicted !== was?.conflicted || comments !== was?.comments;
     const activeAt = changedNow || was?.activeAt === undefined ? now : was.activeAt;
@@ -189,6 +195,7 @@ export async function changesIn(
       ...(build ? { build } : {}),
       ...(what.length ? { pending } : {}),
       ...(woken.length ? { woken } : {}),
+      ...(was?.commentRounds ? { commentRounds: was.commentRounds } : {}),
     };
   }
   return { changes, now: { ...(base ? { base } : {}), prs } };
@@ -198,6 +205,7 @@ export async function changesIn(
 export function markTold(entry: { prs: Record<string, Seen> } | undefined, id: string, now: number): void {
   const seen = entry?.prs[id];
   if (!seen) return;
+  if (seen.pending?.comments) seen.commentRounds = (seen.commentRounds ?? 0) + 1;
   delete seen.pending;
   seen.woken = [...(seen.woken ?? []).filter((t) => now - t < DAY_MS), now];
 }
