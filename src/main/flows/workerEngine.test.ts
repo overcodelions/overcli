@@ -586,6 +586,25 @@ describe('WorkerEngine on-demand workers', () => {
       expect(prompt).toContain('THE STEP WINS');
     });
 
+    it('gives a ticket update the job description, so it knows how to fill the move’s fields', async () => {
+      const job = 'Automation Required: "No", unless the change adds end-to-end tests.';
+      const h = makeHarness({ seed: [seedWorker({ cadence: null, jobDescription: job })] });
+      h.engine.start();
+      const res = await h.engine.followUp('worker-1', { title: 'ACME-1: move it', prompt: 'On ACME-1: move it to Code Review.', flowId: 'org-ticket-actions-jira', kind: 'ticket' });
+      expect(res.ok).toBe(true);
+      const prompt = h.direct[0].prompt;
+      expect(prompt).toContain(job);
+      expect(prompt).toContain('THE STEP WINS');
+      expect(prompt).toContain('THE WORK\nOn ACME-1: move it to Code Review.');
+    });
+
+    it('leaves a CI fix’s prompt as it was given', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      h.engine.start();
+      await h.engine.followUp('worker-1', { title: 'CI', prompt: 'Fix the red build.', flowId: 'fix-it', kind: 'ci' });
+      expect(h.direct[0].prompt).toBe('Fix the red build.');
+    });
+
     it('lands on the desk as a turn with its batch attached', async () => {
       const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
       h.engine.start();

@@ -43,6 +43,25 @@ function deps(over: Partial<ContinueBranchDeps> & { openBranches?: Record<string
 const LANDED = '- Opened a pull request for acme-api: https://git.acme.test/acme-api/pull-requests/7 (branch feature/ACME-123-keep-audit-records-ab12cd)\n- 1 other repo had no changes.';
 const ask = (title: string, prompt = 'Fix the build') => ({ projectPath: WS, workerId: 'w1', title, prompt });
 
+describe('continueBranchFor on the team’s open pull requests', () => {
+  const marker = (b: string) => ask('PR #42: address the review', `Fix the review comments.\n[continue-branch: ${b}]`);
+
+  it('continues a teammate’s branch with an open pull request, for a worker allowed to', async () => {
+    const d = deps({ openBranches: { 'acme-web': ['feature/ACME-9-sort'] }, mayContinueOpenPrs: () => true, hasOpenPr: async (r, b) => r.name === 'acme-web' && b === 'feature/ACME-9-sort' });
+    expect(await continueBranchFor(marker('feature/ACME-9-sort'), d)).toBe('feature/ACME-9-sort');
+  });
+
+  it('refuses it for a worker that only adds to its own', async () => {
+    const d = deps({ openBranches: { 'acme-web': ['feature/ACME-9-sort'] }, mayContinueOpenPrs: () => false, hasOpenPr: async () => true });
+    expect(await continueBranchFor(marker('feature/ACME-9-sort'), d)).toBeNull();
+  });
+
+  it('refuses a branch with no open pull request, even one still on origin', async () => {
+    const d = deps({ openBranches: { 'acme-web': ['release/2026-11'] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => false });
+    expect(await continueBranchFor(marker('release/2026-11'), d)).toBeNull();
+  });
+});
+
 describe('continueBranchFor in a workspace', () => {
   it('continues the open branch an earlier run landed for the same ticket', async () => {
     const d = deps({ runs: () => [wsRun({ landed: LANDED })], openBranches: { 'acme-api': ['feature/ACME-123-keep-audit-records-ab12cd'] } });

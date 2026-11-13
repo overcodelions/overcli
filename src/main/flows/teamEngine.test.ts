@@ -2143,6 +2143,15 @@ describe('what a team knows', () => {
     expect(h.engine.setKnowledgeRefresh('team-1', 'off').ok).toBe(true);
     expect(h.engine.list().teams.find((t) => t.id === 'team-1')?.knowledgeRefresh).toBe('off');
   });
+
+  it('refreshes a day-old brief for a team set to daily', () => {
+    const day = 24 * 60 * 60 * 1000;
+    const known = { status: 'ready' as const, body: 'Q1: acme exports.', updatedAt: 1 };
+    const h = makeHarness({ seedTeams: [team({ knowledge: known, knowledgeRefresh: 'daily' }), team({ id: 'team-2', name: 'Weekly', knowledge: known })] });
+    h.engine.start();
+    expect(h.engine.refreshDue(1 + day - 1)).toEqual([]);
+    expect(h.engine.refreshDue(1 + day)).toEqual(['team-1']);
+  });
 });
 
 describe('TeamEngine continueAsNew', () => {

@@ -212,6 +212,10 @@ export interface ProcessItem {
   /// The Slack channel thread it was put in from: its team stages work there,
   /// in front of everyone in it. Absent: they talk to each stage's lead by DM.
   slackThread?: { channel: string; threadTs: string };
+  /// The Slack thread it was put in from, channel or DM: its updates go there,
+  /// its worker stages keep one conversation there, and a reply there reaches
+  /// it (`ProcessService.reply`).
+  updatesThread?: { channel: string; threadTs: string };
   stageIndex: number;
   status: ProcessItemStatus;
   /// The team task working the current stage.
@@ -219,8 +223,13 @@ export interface ProcessItem {
   /// Where the current stage is, in words, for the board.
   stageNote?: string;
   /// The current team or worker stage stopped for its owner: questions to
-  /// answer, a plan to approve, a pack to sign off, or a paused run.
-  ownerTurn?: 'questions' | 'plan' | 'pack' | 'paused';
+  /// answer, a plan to approve, a pack to sign off, a paused run, or a worker
+  /// that answered with what it would do and waits for an OK (`proposal`).
+  ownerTurn?: 'questions' | 'plan' | 'pack' | 'paused' | 'approval';
+  /// What the worker at the current stage proposes, waiting for an OK.
+  proposal?: string;
+  /// The OK it got: goes into the worker's next brief, then clears.
+  approval?: { by: string; proposal: string; note?: string };
   /// Why it can't move on its own. Its owners were told once.
   blocked?: string;
   /// The branch the latest code-changing stage left, where the next one starts.
@@ -356,9 +365,12 @@ export function stageBrief(def: ProcessDef, item: ProcessItem, index: number, fi
     `This is stage ${index + 1} of ${def.stages.length}, "${stage.name}", in the ${def.name} process${def.purpose ? ` (${def.purpose})` : ''}.`,
     `Item: ${item.title}`,
     stage.ask?.trim() ? `\nThis stage's job: ${stage.ask.trim()}` : `\nDo this stage's part: ${stage.name}.`,
-    stage.kind === 'worker' ? 'Do this stage yourself. Your answer, with any links, is what the next stage gets.' : '',
+    stage.kind === 'worker' ? 'Do this stage yourself. Your answer, with any links, is what the next stage gets. If something needs an OK before you do it, say so and stop: the process asks for it and comes back to you.' : '',
     `\nThe original request, from ${item.initiator.name}:\n${item.brief.trim()}`,
   ];
+  if (item.approval) {
+    parts.push(`\n${item.approval.by} approved what you proposed for this stage. Go ahead and do it now, then say what you did, with links (a ticket key, a URL):\n${item.approval.proposal}${item.approval.note ? `\n\n${item.approval.by} added: ${item.approval.note}` : ''}`);
+  }
   if (item.feedback) parts.push(`\nIt was sent back to this stage by ${item.feedback.by}, who said:\n${item.feedback.note}`);
   if (item.branch && def.codeIn) parts.push(`\nThe code so far is on the branch \`${item.branch}\` in ${def.codeIn.name}. Work on top of it.`);
   const earlier = item.artifacts.filter((a) => a.stageId !== stage.id);
@@ -387,6 +399,14 @@ export function stageBrief(def: ProcessDef, item: ProcessItem, index: number, fi
   const next = def.stages[index + 1];
   if (next) parts.push(`\nWhen this stage is done it goes to ${next.name}${next.kind === 'people' ? (next.mode === 'input' ? ', where people add what they know' : ', where people decide whether it goes on') : ''}. Write the pack for them.`);
   return parts.join('\n');
+}
+
+/// A worker's answer that stops for an OK rather than doing the work: "I
+/// need your approval first", "shall I create it?", "once you approve".
+const ASKS_OK = /\b(?:(?:need|needs|needed|want|wants|waiting (?:for|on)|wait(?:s|ing)? for|awaiting|pending|requires?|without)\s+(?:your\s+|an?\s+|the\s+|someone'?s\s+)?(?:approval|ok|okay|go[- ]ahead|sign[- ]off|confirmation)|(?:shall|should|can|may) i (?:go ahead|proceed|create|open|file|raise|make|send|post)|(?:once|if|when) you (?:approve|confirm|ok|say (?:so|yes|go))|after (?:your )?approval|(?:with|on) your (?:ok|okay|approval|go[- ]ahead))\b/i;
+
+export function asksForOk(reply: string | undefined): boolean {
+  return !!reply && ASKS_OK.test(reply.replace(/[’‘]/g, "'"));
 }
 
 /// A stage's place and owner, said for the board.

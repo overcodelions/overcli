@@ -19,6 +19,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   const reviews: Array<{ id: string; text: string; inThread?: string }> = [];
   let reply = opts.reply;
   const notices: string[] = [];
+  const heard: Array<{ channel: string; threadTs: string; user: string; text: string; who: string; team: boolean; followUp: boolean }> = [];
   let toolResult: unknown = opts.items ?? { issues: [{ key: 'ACME-1', fields: { summary: 'Export fails' } }] };
   let now = new Date(2026, 9, 20, 12).getTime();
   const svc = new TriggerService({
@@ -94,11 +95,13 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
       reviews.push({ id, text, ...(inThread ? { inThread: inThread.ts } : {}) });
       return opts.reviewer === false ? null : { channel: 'D0ACMEMGR', ts: inThread ? inThread.ts : `9.${reviews.length}` };
     },
+    heard: (m) => heard.push(m),
     log: () => {},
     now: () => now,
   });
   return {
     svc,
+    heard,
     asked,
     startsFlags,
     posts,
@@ -356,6 +359,11 @@ describe('slack triggers', () => {
     expect(await h.svc.slackEvent({ ...said, ts: '8.4', text: 'and for partners?' })).toBe(true);
     await tick();
     expect(h.asked[1]).toContain('you already answered in');
+    // Each is on the console's Slack page, under the thread it was said in.
+    expect(h.heard.map((m) => [m.channel, m.threadTs, m.user, m.who, m.team, m.followUp])).toEqual([
+      ['C0ACMESUP', '8.1', 'U1', 'Triage', false, true],
+      ['C0ACMESUP', '8.1', 'U1', 'Triage', false, true],
+    ]);
   });
 
   it('tells being called on from a word that happens to match', () => {

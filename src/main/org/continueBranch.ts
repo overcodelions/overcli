@@ -35,6 +35,10 @@ export interface ContinueBranchDeps {
   fixAskedOn(workerId: string, branch: string, repos?: string[]): boolean;
   /// Still there on origin, and not merged into the repo's default branch.
   open(repo: ConnectedRepo, branch: string): Promise<boolean>;
+  /// Whether this worker works on the team's open pull requests (WorkerCaps.continueOpenPrs).
+  mayContinueOpenPrs?(workerId: string): boolean;
+  /// Whether the branch has an open pull request in that repo, asked of its host.
+  hasOpenPr?(repo: ConnectedRepo, branch: string): Promise<boolean>;
 }
 
 /// The branch to start on, or null to start fresh. In a workspace, each repo
@@ -77,6 +81,14 @@ export async function continueBranchFor(
   // worker for, or a branch this worker pushed here itself.
   const marked = continueBranchOf(args.prompt);
   if (marked && (deps.fixAskedOn(args.workerId, marked, names) || pushedBy(ownRuns).some((p) => p.branch === marked))) return firstOpen([marked]);
+  // A worker that looks after the team's pull requests may name anyone's,
+  // but only a branch its host says has one open here: never a branch a
+  // prompt merely mentions, nor a default or release branch.
+  if (marked && deps.mayContinueOpenPrs?.(args.workerId) && deps.hasOpenPr) {
+    const hasPr = deps.hasOpenPr;
+    const withPr = await Promise.all(repos.map(async (r) => (await deps.open(r, marked)) && (await hasPr(r, marked))));
+    if (withPr.some(Boolean)) return marked;
+  }
 
   // Otherwise the ticket its title names, never one its ask only mentions.
   const ticket = ticketKey(args.title);

@@ -43,6 +43,8 @@ const SYSTEM = [
   'A ticket id may follow what it is, in brackets. Leave out the team\'s own process (what to change in the pack, who reviews).',
   'A task\'s later room conversation is newer than its pack: where they differ, the room is the latest word.',
   'A source in which a worker only declines or says it cannot help is not an answer: ignore it.',
+  'A question that asks for the latest, newest or most recent wants what is true now: if the sources are dated well',
+  'before when it was asked, or say they read only part of what there is (one page of many), they do not answer it.',
   'If the sources do not answer the question, reply with exactly NONE and nothing else.',
   'Otherwise end with one last line naming the sources you used: "Sources: 1, 3".',
 ].join('\n');

@@ -34,6 +34,33 @@ async function said(res: Response): Promise<string> {
   }
 }
 
+/// The open pull request from this branch, if there is one: its link, null
+/// when there is none, undefined when the host can't be asked (no token,
+/// not Bitbucket or GitHub, or it didn't answer).
+export async function findOpenPullRequest(
+  repo: ConnectedRepo,
+  branch: string,
+  deps: { env(name: string): string | undefined; fetchImpl?: typeof fetch },
+): Promise<string | null | undefined> {
+  const slug = slugOf(repo);
+  const auth = authFor(repo, deps.env);
+  // A quote in the name would change the query, so it isn't looked up.
+  if (!slug || !auth || /["\\]/.test(branch)) return undefined;
+  const f = deps.fetchImpl ?? fetch;
+  const headers = { ...auth, Accept: 'application/json' };
+  if (slug.host === 'bitbucket') {
+    const q = encodeURIComponent(`source.branch.name="${branch}" AND state="OPEN"`);
+    const found = await f(`${BB}/${slug.owner}/${slug.name}/pullrequests?q=${q}`, { headers })
+      .then((r) => (r.ok ? (r.json() as Promise<{ values?: Array<{ links?: { html?: { href?: string } } }> }>) : undefined))
+      .catch(() => undefined);
+    return found ? found.values?.[0]?.links?.html?.href ?? null : undefined;
+  }
+  const found = await f(`${GH}/${slug.owner}/${slug.name}/pulls?state=open&head=${encodeURIComponent(`${slug.owner}:${branch}`)}`, { headers: { ...headers, 'X-GitHub-Api-Version': '2022-11-28' } })
+    .then((r) => (r.ok ? (r.json() as Promise<Array<{ html_url?: string }>>) : undefined))
+    .catch(() => undefined);
+  return found ? found[0]?.html_url ?? null : undefined;
+}
+
 export async function openPullRequest(
   repo: ConnectedRepo,
   pr: { branch: string; title: string; body: string; draft: boolean },

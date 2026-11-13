@@ -22,7 +22,7 @@ function flat(blocks: unknown[]): string {
     .join('\n');
 }
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null | 'fail'; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string; choices?: string[] } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; gate?: boolean; downloads?: Record<string, string>; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null; refusePlans?: boolean; gatherMs?: number } = {}) {
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null | 'fail'; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; processReply?: (itemId: string, text: string) => string; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string; choices?: string[] } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; gate?: boolean; downloads?: Record<string, string>; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null; refusePlans?: boolean; gatherMs?: number } = {}) {
   const posts: string[] = [];
   // gate: each answer waits for `release()`, in the order they were asked.
   const gates: Array<() => void> = [];
@@ -78,8 +78,9 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
           submitProcess: (_c: unknown, processId: string, brief: string) => {
             items.push({ processId, brief });
             const p = opts.processes!.find((x) => x.id === processId)!;
-            return { ok: true as const, title: brief.split('\n')[0], process: p.name, stage: p.firstStage };
+            return { ok: true as const, ...(opts.processReply ? { itemId: `item-${items.length}` } : {}), title: brief.split('\n')[0], process: p.name, stage: p.firstStage };
           },
+          ...(opts.processReply ? { processReply: (_c: unknown, itemId: string, text: string) => opts.processReply!(itemId, text) } : {}),
         }
       : {}),
     ask: (_c, workerId, text, attachments, conversation, said, replyTo) => {
@@ -200,6 +201,22 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
 }
 
 describe('the front door', () => {
+  it('passes what is said in a process item’s thread to the item: from whoever put it in, or a word to the bot', async () => {
+    const IDEAS = { id: 'p-ideas', name: 'Idea to launch', purpose: 'New product ideas', firstStage: 'PR/FAQ' };
+    const said: string[] = [];
+    const h = harness({ processes: [IDEAS], processReply: (itemId, text) => (said.push(`${itemId}: ${text}`), 'Back to *Build It* with what you said.') });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> idea: CSV export for reports', dm: false });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'looks good but the build fails, fix the lint errors', dm: false });
+    expect(said).toEqual(['item-1: looks good but the build fails, fix the lint errors']);
+    expect(h.posts.at(-1)).toContain('Back to *Build It*');
+    // Someone else talking it over in the thread is left to it.
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.2', threadTs: '1.0', user: 'U2', text: 'nice one', dm: false });
+    expect(said).toHaveLength(1);
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.3', threadTs: '1.0', user: 'U2', text: '<@B0BOT> go ahead', dm: false, mentioned: true });
+    expect(said).toEqual(['item-1: looks good but the build fails, fix the lint errors', 'item-1: go ahead']);
+    expect(h.items).toHaveLength(1);
+  });
+
   it('puts "idea: …" into a process, asking which when there are several', async () => {
     const IDEAS = { id: 'p-ideas', name: 'Idea to launch', purpose: 'New product ideas', firstStage: 'PR/FAQ' };
     const BUGS = { id: 'p-bugs', name: 'Bug report to fix', purpose: 'Bugs', firstStage: 'Triage' };
@@ -207,7 +224,7 @@ describe('the front door', () => {
     await one.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> idea: CSV export for reports', dm: false });
     expect(one.items).toEqual([{ processId: 'p-ideas', brief: 'CSV export for reports' }]);
     expect(one.posts[0]).toContain('goes into *Idea to launch*, starting at *PR/FAQ*');
-    expect(one.posts[0]).toContain('Its team stages work here in this thread');
+    expect(one.posts[0]).toContain('Each stage reports in this thread');
     // People talking in the thread are left to it; a word to the bot is answered.
     const posted = one.posts.length;
     await one.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'and PDF too', dm: false });
@@ -1264,6 +1281,17 @@ describe('looking up existing work first', () => {
       ['handed', 'Triage', false],
     ]);
     expect(h.door.conversations()[0].key).toBe('D0ACME:11.0');
+  });
+
+  it("logs what a worker's channel trigger took up, without taking the thread", async () => {
+    const h = harness();
+    await h.door.heard({ channel: 'C0ACMEPQ', threadTs: '20.0', user: 'U7', text: 'Checking with <@U0ADA> about sending limits', who: 'Ada', team: false, followUp: false });
+    await h.door.heard({ channel: 'C0ACMEPQ', threadTs: '20.0', user: 'U8', text: 'and for partners?', who: 'Ada', team: false, followUp: true });
+    expect(h.state().log?.map((l) => [l.key, l.by, l.text, l.outcome, l.kind, l.who, l.team, l.dm])).toEqual([
+      ['C0ACMEPQ:20.0', 'Pat', 'Checking with about sending limits', 'Ada has it', 'handed', 'Ada', false, false],
+    ]);
+    // Replies there are still the trigger's, not the door's.
+    expect(h.door.owns('C0ACMEPQ', '20.0')).toBe(false);
   });
 
   it('says who in the room is on the question', () => {

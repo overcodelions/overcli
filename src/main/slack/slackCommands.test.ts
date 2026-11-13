@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ORG_POLICY } from '../../shared/org/policy';
 import type { OrgService, HireSummary } from '../org/orgService';
-import { HIRE_APPROVE_ACTION, HIRE_ASK_TOOLS_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION, type SlackCommandsDeps } from './slackCommands';
+import { HIRE_APPROVE_ACTION, HIRE_ASK_TOOLS_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION, WATCH_CHANNEL_ACTION, WATCH_DM_ACTION, WATCH_DROP_ACTION, type SlackCommandsDeps } from './slackCommands';
 import type { AccessService } from '../org/accessService';
 
 const TEAM = 'T0ACME';
@@ -1038,5 +1038,101 @@ describe('answers after a restart', () => {
     cmds.askAnswered({ id: 'a2', workerId: 'scout', workerName: 'Scout', by: 'Pat', slackUserId: PAT, text: 'who moved first?', at: 0, doneAt: 1, status: 'answered', via: 'slack', reply: 'Acme.' });
     await new Promise((r) => setTimeout(r, 0));
     expect(posts.filter((p) => p.url.endsWith('chat.postMessage'))).toHaveLength(1);
+  });
+});
+
+
+describe('/worker <name> watch', () => {
+  const draft = {
+    server: 'tracker',
+    tool: 'search',
+    args: { jql: 'project = SUP AND priority = P1 ORDER BY created DESC' },
+    name: 'New P1 bugs in Support',
+    means: 'P1 bugs filed in the Support project.',
+    items: [{ id: 'SUP-12', title: 'Exports time out', url: 'https://tracker.example/SUP-12' }],
+    listed: true,
+  };
+  const sam = { id: 'w-sam', name: 'Sam' };
+  const setup = (over: Partial<OrgService> = {}) => {
+    const made: Array<{ worker: string; input: any }> = [];
+    let polls = 0;
+    const h = harness({
+      resolve: (_c, name) => (name.toLowerCase() === 'sam' ? (sam as never) : null),
+      startTriggerDraft: () => ({ ok: true, draftId: 'd1' }),
+      // Still working the first time it's asked.
+      triggerDraft: () => (polls++ ? { ok: true, done: true, draft } : { ok: true, done: false }),
+      createTrigger: (_c, worker, input) => {
+        made.push({ worker, input });
+        return { ok: true, trigger: { id: 't1' } as never };
+      },
+      ...over,
+    });
+    h.cmds.watchPollMs = 0;
+    const card = () => h.posts.filter((p) => p.url.endsWith('chat.update')).find((p) => JSON.stringify(p.body.blocks ?? []).includes(WATCH_DM_ACTION));
+    const buttons = () => JSON.parse(JSON.stringify(card()!.body.blocks)).find((b: { type: string }) => b.type === 'actions').elements as Array<{ action_id: string; value: string }>;
+    const click = (action_id: string, user = PAT) => h.cmds.onAction({ user: { id: user }, team: { id: TEAM }, actions: [{ action_id, value: buttons()[0].value }], channel: { id: 'D0PAT' }, message: { ts: '1.1' } });
+    return { ...h, made, card, buttons, click };
+  };
+
+  it('DMs the worked-out search, and makes a DM watch on a yes', async () => {
+    const t = setup();
+    await t.cmds.onSlash(slash('/worker', 'Sam watch new P1 bugs in support'));
+    const blocks = JSON.stringify(t.card()!.body.blocks);
+    expect(blocks).toContain('New P1 bugs in Support');
+    expect(blocks).toContain('SUP-12');
+    // Run from a DM: no channel to post in.
+    expect(t.buttons().map((b) => b.action_id)).toEqual([WATCH_DM_ACTION, WATCH_DROP_ACTION]);
+    await t.click(WATCH_DM_ACTION, 'U0OTHER');
+    expect(t.made).toEqual([]);
+    await t.click(WATCH_DM_ACTION);
+    expect(t.made).toHaveLength(1);
+    expect(t.made[0].worker).toBe('w-sam');
+    expect(t.made[0].input).toMatchObject({
+      name: 'New P1 bugs in Support',
+      kind: 'watch',
+      deliver: [{ kind: 'dm', slackUserId: PAT }],
+      maxPerDay: 20,
+      watch: { server: 'tracker', tool: 'search', args: draft.args, everyMinutes: 15 },
+    });
+    expect(t.made[0].input.startsOnItsOwn).toBeUndefined();
+    // Made once: a second click finds it gone.
+    await t.click(WATCH_DM_ACTION);
+    expect(t.made).toHaveLength(1);
+  });
+
+  it('offers the channel it was asked in', async () => {
+    const t = setup();
+    await t.cmds.onSlash(slash('/worker', 'Sam watch new P1 bugs in support', { channel_id: 'C0SUPPORT' }));
+    expect(t.buttons().map((b) => b.action_id)).toEqual([WATCH_DM_ACTION, WATCH_CHANNEL_ACTION, WATCH_DROP_ACTION]);
+    await t.click(WATCH_CHANNEL_ACTION);
+    expect(t.made[0].input.deliver).toEqual([{ kind: 'slack', channel: 'C0SUPPORT' }]);
+  });
+
+  it('makes nothing on Cancel', async () => {
+    const t = setup();
+    await t.cmds.onSlash(slash('/worker', 'Sam watch new P1 bugs in support'));
+    await t.click(WATCH_DROP_ACTION);
+    await t.click(WATCH_DM_ACTION);
+    expect(t.made).toEqual([]);
+  });
+
+  it('says why when the worker cannot draft it', async () => {
+    const t = setup({ startTriggerDraft: () => ({ ok: false, error: 'Only Sam’s manager can do that.' }) });
+    await t.cmds.onSlash(slash('/worker', 'Sam watch new P1 bugs'));
+    expect(t.posts[0].body.text).toBe('Only Sam’s manager can do that.');
+    expect(t.card()).toBeUndefined();
+  });
+
+  it('offers no trigger for an answer that is not a list', async () => {
+    const t = setup({ triggerDraft: () => ({ ok: true, done: true, draft: { ...draft, listed: false } }) });
+    await t.cmds.onSlash(slash('/worker', 'Sam watch the dashboard'));
+    expect(t.card()).toBeUndefined();
+    expect(JSON.stringify(t.posts.at(-1)!.body)).toContain('can’t tell new items apart'.replace('’', "'"));
+  });
+
+  it('asks what to watch for when nothing is said', async () => {
+    const t = setup();
+    await t.cmds.onSlash(slash('/worker', 'Sam watch'));
+    expect(t.posts[0].body.text).toContain('/worker Sam watch new P1 bugs');
   });
 });

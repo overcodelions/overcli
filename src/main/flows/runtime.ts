@@ -24,6 +24,7 @@
 import { SERVER_TOOL, roleRunNote } from '../../shared/org/roleTools';
 import { TEST_SYSTEMS_TOOL } from '../../shared/testSystems';
 import { removeRunEvidence } from './runEvidence';
+import { conflictNote, mergeDefaultWhereConflicting } from './mergeOnConflict';
 import { resolveStepEffect, runGrantCovers, stepGrantAllows, stepOutsideTools } from './stepEffect';
 import { teamTaskDir } from './teamsStore';
 import { parseRunDigest, RUN_DIGEST_INSTRUCTION } from '../../shared/flows/runDigest';
@@ -1294,6 +1295,24 @@ export class FlowRuntimeImpl {
       }
     }
 
+    // Continuing a pushed branch whose pull request no longer merges: start
+    // the merge of the default branch here, so the run resolves it
+    // (mergeOnConflict.ts). Before the baselines, which are HEAD either way.
+    let userPrompt = args.userPrompt;
+    if (args.continues && !adopted && (worktreeMeta || workspaceWorktrees)) {
+      const places = workspaceWorktrees
+        ? workspaceWorktrees.map((m) => ({ name: m.name, worktreePath: m.worktreePath, projectPath: m.projectPath }))
+        : [{ name: basename(args.projectPath), worktreePath: worktreeMeta!.worktreePath, projectPath: args.projectPath }];
+      const conflicts = await mergeDefaultWhereConflicting(
+        await Promise.all(places.map(async (p) => ({ name: p.name, worktreePath: p.worktreePath, defaultBranch: await detectBaseBranchAsync(p.projectPath) }))),
+        (gitArgs, at) => runGitAsync(gitArgs, at),
+      ).catch((err: unknown) => {
+        log('warn', 'flows', `Couldn't check ${args.continues} for conflicts: ${String(err)}`);
+        return [] as string[];
+      });
+      if (conflicts.length) userPrompt += conflictNote(conflicts);
+    }
+
     // Make room before adding a new run — keeps the in-memory map bounded.
     this.pruneOldRuns();
 
@@ -1373,7 +1392,7 @@ export class FlowRuntimeImpl {
       flowId: flow.id,
       flowSnapshot: flow,
       projectPath: cwd,
-      userPrompt: args.userPrompt,
+      userPrompt,
       conversationIds: {},
       artifacts: {},
       state: firstPauseReason

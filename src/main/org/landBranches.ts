@@ -19,6 +19,7 @@ import type { FlowRun } from '../../shared/flows/schema';
 import { newPullRequestLink, type ConnectedRepo } from './repos';
 import { ticketOf } from './ticketFollowUp';
 import { withoutPreface } from './askPreface';
+import { leftoverMarkers } from '../flows/mergeOnConflict';
 
 export { testUserRefusal } from './repos';
 
@@ -222,6 +223,13 @@ export class BranchLander {
     const there = await git(['for-each-ref', '--contains', 'HEAD', '--format=%(refname:short)', 'refs/remotes/origin']);
     const pushedAs = there.ok ? there.stdout.split('\n').map((s) => s.trim()).filter((b) => b && b !== `origin/${base}` && b !== 'origin/HEAD')[0] : undefined;
     if (pushedAs) return { repo: place.name, branch: pushedAs.replace(/^origin\//, ''), ...(repo && newPullRequestLink(repo, pushedAs.replace(/^origin\//, '')) ? { url: newPullRequestLink(repo, pushedAs.replace(/^origin\//, ''))! } : {}) };
+    // A conflict the run left half-resolved: its markers would go out as code.
+    if (baseline) {
+      // Only files whose change touches a marker-shaped line: a merge can bring in a lot.
+      const added = await git(['diff', '-U0', '-G^(<<<<<<<|>>>>>>>)( |$)', baseline, 'HEAD']);
+      const marked = added.ok ? leftoverMarkers(added.stdout) : [];
+      if (marked.length) return { repo: place.name, skipped: `conflict markers are still in ${marked.join(', ')}, so nothing was pushed` };
+    }
     if (repo?.testCommand && this.deps.test) {
       const tested = await this.deps.test(repo.testCommand, place.worktreePath);
       if (!tested.ok && tested.refused) return { repo: place.name, skipped: `repo tests are turned off on this server, so nothing was pushed. ${tested.error}` };

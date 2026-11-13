@@ -245,7 +245,7 @@ export interface Orchestration {
         /// update, or a fix for the CI that push turned red. Nobody asked it,
         /// so the desk says which. Absent on ones started before it was
         /// recorded, which carry FOLLOW_UP_NOTE on their one candidate instead.
-        followUp?: 'ci' | 'ticket';
+        followUp?: 'ci' | 'ticket' | 'replies';
         /// Set on the batch that runs a worker's wrap-up flow: the id of the
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.

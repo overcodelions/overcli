@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LibraryItem } from '../org/orgService';
-import { contentWords, declined, isLookup, libraryCandidates, matchExisting, roomText, score, summarize, whenText, type WorkCandidate } from './existingWork';
+import { contentWords, declined, freshEnough, isLookup, libraryCandidates, matchExisting, roomText, score, summarize, whenText, type WorkCandidate } from './existingWork';
 
 const NOW = new Date('2026-10-20T15:00:00').getTime();
 const HOUR = 60 * 60 * 1000;
@@ -123,5 +123,16 @@ describe('existing work', () => {
     expect(whenText(NOW - 3 * DAY, NOW)).toBe('3 days ago');
     expect(summarize('# Roadmap\n\n- **Reporting** first.\n- Mobile next.\n- Then integrations. And more.')).toBe('Reporting first. Mobile next. Then integrations.');
     expect(summarize('')).toBe('');
+  });
+
+  it('wants what is a day old at most for a question about the latest', () => {
+    for (const q of ['what are the latest product board insights from linked in', 'what are the most recent insights?', "what's new on the roadmap?", 'any customer requests this week?']) {
+      expect(freshEnough(q, NOW - 7 * DAY, NOW), q).toBe(false);
+      expect(freshEnough(q, NOW - 3 * HOUR, NOW), q).toBe(true);
+      expect(freshEnough(q, undefined, NOW), q).toBe(false);
+    }
+    // Not about the latest: any age answers it.
+    expect(freshEnough('what is on the Q1 roadmap?', NOW - 7 * DAY, NOW)).toBe(true);
+    expect(freshEnough('who owns the new partner portal?', NOW - 7 * DAY, NOW)).toBe(true);
   });
 });

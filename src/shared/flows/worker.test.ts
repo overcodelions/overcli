@@ -529,6 +529,14 @@ describe('workerOrigin', () => {
     expect('errand' in workerOrigin(makeWorker(), 'errand')).toBe(false);
   });
 
+  it('lets a trusted worker on the team’s pull requests reply on them, and no one else', () => {
+    const coder = { trust: 'trusted' as const, writesCode: true };
+    const onTeamPrs = makeWorker({ ...coder, caps: { maxItemsPerShift: 1, runIn: 'worktree', continueOpenPrs: true } });
+    expect(workerOrigin(onTeamPrs, 'shift').externalActionGrant).toEqual(['step:pull-request', 'step:ticket-update', 'step:pr-replies']);
+    const ownPrsOnly = makeWorker({ ...coder, caps: { maxItemsPerShift: 1, runIn: 'worktree' } });
+    expect(workerOrigin(ownPrsOnly, 'shift').externalActionGrant).toEqual(['step:pull-request', 'step:ticket-update']);
+  });
+
   it('carries the browser switch only for a worker that browses', () => {
     expect(workerOrigin(makeWorker({ browser: true }), 'shift').browser).toBe(true);
     expect('browser' in workerOrigin(makeWorker(), 'shift')).toBe(false);

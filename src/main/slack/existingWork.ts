@@ -216,6 +216,24 @@ export function whenText(at: number, now: number): string {
   return `${Math.max(2, Math.ceil((startOfToday.getTime() - at) / DAY_MS))} days ago`;
 }
 
+/// "the latest", "most recent", "what's new", "this week": a question that
+/// wants what is true now, not what was worked out a while ago.
+const WANTS_LATEST = /\b(?:latest|newest|most recent|recent(?:ly)?|what(?:'s|’s|s| is) new|anything new|new (?:this|since)|today|yesterday|this (?:morning|afternoon|week)|right now|up[- ]to[- ]date)\b/i;
+
+export function wantsLatest(text: string): boolean {
+  return WANTS_LATEST.test(text);
+}
+
+/// How old a saved answer may be for a question that wants the latest: older
+/// than this and the team looks again instead.
+export const LATEST_MAX_AGE_MS = DAY_MS;
+
+/// Whether something worked out at `at` can answer this question: anything
+/// can, unless the question wants the latest and it is more than a day old.
+export function freshEnough(text: string, at: number | undefined, now: number): boolean {
+  return !wantsLatest(text) || (at !== undefined && now - at <= LATEST_MAX_AGE_MS);
+}
+
 /// A worker saying it won't or can't, rather than answering: "outside my
 /// job", "not my remit", "I have no tool to check". Read near the start only,
 /// where a refusal says so; an answer that mentions a limit later still counts.

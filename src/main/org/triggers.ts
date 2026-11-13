@@ -193,6 +193,10 @@ export interface TriggerDeps {
   /// manager, with a button to try what was skipped (`retrySkipped`).
   /// Absent or false: told plainly through `tellOwner`, without the button.
   limitNotice?(workerId: string, triggerId: string, text: string): Promise<boolean>;
+  /// Someone said something in Slack that a trigger took up: the console's
+  /// Slack page lists it beside what came through the front door. `team`:
+  /// it was handed to a team or process, named by the trigger.
+  heard?(m: { channel: string; threadTs: string; user: string; text: string; who: string; team: boolean; followUp: boolean }): void;
   log(message: string): void;
   now?(): number;
   /// On each new message: how long to wait for the person to stop typing.
@@ -602,6 +606,13 @@ export class TriggerService {
   /// thread it answered in goes with the thread so far, and its answer goes
   /// back into that thread.
   private async fireMessage(t: WorkerTrigger, m: { id: string; channel: string; ts: string; text: string; user?: string; threadTs?: string }): Promise<void> {
+    if (m.user && this.deps.heard) {
+      try {
+        this.deps.heard({ channel: m.channel, threadTs: m.threadTs ?? m.ts, user: m.user, text: m.text, who: t.hand ? t.name : (this.deps.worker(t.workerId)?.name ?? 'A worker'), team: !!t.hand, followUp: !!m.threadTs });
+      } catch (err) {
+        this.deps.log(`A Slack message for ${t.name} could not be logged: ${String(err)}`);
+      }
+    }
     const title = m.text.split('\n')[0].slice(0, 140) || 'A Slack message';
     const data: Record<string, unknown> = { channel: m.channel, ts: m.ts, text: m.text, user: m.user, ...(m.threadTs ? { followUp: true, ...((t.threads ?? []).includes(`${m.channel}:${m.threadTs}`) ? {} : { named: true }) } : {}) };
     // The thread is for the worker's prompt: not fetched for a message the

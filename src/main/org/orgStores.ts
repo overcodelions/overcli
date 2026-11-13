@@ -504,6 +504,9 @@ export interface WorkerConfig {
   preferredFlowId?: string;
   answersAtOnce?: number;
   skipCheckpoints?: boolean;
+  continueOpenPrs?: boolean;
+  prAuthors?: string[];
+  prCommentAuthors?: string[];
   alwaysAllow?: string[];
 }
 

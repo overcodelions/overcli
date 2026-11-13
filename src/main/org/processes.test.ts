@@ -12,9 +12,9 @@ function harness() {
   let state: ProcessState = { processes: [], items: [] };
   const tasks = new Map<string, ProcessTaskLook>();
   const briefs: Array<{ teamId: string; text: string; by: string; taskId: string; code?: { projectPath: string; startFrom?: string }; thread?: { channel: string; threadTs: string } }> = [];
-  const told: Array<{ to: string; text: string; decide: boolean }> = [];
+  const told: Array<{ to: string; text: string; decide: boolean; thread?: string }> = [];
   const cancelled: string[] = [];
-  const asked: Array<{ workerId: string; text: string; by: string; askId: string; trusted: boolean }> = [];
+  const asked: Array<{ workerId: string; text: string; by: string; askId: string; trusted: boolean; conversation?: string }> = [];
   const cancelledAsks: string[] = [];
   let loads = 0;
   let n = 0;
@@ -39,9 +39,9 @@ function harness() {
     ],
     // Lee manages both; the Ledger is private to Lee.
     workerAccess: (c, id) => (c.admin || c.slackUserId === 'U0LEE' ? 'manage' : id === 'w-ledger' ? null : 'see'),
-    askWorker: (workerId, text, by, trusted) => {
+    askWorker: (workerId, text, by, trusted, conversation) => {
       const askId = `ask-${++n}`;
-      asked.push({ workerId, text, by: by.name, askId, trusted });
+      asked.push({ workerId, text, by: by.name, askId, trusted, ...(conversation ? { conversation } : {}) });
       tasks.set(askId, { status: 'running' });
       return { ok: true, askId };
     },
@@ -50,7 +50,7 @@ function harness() {
     cancelAsk: (id) => cancelledAsks.push(id),
     isAdmin: (c) => c.admin,
     groupMembers: (id) => (id === 'team:Product leads' ? [{ name: 'Sam', slackUserId: 'U0SAM' }, { name: 'Ana', slackUserId: 'U0ANA' }] : []),
-    notify: (to, text, decide) => told.push({ to: to.name, text, decide: !!decide }),
+    notify: (to, text, decide, thread) => told.push({ to: to.name, text, decide: !!decide, ...(thread ? { thread: `${thread.channel}:${thread.threadTs}` } : {}) }),
     decided: (_item, _stage, text, final) => told.push({ to: final ? 'decided' : 'vote', text, decide: false }),
     log: () => {},
     now: () => clock.at + n,
@@ -258,6 +258,149 @@ describe('processes', () => {
     h.svc.poll();
     expect(h.state().items[0].stageIndex).toBe(1);
     expect(h.briefs[0].text).toContain('## Write notes: Scribe\nHere are the notes.');
+  });
+
+  it('stops a worker stage that asks for an OK, and goes ahead once its manager approves', () => {
+    const h = harness();
+    const lee: OrgCaller = { name: 'Lee', slackUserId: 'U0LEE', admin: false };
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
+      name: 'Insight to delivery',
+      stages: [
+        { id: 'w', name: 'Insight to Delivery', kind: 'worker', workerId: 'w-scribe', ask: 'Find or create the ticket.' },
+        { id: 't', name: 'Build It', kind: 'team', teamId: 't-build' },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const sub = h.svc.submit(someone, made.process.id, { brief: 'Publish All for plugins', source: 'slack' });
+    if (!sub.ok) throw new Error(sub.error);
+    expect(h.asked[0]).toMatchObject({ trusted: false, by: 'Riley' });
+    expect(h.asked[0].text).toContain('If something needs an OK before you do it, say so and stop');
+    const proposal = 'I propose creating one ENG ticket. I haven\'t created it yet because I need your approval first.';
+    h.tasks.set(h.asked[0].askId, { status: 'waiting', waiting: 'it asks for an OK', asksApproval: proposal });
+    h.svc.poll();
+    const waiting = h.state().items[0];
+    // Not handed on as if it were the work: it waits for the stage's owner.
+    expect(waiting).toMatchObject({ stageIndex: 0, ownerTurn: 'approval', proposal });
+    expect(h.told.filter((t) => t.to === 'Lee' && t.decide)).toHaveLength(1);
+    h.svc.poll();
+    expect(h.told.filter((t) => t.to === 'Lee' && t.decide)).toHaveLength(1);
+    // The one who put it in doesn't OK it; the owner of the process can't
+    // either, not managing the worker.
+    expect(h.svc.act(someone, waiting.id, 'approve')).toMatchObject({ ok: false });
+    expect(h.svc.act(owner, waiting.id, 'approve')).toMatchObject({ ok: false, error: expect.stringContaining('Lee') });
+    const ok = h.svc.act(lee, waiting.id, 'approve', { note: 'Put it under the Platform team.', stageId: 'w' });
+    expect(ok).toMatchObject({ ok: true, item: { stageIndex: 0 } });
+    expect(h.state().items[0].ownerTurn).toBeUndefined();
+    expect(h.state().items[0].approval).toBeUndefined();
+    // Asked again, as from Lee, told to go ahead with what it proposed.
+    expect(h.asked[1]).toMatchObject({ workerId: 'w-scribe', by: 'Lee', trusted: true });
+    expect(h.asked[1].text).toContain('Lee approved what you proposed for this stage. Go ahead and do it now');
+    expect(h.asked[1].text).toContain('one ENG ticket');
+    expect(h.asked[1].text).toContain('Lee added: Put it under the Platform team.');
+    h.tasks.set(h.asked[1].askId, { status: 'done', title: 'Scribe', pack: { summary: 'Created ENG-7400.', files: [] } });
+    h.svc.poll();
+    expect(h.state().items[0].stageIndex).toBe(1);
+    expect(h.briefs[0].text).toContain('Created ENG-7400.');
+  });
+
+  it('sends a worker waiting for an OK back to itself with what to change', () => {
+    const h = harness();
+    const lee: OrgCaller = { name: 'Lee', slackUserId: 'U0LEE', admin: false };
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
+      name: 'Two step',
+      stages: [
+        { id: 't', name: 'Plan', kind: 'team', teamId: 't-product' },
+        { id: 'w', name: 'Ticket', kind: 'worker', workerId: 'w-scribe' },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const sub = h.svc.submit(someone, made.process.id, { brief: 'Dark mode', source: 'console' });
+    if (!sub.ok) throw new Error(sub.error);
+    h.tasks.set('task-1', { status: 'done', pack: { summary: 'Plan', files: [] } });
+    h.svc.poll();
+    h.tasks.set(h.asked[0].askId, { status: 'waiting', asksApproval: 'Shall I create the ticket in OPS?' });
+    h.svc.poll();
+    const res = h.svc.act(lee, h.state().items[0].id, 'sendBack', { note: 'Use ENG, not OPS.' });
+    expect(res).toMatchObject({ ok: true, item: { stageIndex: 1 } });
+    expect(h.asked[1].text).toContain('Use ENG, not OPS.');
+    expect(h.state().items[0].proposal).toBeUndefined();
+  });
+
+  it('lists items that finished since a time, newest first, for those who can see them', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    const a = h.svc.submit(someone, made.process.id, { title: 'Dark mode', brief: 'Dark mode', source: 'console' });
+    const b = h.svc.submit(someone, made.process.id, { title: 'Exports', brief: 'Exports', source: 'console' });
+    if (!a.ok || !b.ok) throw new Error('submit');
+    const since = h.clock.at;
+    expect(h.svc.act(owner, a.item.id, 'stop').ok).toBe(true);
+    expect(h.svc.finishedSince(owner, since)).toMatchObject([{ title: 'Dark mode', status: 'stopped', process: 'Idea to launch', stageName: 'PRFAQ' }]);
+    expect(h.svc.finishedSince(owner, Number.MAX_SAFE_INTEGER)).toEqual([]);
+  });
+
+  it('reports in the thread it came from, and takes replies there: an OK, then a finished item sent back to work', () => {
+    const h = harness();
+    const lee: OrgCaller = { name: 'Lee', slackUserId: 'U0LEE', admin: false };
+    const made = h.svc.save(lee, { access: { who: 'everyone' },
+      name: 'Insight to delivery',
+      stages: [
+        { id: 'w', name: 'Insight', kind: 'worker', workerId: 'w-scribe' },
+        { id: 'b', name: 'Build It', kind: 'worker', workerId: 'w-ledger' },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const thread = { channel: 'D0LEE', threadTs: '111.1' };
+    const sub = h.svc.submit({ name: 'Lee', slackUserId: 'U0LEE' }, made.process.id, { brief: 'Publish All for plugins', source: 'slack', updatesThread: thread });
+    if (!sub.ok) throw new Error(sub.error);
+    const id = sub.item.id;
+    // The worker keeps one conversation in the thread; Lee hears there.
+    expect(h.asked[0]).toMatchObject({ conversation: 'slack:D0LEE:111.1', trusted: true });
+    expect(h.told.find((t) => t.to === 'Lee' && t.text.includes('is now at *Insight*'))?.thread).toBe('D0LEE:111.1');
+    h.tasks.set(h.asked[0].askId, { status: 'done', title: 'Scribe', pack: { summary: 'Found ENG-7533.', files: [] } });
+    h.svc.poll();
+    expect(h.told.find((t) => t.text.startsWith('*Insight* · Scribe handed on:'))).toMatchObject({ to: 'Lee', thread: 'D0LEE:111.1' });
+    // Build It stops for an OK: asked in the thread, and "go ahead" gives it.
+    h.tasks.set(h.asked[1].askId, { status: 'waiting', asksApproval: 'Shall I start building ENG-7533?' });
+    h.svc.poll();
+    expect(h.told.find((t) => t.decide && t.to === 'Lee')?.thread).toBe('D0LEE:111.1');
+    expect(h.svc.reply(lee, id, 'go ahead')).toMatchObject({ ok: true, said: expect.stringContaining('Approved') });
+    expect(h.asked[2]).toMatchObject({ workerId: 'w-ledger', trusted: true, conversation: 'slack:D0LEE:111.1' });
+    // Said while it works: a note, nothing restarted.
+    expect(h.svc.reply(lee, id, 'remember the EU region too')).toMatchObject({ ok: true, said: expect.stringContaining('Noted') });
+    expect(h.asked).toHaveLength(3);
+    h.tasks.set(h.asked[2].askId, { status: 'done', title: 'Ledger', pack: { summary: 'PR opened.', files: [] } });
+    h.svc.poll();
+    expect(h.state().items[0].status).toBe('done');
+    expect(h.told.find((t) => t.text.includes('made it through'))?.text).toContain('goes back to *Build It*');
+    // A thanks is just that.
+    expect(h.svc.reply(lee, id, 'thanks!')).toMatchObject({ ok: true, said: expect.stringContaining('Glad') });
+    expect(h.state().items[0].status).toBe('done');
+    // "Looks good but the build fails": back to its last stage, with the words.
+    const back = h.svc.reply(lee, id, 'Triage looks good but the build is failing, some fixes are needed');
+    expect(back).toMatchObject({ ok: true, said: expect.stringContaining('Back to *Build It*') });
+    expect(h.state().items[0]).toMatchObject({ status: 'active', stageIndex: 1 });
+    expect(h.asked[3].workerId).toBe('w-ledger');
+    expect(h.asked[3].text).toContain('the build is failing, some fixes are needed');
+    expect(h.state().items[0].finishedAt).toBeUndefined();
+  });
+
+  it('sends a finished item back to the stage the reply names, and only for those it concerns', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
+      name: 'Two step',
+      stages: [
+        { id: 'w', name: 'Write notes', kind: 'worker', workerId: 'w-scribe' },
+        { id: 't', name: 'Publish', kind: 'team', teamId: 't-build' },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const sub = h.svc.submit(someone, made.process.id, { brief: 'Notes for 4.2', source: 'console' });
+    if (!sub.ok) throw new Error(sub.error);
+    expect(h.svc.act(owner, sub.item.id, 'stop').ok).toBe(true);
+    expect(h.svc.reopen(judge, sub.item.id, 'redo it')).toMatchObject({ ok: false });
+    const res = h.svc.reopen(someone, sub.item.id, 'Scribe missed the API changes');
+    expect(res).toMatchObject({ ok: true, item: { status: 'active', stageIndex: 0 } });
   });
 
   it('lets a group decide: everyone in it is asked, and any one of them can approve', () => {

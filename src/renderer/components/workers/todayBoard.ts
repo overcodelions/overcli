@@ -160,6 +160,7 @@ const TURN_ASK: Record<NonNullable<ProcessItemView['ownerTurn']>, string> = {
   plan: 'Approve the plan',
   pack: 'Sign off the pack',
   paused: 'Unblock the run',
+  approval: 'OK what it will do',
 };
 
 /// "Decide: Approve the fix", "Sign off the pack: Publish and explain".

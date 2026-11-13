@@ -50,7 +50,9 @@ import {
   piecesActFreely,
   learnStages,
   TEAM_KNOWLEDGE_FILE,
+  TEAM_KNOWLEDGE_DAILY_AGE_MS,
   TEAM_KNOWLEDGE_MAX_AGE_MS,
+  type TeamKnowledgeRefresh,
   TEAM_LEARN_BUDGET_USD,
   TEAM_MAX_QUESTIONS_KNOWING,
   parsePackReply,
@@ -317,15 +319,16 @@ export class TeamEngine {
     refresh.unref?.();
   }
 
-  /// Teams whose knowledge is a week old learn again: those set to weekly
-  /// (the default), idle (no task going or queued), and not tried in the last
-  /// day. Returns the teams it started.
+  /// Teams whose knowledge is due learn again: a week old for those set to
+  /// weekly (the default), a day old for daily; idle (no task going or
+  /// queued), and not tried in the last day. Returns the teams it started.
   refreshDue(now = this.now()): UUID[] {
     const started: UUID[] = [];
     for (const team of this.teams.values()) {
       const k = team.knowledge;
       if (!k || k.status !== 'ready' || team.knowledgeRefresh === 'off' || team.disbanded) continue;
-      if (now - (k.updatedAt ?? 0) < TEAM_KNOWLEDGE_MAX_AGE_MS) continue;
+      const maxAge = team.knowledgeRefresh === 'daily' ? TEAM_KNOWLEDGE_DAILY_AGE_MS : TEAM_KNOWLEDGE_MAX_AGE_MS;
+      if (now - (k.updatedAt ?? 0) < maxAge) continue;
       if (k.triedAt && now - k.triedAt < 24 * 60 * 60 * 1000) continue;
       if ([...this.tasks.values()].some((t) => t.teamId === team.id && (isTaskActive(t.status) || t.status === 'queued'))) continue;
       if (!this.learn(team.id).ok) continue;
@@ -337,8 +340,8 @@ export class TeamEngine {
     return started;
   }
 
-  /// Weekly, or only when someone asks.
-  setKnowledgeRefresh(teamId: UUID, mode: 'weekly' | 'off'): Result {
+  /// Daily, weekly, or only when someone asks.
+  setKnowledgeRefresh(teamId: UUID, mode: TeamKnowledgeRefresh): Result {
     const team = this.teams.get(teamId);
     if (!team) return { ok: false, error: 'That team no longer exists.' };
     const next: Team = { ...team, knowledgeRefresh: mode, updatedAt: this.now() };

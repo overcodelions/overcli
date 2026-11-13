@@ -696,6 +696,26 @@ describe('OrchestratorImpl runIn', () => {
     expect(h.started[1].prompt).toBe('do that');
   });
 
+  it('tells a run on an open pull request why its build failed, read by the server', async () => {
+    const h = makeHarness();
+    h.engine.continueBranch = async () => 'feature/ACME-9-sort';
+    const asked: unknown[] = [];
+    h.engine.buildFailureOf = async (args) => {
+      asked.push(args);
+      return 'acme-web:\nStep "Core Unit Test" failed.\nFailing tests:\n- SortTest.sortsByDate';
+    };
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'Mario' },
+      items: [{ candidate: { id: 'c0', title: 'PR #42 acme-web: fix the sort test', prompt: 'fix it' }, flowId: 'flow-a' }],
+    });
+    expect(asked).toEqual([{ projectPath: '/proj', branch: 'feature/ACME-9-sort' }]);
+    expect(h.started[0].prompt).toContain('WHY ITS LATEST BUILD FAILED');
+    expect(h.started[0].prompt).toContain('SortTest.sortsByDate');
+  });
+
   it('launches cwd items in the project tree, with no base branch to fork from', async () => {
     const h = makeHarness();
     // A base branch is meaningless in the main tree — it must not leak through

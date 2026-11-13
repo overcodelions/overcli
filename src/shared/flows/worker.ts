@@ -90,6 +90,16 @@ export interface WorkerCaps {
   /// finished deliverable across once, at completion, and checkpoints the
   /// folder so the drop is as undoable as anything else that lands there.
   fileIntoProject?: boolean;
+  /// Work on the team's open pull requests, not only its own: a
+  /// `[continue-branch: …]` marker naming any branch with an open pull
+  /// request in its place counts, so its fixes land on that pull request.
+  /// An admin's call: it pushes onto branches other people opened.
+  continueOpenPrs?: boolean;
+  /// Only the team's pull requests by these people (as the git host names
+  /// them). Empty or absent: everyone's. Builds and conflicts.
+  prAuthors?: string[];
+  /// Review comments too, on pull requests by these people. Empty or absent: none.
+  prCommentAuthors?: string[];
 }
 
 export interface Worker {
@@ -1566,7 +1576,7 @@ export function workerOrigin(
     // Trusted with code: writing the pull request (the server then pushes
     // the branch, tested, never to the default) needs no click. On
     // probation it still waits for its manager.
-    ...(!w.caps.allowExternalActions && w.trust === 'trusted' && isCodingWorker({ flowIds: w.flowIds ?? [], ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}) }) ? { externalActionGrant: [CODING_STEP_GRANT, TICKET_STEP_GRANT] } : {}),
+    ...(!w.caps.allowExternalActions && w.trust === 'trusted' && isCodingWorker({ flowIds: w.flowIds ?? [], ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}) }) ? { externalActionGrant: [CODING_STEP_GRANT, TICKET_STEP_GRANT, ...(w.caps.continueOpenPrs ? [REPLIES_STEP_GRANT] : [])] } : {}),
     ...(w.browser ? { browser: true } : {}),
     ...(from ? { from } : {}),
   };
@@ -1576,6 +1586,8 @@ export function workerOrigin(
 export const CODING_STEP_GRANT = 'step:pull-request';
 /// And the one that lets it update the ticket once its branch is pushed.
 export const TICKET_STEP_GRANT = 'step:ticket-update';
+/// And the one that lets it reply on the pull request's comments once its fixes are pushed.
+export const REPLIES_STEP_GRANT = 'step:pr-replies';
 
 /// The desk prefix that means "skip the thinking, run the flow on this".
 export const DIRECT_RUN_PREFIX = '/run';

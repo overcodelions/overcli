@@ -248,6 +248,10 @@ interface DoorThread {
   desk?: { text: string; files: SlackFile[] };
   /// Workers that said the request isn't theirs: not offered it again.
   declined?: string[];
+  /// The process item this thread put in, and who put it in (a Slack user
+  /// id): what's said here goes to it.
+  processItem?: string;
+  processBy?: string;
   /// Work handed off from here that has finished: more said here goes to
   /// whoever ran its last step, as the next turn of that conversation
   /// (`FrontDoorDeps.continueRun`).
@@ -608,7 +612,12 @@ export interface FrontDoorDeps {
   /// A card on a worker, team or process this person can see, by name.
   aboutCard?(caller: OrgCaller, name: string): AboutCard | null;
   /// `thread`: the channel thread it came from, for its team stages to work in.
-  submitProcess?(caller: OrgCaller, processId: string, brief: string, thread?: { channel: string; threadTs: string }): { ok: true; title: string; process: string; stage: string } | { ok: false; error: string };
+  /// `updates`: the thread it came from, channel or DM, where the item reports
+  /// and a reply reaches it (`processReply`).
+  submitProcess?(caller: OrgCaller, processId: string, brief: string, thread?: { channel: string; threadTs: string }, updates?: { channel: string; threadTs: string }): { ok: true; itemId?: string; title: string; process: string; stage: string } | { ok: false; error: string };
+  /// Something said in a process item's thread: an OK, a send-back, a note,
+  /// or a finished item sent back to work. What to say back.
+  processReply?(caller: OrgCaller, itemId: string, text: string): string;
   /// Finished work this person can see that may already answer a question:
   /// strong matches are offered before routing, `weak` ones only tell the
   /// router who made something related. Absent: every request is routed.
@@ -973,6 +982,28 @@ export class FrontDoor {
     this.save();
   }
 
+  /// A message a worker's Slack trigger took up rather than the door: kept
+  /// in the log, so the console's Slack page shows it with who has it. The
+  /// thread stays the trigger's: the door doesn't claim its replies.
+  async heard(m: { channel: string; threadTs: string; user: string; text: string; who: string; team: boolean; followUp: boolean }): Promise<void> {
+    const key = `${m.channel}:${m.threadTs}`;
+    const caller = await this.deps.caller(m.user);
+    const text = m.text
+      .replace(/<@[A-Z0-9]+>/g, ' ')
+      .replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, '$2')
+      .replace(/<((?:https?|mailto):[^>]+)>/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const logged = this.state.log?.find((l) => l.key === key);
+    const dm = m.channel.startsWith('D');
+    if (logged) logged.lastAt = this.now();
+    else (this.state.log ??= []).push({ key, channel: m.channel, threadTs: m.threadTs, user: m.user, by: caller.name, text: text || '(a file)', at: this.now(), dm });
+    this.count(m.user, caller.name, !logged, dm);
+    // A follow-up under one someone else started keeps its outcome.
+    if (logged && m.followUp) return this.save();
+    this.note(key, m.team ? `Put into ${m.who}` : `${m.who} has it`, 'handed', undefined, { who: m.who, ...(m.team ? { team: true } : {}) }, !logged);
+  }
+
   /// The Slack threads someone follows, newest first, with what each was
   /// about: for "what am I following?" and the console's Watching page.
   followedThreads(user: string): Array<{ key: string; channel: string; threadTs: string; text: string; at: number }> {
@@ -1205,6 +1236,14 @@ export class FrontDoor {
       if (!namedWorker(text, workers)) return this.desk(req, key, caller, workers, text, req.files ?? []);
       delete known.desk;
       this.save();
+    }
+    // An item in a process this thread put in: what's said here goes to it,
+    // from whoever put it in, or anyone who says it to the bot.
+    if (known?.workerId?.startsWith(PROCESS_ID) && known.processItem && this.deps.processReply) {
+      if (!req.dm && !req.mentioned && req.user !== known.processBy) return;
+      if (!text) return;
+      await say(this.deps.processReply(caller, known.processItem, text));
+      return;
     }
     // An item in a process is followed by DM and /idea, not here.
     if (known?.workerId?.startsWith(PROCESS_ID)) {
@@ -1737,17 +1776,19 @@ export class FrontDoor {
         sharedTexts(context.texts),
         context.others.length ? `\nAlso shared there: ${context.others.join('; ')}` : '',
       ].filter(Boolean).join('\n');
-      const res = this.deps.submitProcess!(caller, worker.id.slice(PROCESS_ID.length), brief, req.dm ? undefined : { channel: req.channel, threadTs: root });
+      const here = { channel: req.channel, threadTs: root };
+      const res = this.deps.submitProcess!(caller, worker.id.slice(PROCESS_ID.length), brief, req.dm ? undefined : here, here);
       if (!res.ok) {
         await say(res.error);
         return;
       }
+      const link = res.itemId ? { processItem: res.itemId, processBy: req.user } : {};
       const existing = this.state.threads.find((t) => t.key === key);
-      if (existing) Object.assign(existing, { workerId: worker.id, workerName: res.process, pending: undefined, at: this.now() });
-      else this.state.threads.push({ key, workerId: worker.id, workerName: res.process, at: this.now() });
+      if (existing) Object.assign(existing, { workerId: worker.id, workerName: res.process, pending: undefined, at: this.now(), ...link });
+      else this.state.threads.push({ key, workerId: worker.id, workerName: res.process, at: this.now(), ...link });
       this.save();
       this.note(key, `Put into ${res.process}`, 'handed', undefined, { who: res.process, team: true });
-      await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. ${req.dm ? '' : 'Its team stages work here in this thread, and anyone in it can weigh in. '}You'll get a DM each time it moves; \`/idea\` shows where it is.${shortTip(req, worker, '/idea')}`);
+      await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. Each stage reports in this thread${req.dm ? '' : ', and anyone in it can weigh in'}. Reply here to OK a step, send it back, or, once it's done, send it back with what still needs fixing.${shortTip(req, worker, '/idea')}`);
       return;
     }
     if (worker.id.startsWith(TEAM_ID)) {
