@@ -380,3 +380,39 @@ describe('gitConflicted', () => {
     }
   });
 });
+
+describe('a host that refuses the token', () => {
+  const env = (n: string) => ({ BITBUCKET_TOKEN: 't' })[n];
+  const answering = (status: () => number) =>
+    (async () => (status() === 200 ? new Response(JSON.stringify({ values: [] }), { status: 200 }) : new Response('{"error":{"message":"no"}}', { status: status() }))) as unknown as typeof fetch;
+
+  it('says so once, and again when it can check', async () => {
+    let status = 403;
+    const host = prHostFor(REPO, { env, fetchImpl: answering(() => status) })!;
+    const logs: string[] = [];
+    const w = new PrWatcher({
+      store: { load: () => ({ repos: {} }), save: () => {} },
+      watchers: () => [{ workerId: 'mario', repos: [REPO] }],
+      host: () => host,
+      ownPush: notOurs,
+      wake: async () => {},
+      log: (m) => logs.push(m),
+    });
+    await w.poll();
+    await w.poll();
+    expect(logs).toEqual([expect.stringMatching(/acme-web's pull requests: BITBUCKET_TOKEN isn't allowed to read pull requests here \(403\)/)]);
+    status = 401;
+    await w.poll();
+    expect(logs[1]).toMatch(/didn't accept BITBUCKET_TOKEN \(401\)/);
+    status = 200;
+    await w.poll();
+    await w.poll();
+    expect(logs.slice(2)).toEqual(["acme-web's pull requests can be checked again."]);
+  });
+
+  it('stays quiet about a branch that isn’t there', async () => {
+    const host = prHostFor(REPO, { env, fetchImpl: answering(() => 404) })!;
+    expect(await host.open()).toBeNull();
+    expect(await host.defaultHead()).toBeUndefined();
+  });
+});

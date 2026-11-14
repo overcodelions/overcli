@@ -917,7 +917,24 @@ describe('proposed work in Slack', () => {
       ['b1', { approve: 'all' }],
       ['b1', { approve: [], skip: ['c0', 'c1'] }],
     ]);
-    expect(posts.filter((p) => p.url.endsWith('chat.update'))[0].body.text).toMatch(/Approved by .*2 started/);
+    expect(posts.filter((p) => p.url.endsWith('chat.update'))[0].body.text).toMatch(/approved it: 2 started/);
+  });
+
+  it('asks every approver, and tells them all who decided', async () => {
+    const AVERY = 'U0ACMEAVERY';
+    const { cmds, posts } = harness({ managerSlackId: () => PAT, approverSlackIds: () => [PAT, AVERY] } as Partial<OrgService>);
+    cmds.onEvent({ type: 'orchestrationUpdate', orchestration: batch(['proposed', 'proposed']) });
+    await new Promise((r) => setTimeout(r, 0));
+    const dms = posts.filter((p) => p.url.endsWith('chat.postMessage'));
+    expect(dms).toHaveLength(2);
+    expect(JSON.stringify(dms[0].body.blocks)).toContain('one of 2 who can approve');
+    // Avery Acme approves in the console (or Slack): every card says so.
+    const approved = { ...(batch(['queued', 'queued']) as object), approvedBy: 'Avery Acme' } as never;
+    cmds.onEvent({ type: 'orchestrationUpdate', orchestration: approved });
+    await new Promise((r) => setTimeout(r, 0));
+    const updates = posts.filter((p) => p.url.endsWith('chat.update'));
+    expect(updates).toHaveLength(2);
+    for (const u of updates) expect(u.body.text).toBe('Avery Acme approved it: 2 things started.');
   });
 });
 

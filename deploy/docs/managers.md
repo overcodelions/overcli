@@ -28,6 +28,28 @@ The worker's **Access** tab shows this as **How much it does alone**:
 - **Moving up:** your call. **Trust it to start its own work** (or, for an admin, **Let it act on its own**). The ladder marks a level **ready** when its record supports it, such as enough approved work and few rejections, but you can move it up before then.
 - **Moving down:** **Back to asks before work**, or automatic: three rejections in a row drop it a level; approving anything resets the count.
 
+## Work from others
+
+Trust is how much a worker does without a check. It applies to what **you** ask, and to anyone it counts as you. Being allowed to ask a worker (**Who can ask it**, under [Settings](#settings)) doesn't make someone's asks start on their own: what they ask is a proposal, and it waits for an approver.
+
+| Who asks | Asks before work | Trusted | On its own |
+|---|---|---|---|
+| **You, or an admin** | waits for you | starts¹ | starts |
+| **Someone it starts work for** | waits for you | starts¹ | starts |
+| **Anyone else who can ask it** | waits for an approver | waits for an approver | waits for an approver |
+| **Anyone, when it only reads** | starts | starts | starts |
+
+¹ A trusted worker that doesn't write code starts up to two things at a time; one that writes code starts them all, since what it makes is a branch for someone to review.
+
+A worker **only reads** when none of its flows can change anything: no ticket, message or push, and it isn't on its own. Then anyone who can ask it gets an answer straight away, since nothing it does needs your say.
+
+On the worker's **Settings → General**, under **Who can ask it**, two more choices set both halves (admins only). They save as you change them, and the note under them says what the three add up to:
+
+- **Starts work for:** **Only its manager** (the default), **Anyone who can ask it**, or picked people, groups and roles. What they ask starts as yours would, under the worker's trust. Each person's monthly use of the worker still has its limit, and the worker's budget still applies.
+- **Approves the rest:** **Its manager**, or picked people, groups and roles besides. Everyone who approves gets the request as a Slack DM with **Approve** and **Skip**, and it waits in their Inbox too. The first to decide settles it, and every DM changes to say who did: "Avery Acme approved it: 2 things started." or "Avery Acme skipped it."
+
+Groups are the org's people teams, read as they are now: someone who joins a group can start or approve with it straight away.
+
 ## Access
 
 The worker's **Access** tab is what it may use and how much it does without asking. The sidebar of its page shows a short version (its trust, its tools and their scope, any standing approvals) with **Manage →** to open the tab.
@@ -35,6 +57,8 @@ The worker's **Access** tab is what it may use and how much it does without aski
 - **Tools:** each tool it has, with its **Scope**: the org's default, everything, read only, or only the calls you tick. Calls outside a tool's scope are refused, even with your OK. A scope wider than the org's default needs an admin. **Take it off** removes a tool.
 - **+ Give it a tool:** pick an installed tool, or **Something not listed…**, and say what it's for. A tool your org clears for any hire is given at once. Anything else goes to the admins, and waits under the list as "waiting on an admin" until one decides; you hear in Slack. From Slack: `/worker Ada tools` lists its tools, and `/worker Ada tools add zendesk: to read tickets` gives or asks.
 - **How much it does alone:** the trust ladder above.
+- **Work from others:** a line saying who it starts work for straight away and who approves the rest, with a link to where they're changed, beside **Who can ask it**. See [Work from others](#work-from-others).
+- **Team pull requests** (admins): whether it pushes fixes onto pull requests other people opened, and whose. See [The team's pull requests](#the-teams-pull-requests).
 - **Always allowed:** the steps you said it may always run, from **Always allow** on an approval. **Take off** and it asks again.
 - **Checkpoints:** some flows stop before a step so someone looks first ("Continue to push?"). An admin can switch on **Run straight through its flows' checkpoints**. Anything that acts outside the server still asks, unless its trust says otherwise.
 
@@ -83,6 +107,39 @@ To let a worker change a repo your admin has connected: **Setup → Repos → pi
 The worker then plans the change, makes it, and writes the pull request. On probation you approve that last step, and nothing is pushed without it. The server then commits and pushes a branch called `overcli/<change>` in each repo that changed, after each repo's tests pass. The person who asked gets a link to open each pull request. Workers never run git, never open or merge pull requests, and never push to the main branch.
 
 A team's code works the same way: when a team task in a repo or workspace is done, **Push the branches** on its card pushes each repo's branch past its tests.
+
+**The ticket it was for hears about it.** When a pull request is opened for a ticket (the first ticket key in the work's title), the worker comments the link on the ticket and moves it on to review, or to the status your admin set under **Setup → Repos → Then move the ticket to**. A status the ticket can't reach in one step is reached in as few as it takes. Fields the move requires, such as a root cause or the date a bug came in, are filled from what the run found and from the worker's job description, so write in the job how it should fill them. A field nothing supports is left empty, and the ticket stays where it is with a line saying which field.
+
+### The team's pull requests
+
+A worker can look after pull requests other people opened: fix a build that went red, resolve a conflict with the main branch, and fix small review comments, each as a new commit on that same pull request. An admin switches this on per worker, on the [Access](#access) tab under **Team pull requests**: **Push fixes to the team's open pull requests**. Without it, a worker only adds to pull requests it opened itself. The **PR Fixer** starter role is made for this, and hiring from it switches it on.
+
+**Whose pull requests.** Two lists beside the switch, names as Bitbucket or GitHub shows them, comma separated:
+
+- **Only pull requests by:** whose pull requests it fixes builds and conflicts on. Empty: everyone's.
+- **Also fix review comments on pull requests by:** whose pull requests also get review comments fixed, AI reviewers' comments included. Empty: nobody's; review comments are left to people.
+
+The worker is told these lists in every run and shift, so its job description doesn't need anyone's name. Write "the pull requests in your scope", and change who's in scope here.
+
+**How it finds the work.** Every five minutes the server checks the open pull requests in the worker's repo or workspace, with no model involved, so the checks cost nothing. It wakes the worker with a task when a pull request in scope:
+
+- has a build that **went red** (not one the server pushed itself; those go back to whoever pushed them),
+- **no longer merges** with the branch it targets, found by a test merge in the server's own copy of the repo,
+- got **new review comments** (top-level ones, in scope for comments).
+
+It waits until the pull request **settles**: no build still running and nothing new for ten minutes, so the AI reviewer's comments, a scanner's and the build all arrive together. It hands the worker as many pull requests at a time as it takes per task, longest-waiting first, and waits while the worker is busy, so a backlog is worked through in batches. Comments that were already there when someone came into scope don't count; its scheduled shift or **Run now** picks those up.
+
+**What the run gets.** It starts on the pull request's own branch, and its push adds a commit there, never forced.
+
+- **A conflict:** the server starts the merge of the main branch and tells the run which files have conflict markers. The run resolves them. A marker left in a changed line stops the push.
+- **A red build:** the server reads the failing step, the failing tests and the end of the log itself, and puts them in the run's prompt. If the branch is behind the branch it targets, the server merges that in first too, since that's what the build ran on: a test or fixture that only exists there is then in the run's checkout.
+- **Tests:** the repo's test command, if your admin set one, runs before the push, as for any change.
+
+**What it says.** After its commit lands, it replies under each review comment it fixed, with the commit, and notes a fixed build or conflict on the pull request. What it posts ends with "— via overgo", and the watcher never counts those as new comments.
+
+**Limits.** Review comments wake it at most three times per pull request while it's open: an AI reviewer that re-reads every push can always find one more thing, and past three the rest of the review is a person's. A conflict or a red build still wakes it then, at most three times a day per pull request. It never approves, merges or declines a pull request, and never pushes to the main branch.
+
+**After a restart.** A run cut off mid-step is paused and waits for **Continue** on its Runs tab, and work queued behind it is cancelled. Pull requests the watcher already handed over aren't handed over again, so restart when the worker is idle.
 
 ## The job and what it knows
 

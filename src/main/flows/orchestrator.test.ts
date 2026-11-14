@@ -56,6 +56,7 @@ function makeHarness(opts: {
     baseBranch?: string;
     worktreeName?: string;
     adoptWorktrees?: unknown;
+    mergeWhenBehind?: boolean;
     workerId?: string;
     workerName?: string;
     allowExternalActions?: boolean;
@@ -100,6 +101,7 @@ function makeHarness(opts: {
         baseBranch: args.baseBranch,
         worktreeName: args.worktreeName,
         adoptWorktrees: args.adoptWorktrees,
+        mergeWhenBehind: args.mergeWhenBehind,
         workerId: args.workerId,
         workerName: args.workerName,
         allowExternalActions: args.allowExternalActions,
@@ -714,6 +716,8 @@ describe('OrchestratorImpl runIn', () => {
     expect(asked).toEqual([{ projectPath: '/proj', branch: 'feature/ACME-9-sort' }]);
     expect(h.started[0].prompt).toContain('WHY ITS LATEST BUILD FAILED');
     expect(h.started[0].prompt).toContain('SortTest.sortsByDate');
+    // The host built it merged with its target: the run starts from that too.
+    expect(h.started[0].mergeWhenBehind).toBe(true);
   });
 
   it('launches cwd items in the project tree, with no base branch to fork from', async () => {

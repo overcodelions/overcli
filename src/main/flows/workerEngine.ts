@@ -411,15 +411,33 @@ const REMEMBER_HINT = [
 const THREAD_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const THREAD_SESSION_MAX = 50;
 
+/// Whose pull requests a worker on the team's pull requests works on, from its
+/// settings (WorkerCaps.prAuthors, prCommentAuthors), in every prompt it gets.
+/// The watcher filters by them already; this is so a shift's own scan, or Run
+/// now, does too, and the people live only in the settings, not the job.
+export function prScopeLines(caps: Partial<Worker['caps']> | undefined): string[] {
+  if (!caps?.continueOpenPrs) return [];
+  const authors = caps.prAuthors ?? [];
+  const commenters = caps.prCommentAuthors ?? [];
+  return [
+    '',
+    'YOUR PULL REQUEST SCOPE (from your settings; it decides whose pull requests you touch, whatever your job description says about people)',
+    `- Broken builds and conflicts: ${authors.length ? `pull requests opened by ${authors.join(', ')}` : 'any open pull request in your place'}.`,
+    `- Review comments: ${commenters.length ? `only on pull requests opened by ${commenters.join(', ')}` : 'none; leave review comments to people'}.`,
+    '- Leave every other pull request alone. A pull request the server hands you is already in scope.',
+  ];
+}
+
 export class WorkerEngine {
   /// The org's handbook, read by every worker after its job. Set by the org
   /// server; absent (the desktop): none.
   handbook?: () => string;
 
-  private handbookLines(w?: Pick<Worker, 'knowledge'>): string[] {
+  private handbookLines(w?: Pick<Worker, 'knowledge'> & Partial<Pick<Worker, 'caps'>>): string[] {
     const text = this.handbook?.().trim();
     const known = w?.knowledge?.body?.trim();
     return [
+      ...prScopeLines(w?.caps),
       ...(text ? ['', 'YOUR ORGANIZATION’S HANDBOOK (what every worker here should know; your job description and the step you are running come first)', text.slice(0, 12_000)] : []),
       ...(known
         ? ['', `WHAT YOU FOUND OUT ABOUT YOUR TOOLS AND WORK (your onboarding${w!.knowledge!.updatedAt ? `, ${new Date(w!.knowledge!.updatedAt).toISOString().slice(0, 10)}` : ''}; check anything that may have changed since)`, known.slice(0, 10_000)]

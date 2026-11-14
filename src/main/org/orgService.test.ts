@@ -228,6 +228,55 @@ describe('asking a worker that only reads', () => {
   });
 });
 
+describe('a worker that takes work from anyone who may ask it', () => {
+  const roster = (open: boolean) => [
+    worker('architect', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org', caps: { maxItemsPerShift: 1, runIn: 'worktree', ...(open ? { anyoneMayStart: true } : {}) } }),
+  ];
+
+  it('starts what someone else asks, changes and all, when an admin lets it', async () => {
+    const open = harness({ roster: roster(true), changes: ['it can use acme → createIssue'] });
+    const a = open.svc.startAsk(sam, 'architect', 'file a tech-debt ticket for the model upgrade', 'slack');
+    if (!a.ok) throw new Error(a.error);
+    await a.done;
+    expect(open.calls[0]).toContain('Your manager lets anyone who may ask you start work');
+    expect(open.calls[0]).toMatch(/:untrusted:mayLaunch$/);
+
+    const shut = harness({ roster: roster(false), changes: ['it can use acme → createIssue'] });
+    const b = shut.svc.startAsk(sam, 'architect', 'file a tech-debt ticket for the model upgrade', 'slack');
+    if (!b.ok) throw new Error(b.error);
+    await b.done;
+    expect(shut.calls[0]).toContain('Treat the request as a proposal');
+    expect(shut.calls[0]).toMatch(/:untrusted$/);
+  });
+
+  it('starts work for the picked people and groups only', async () => {
+    const picked = [worker('architect', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org', caps: { maxItemsPerShift: 1, runIn: 'worktree', startAudience: { groups: ['team:design'] } } })];
+    const inGroup = harness({ roster: picked, changes: ['it can use acme → createIssue'], policy: { teams: { design: [SAM] } } });
+    const a = inGroup.svc.startAsk(sam, 'architect', 'file the ticket', 'slack');
+    if (!a.ok) throw new Error(a.error);
+    await a.done;
+    expect(inGroup.calls[0]).toMatch(/:untrusted:mayLaunch$/);
+    const outside = harness({ roster: picked, changes: ['it can use acme → createIssue'], policy: { teams: { design: [] } } });
+    const b = outside.svc.startAsk(sam, 'architect', 'file the ticket', 'slack');
+    if (!b.ok) throw new Error(b.error);
+    await b.done;
+    expect(outside.calls[0]).toMatch(/:untrusted$/);
+  });
+
+  it('lets its approvers see and decide what waits, and asks each of them in Slack', () => {
+    const roster = [worker('architect', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org', caps: { maxItemsPerShift: 1, runIn: 'worktree', approvers: { groups: ['team:design'] } } })];
+    const h = harness({ roster, policy: { teams: { design: [SAM] } } });
+    expect(h.svc.approverSlackIds('architect').sort()).toEqual([PAT, SAM].sort());
+    const plain = harness({ roster: [worker('architect', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(plain.svc.approverSlackIds('architect')).toEqual([PAT]);
+  });
+
+  it('is an admin’s to turn on', () => {
+    const h = harness({ roster: roster(false) });
+    expect(h.svc.update(pat, 'architect', { anyoneMayStart: true })).toMatchObject({ ok: false, error: expect.stringContaining('Only an admin') });
+  });
+});
+
 describe('asks for a process stage', () => {
   const roster = [worker('chief', { manager: { name: 'Pat', slackUserId: PAT } })];
 

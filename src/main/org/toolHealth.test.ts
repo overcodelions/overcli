@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FAILING_AFTER, ToolHealth, classifyToolError, type ToolTrouble } from './toolHealth';
+import { FAILING_AFTER, ToolHealth, classifyToolError, errorGist, missingScopes, type ToolTrouble } from './toolHealth';
 import { personOf } from './orgService';
 
 function health() {
@@ -80,5 +80,53 @@ describe('a browser tool’s errors', () => {
     for (let i = 0; i < FAILING_AFTER; i++) h.observe({ tool: 'test-systems', ok: false, text: report, worker: 'Robin' });
     expect(alerts).toHaveLength(1);
     expect(h.list()[0].lastError).not.toContain('HTTP status');
+  });
+});
+
+describe('a key missing a permission', () => {
+  const bb403 = 'Error: Access denied for api. Verify your credentials and permissions.\nHTTP Status: 403\n\nRaw API Response:\n{\n  "message": "Your credentials lack one or more required privilege scopes.",\n  "detail": {\n    "granted": ["read:repository:bitbucket"],\n    "required": ["read:workspace:bitbucket"]\n  }\n}';
+
+  it('is not a sign-in failure, and names what it needs', () => {
+    expect(classifyToolError(bb403)).toBe('scope');
+    expect(classifyToolError('HTTP 403: Resource not accessible by personal access token')).toBe('scope');
+    expect(classifyToolError('{"ok":false,"error":"missing_scope","needed":"files:write"}')).toBe('scope');
+    expect(missingScopes(bb403)).toEqual(['read:workspace:bitbucket']);
+    expect(missingScopes('{"error":"missing_scope","needed":"files:write,im:write"}')).toEqual(['files:write', 'im:write']);
+    expect(classifyToolError('403 Forbidden')).toBe('auth');
+  });
+
+  it('waits for a run before raising, and a later sign-in failure takes over', () => {
+    const { h, alerts } = health();
+    h.observe({ tool: 'bitbucket', ok: false, text: bb403, worker: 'Triage' });
+    h.observe({ tool: 'bitbucket', ok: false, text: bb403 });
+    expect(alerts).toHaveLength(0);
+    expect(h.list()).toEqual([]);
+    for (let i = 2; i < FAILING_AFTER; i++) h.observe({ tool: 'bitbucket', ok: false, text: bb403 });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ kind: 'scope', missing: ['read:workspace:bitbucket'] });
+
+    const fresh = health();
+    fresh.h.observe({ tool: 'bitbucket', ok: false, text: bb403 });
+    fresh.h.observe({ tool: 'bitbucket', ok: false, text: '401 Unauthorized' });
+    expect(fresh.alerts).toHaveLength(1);
+    expect(fresh.alerts[0].kind).toBe('auth');
+  });
+
+  it('keeps the whole error, and leads with what the API said', () => {
+    const wrapped = 'Error: Access denied for api. Verify your credentials and permissions. Ensure your Bitbucket API token/app password has sufficient privileges and hasn\'t expired. If using a workspace/repository name, check that it\'s spelled correctly.\n' + bb403.slice(bb403.indexOf('HTTP Status'));
+    const { h } = health();
+    h.observe({ tool: 'bitbucket', ok: false, text: wrapped });
+    const [t] = (h as unknown as { all: ToolTrouble[] }).all;
+    expect(t.lastError).toContain('"required": ["read:workspace:bitbucket"]');
+    expect(t.gist).toBe('Your credentials lack one or more required privilege scopes. (HTTP 403) Needs: read:workspace:bitbucket.');
+    expect(errorGist('401 Unauthorized')).toBeUndefined();
+  });
+
+  it('clears on the next call that works', () => {
+    const { h } = health();
+    for (let i = 0; i < FAILING_AFTER; i++) h.observe({ tool: 'bitbucket', ok: false, text: bb403 });
+    expect(h.list()).toHaveLength(1);
+    h.observe({ tool: 'bitbucket', ok: true, text: '{}' });
+    expect(h.list()).toEqual([]);
   });
 });

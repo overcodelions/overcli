@@ -74,6 +74,8 @@ export interface FlowLauncher {
     parentOrchestrationId?: UUID;
     orchestrationItemTitle?: string;
     continues?: string;
+    /// Fixing the continued branch's red build: merge its default branch in, even cleanly.
+    mergeWhenBehind?: boolean;
     scheduleId?: UUID;
     scheduleName?: string;
     /// Chain provenance for a run fired by an `onFlowComplete` schedule. The
@@ -963,6 +965,8 @@ export class OrchestratorImpl {
           orchestrationItemTitle: next.candidate.title,
           // Its push adds to that branch, and to no other (BranchLander).
           ...(continued ? { continues: continued } : {}),
+          // Its build failed: the host built it merged with its target, so the run starts from that too.
+          ...(continued && failure ? { mergeWhenBehind: true } : {}),
           // Stamp the worker on child runs of a worker's batch — the run
           // summary's `workerId` is what the monthly budget rollup groups by,
           // and nothing can reconstruct the tag after launch.

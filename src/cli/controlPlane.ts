@@ -1819,6 +1819,13 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       path: /^\/api\/workers\/([^/]+)\/update$/,
       handle: (c, b, [id]) => {
         const patch = { ...((b.patch ?? {}) as Parameters<OrgService['update']>[2]) };
+        for (const key of ['startAudience', 'approvers'] as const) {
+          const raw = (patch as Record<string, unknown>)[key];
+          if (raw === undefined || raw === null) continue;
+          const a = parseAudience(raw);
+          if (!a.ok) return a;
+          (patch as Record<string, unknown>)[key] = a.audience;
+        }
         if (patch && 'audience' in patch && patch.audience !== null) {
           const a = parseAudience(patch.audience);
           if (!a.ok) return a;

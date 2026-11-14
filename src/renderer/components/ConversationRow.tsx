@@ -48,6 +48,7 @@ export function ConversationRow({
 
   return (
     <div
+      data-flip={conv.id}
       className={
         'sidebar-row group w-full rounded text-xs truncate flex items-center gap-1.5 pr-1 ' +
         (selected

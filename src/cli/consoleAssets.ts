@@ -3417,14 +3417,21 @@ export const CONSOLE_JS = String.raw`
       }).catch(function () {});
     }
     return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
-      var t = r[0], tl = r[1];
-      var fixes = tl && tl.ok !== false ? tl.missing.length : 0;
-      state.counts.today = fixes + t.waiting.length + t.hireApprovals.length + (t.toolRequests || []).length + (t.toolTrouble || []).length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
-      document.querySelectorAll('[data-count]').forEach(function (el) {
-        var n = state.counts[el.getAttribute('data-count')];
-        el.textContent = n ? String(n) : ''; el.hidden = !n;
-      });
+      state.counts.today = todayCount(r[0], r[1]);
+      paintCounts();
     }).catch(function () {});
+  }
+  /// What the bell counts: everything in /api/today that waits on you, and
+  /// the tools that need fixing.
+  function todayCount(t, tl) {
+    var fixes = tl && tl.ok !== false ? tl.missing.length : 0;
+    return fixes + t.waiting.length + t.hireApprovals.length + (t.toolRequests || []).length + (t.toolTrouble || []).length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
+  }
+  function paintCounts() {
+    document.querySelectorAll('[data-count]').forEach(function (el) {
+      var n = state.counts[el.getAttribute('data-count')];
+      el.textContent = n ? String(n) : ''; el.hidden = !n;
+    });
   }
 
   /// The chrome every page shares: whose org this is, a way to jump to any
@@ -3865,13 +3872,22 @@ export const CONSOLE_JS = String.raw`
     return card;
   }
 
+  // What a tool's error says, then all of it on request.
+  function troubleText(x, cls, style) {
+    var long = x.gist && x.gist !== x.lastError;
+    return h('div', { class: 'stack', style: 'gap:4px' },
+      h('p', { class: cls, style: 'overflow-wrap:anywhere;margin:0;' + (style || ''), text: x.gist || x.lastError }),
+      long ? h('details', null, h('summary', { class: 'faint', style: 'font-size:12.5px', text: 'Full error' }),
+        h('pre', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin-top:6px;max-height:320px;overflow:auto', text: x.lastError })) : null);
+  }
+
   // A tool failing now, for an admin to fix.
   function troubleCard(x) {
     return h('article', { class: 'panel ask fix' },
       h('span', { class: 'avatar m', style: 'background:var(--bad-soft);color:var(--bad)' }, icon('alert', 18)),
       h('div', { class: 'ask-body' },
-        h('div', { class: 'ask-head' }, h('span', { class: 'tag bad', text: 'Fix' }), h('span', { class: 'ask-name', text: x.tool + (x.kind === 'auth' ? ' can’t sign in' : x.kind === 'gone' ? ' says its API is gone' : ' keeps failing') })),
-        h('p', { class: 'muted', style: 'overflow-wrap:anywhere', text: x.lastError }),
+        h('div', { class: 'ask-head' }, h('span', { class: 'tag bad', text: 'Fix' }), h('span', { class: 'ask-name', text: x.tool + (x.kind === 'auth' ? ' can’t sign in' : x.kind === 'scope' ? ' is missing a permission' : x.kind === 'gone' ? ' says its API is gone' : ' keeps failing') })),
+        troubleText(x, 'muted'),
         h('p', { class: 'faint', text: 'Since ' + ago(x.since) + (x.workers.length ? '. Held up: ' + x.workers.join(', ') : '') + '.' }),
         h('div', { class: 'row' }, h('button', { class: 'btn go', text: 'Open ' + x.tool, onclick: function () { go('setup', { setupTab: 'tools' }); } }))));
   }
@@ -4534,7 +4550,76 @@ export const CONSOLE_JS = String.raw`
       };
       var finished = cameIn.slice().sort(function (a, b) { return b.at - a.at; });
       // The title's count now includes process decisions.
-      nodes[0].querySelector('.page-title').textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
+      var titleEl = nodes[0].querySelector('.page-title');
+      titleEl.textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
+      // Needs you keeps itself current while the page is open: a new ask
+      // slots in where it belongs, a card already shown is never rebuilt (so
+      // a half-typed answer survives), and one you've just decided stays put
+      // with its answer until you leave, rather than vanishing under you.
+      var needLabel = h('span', { class: 'label if-needlabel' });
+      var needList = h('div', { class: 'stack', style: 'gap:12px' });
+      var needSec = h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' }, needLabel, needList);
+      var needStat = ibStat('Needs you', String(needs), needs ? 'Waiting on a decision' : 'All clear', null, needs ? 'need' : '');
+      var needNodes = {};
+      var isDecision = function (x) { return x.kind === 'process' && x.needsYou; };
+      var drawNeeds = function (t, fixes, decisions) {
+        var items = [].concat(
+          fixes.map(function (x) { return ['fix:' + x.name, fixCard, x]; }),
+          (t.toolTrouble || []).map(function (x) { return ['trouble:' + x.tool + ':' + x.kind, troubleCard, x]; }),
+          t.waiting.map(function (x) { return ['wait:' + x.runId + ':' + x.question, waitingCard, x]; }),
+          decisions.map(function (x) { return ['decide:' + x.id, decisionCard, x]; }),
+          t.proposals.map(function (x) { return ['propose:' + x.batchId, proposalCard, x]; }),
+          t.hireApprovals.map(function (x) { return ['hire:' + (x.hireId || x.id), hireApprovalCard, x]; }),
+          (t.toolRequests || []).map(function (x) { return ['tool:' + x.id, toolRequestCard, x]; }),
+          t.teamTasks.filter(function (x) { return x.waitingOnYou; }).map(function (x) { return ['task:' + x.id, teamTaskCard, x]; }));
+        var live = {};
+        var list = items.map(function (x) {
+          live[x[0]] = true;
+          return needNodes[x[0]] || (needNodes[x[0]] = framed(x[1](x[2])));
+        });
+        // Decided cards the server has let go of keep their place.
+        [].forEach.call(needList.children, function (c, i) {
+          if (list.indexOf(c) < 0 && c.classList.contains('done')) list.splice(Math.min(i, list.length), 0, c);
+        });
+        Object.keys(needNodes).forEach(function (k) { if (!live[k] && !needNodes[k].classList.contains('done')) delete needNodes[k]; });
+        setChildren(needList, list);
+        var n = list.filter(function (c) { return !c.classList.contains('done'); }).length;
+        needSec.hidden = !list.length;
+        needLabel.textContent = 'Needs you · ' + n;
+        titleEl.textContent = (WORDS[n] || plural(n, 'thing', 'things')) + (n === 1 || n === 0 ? ' needs you' : ' need you');
+        needStat.querySelector('.ib-v').textContent = String(n);
+        needStat.querySelector('.ib-v').classList.toggle('need', !!n);
+        needStat.querySelector('.ib-n').textContent = n ? 'Waiting on a decision' : 'All clear';
+        return n;
+      };
+      drawNeeds(t, fixes, decisions);
+      // Every 15 s while the tab is shown (a minute while it's hidden), at
+      // once when the bar sees a run start or stop waiting, and shortly
+      // after you act on a card. Stops when you leave the page.
+      var needTimer = null;
+      var pollNeeds = function (wait) {
+        clearTimeout(needTimer);
+        needTimer = setTimeout(function () {
+          if (!needSec.isConnected) return;
+          Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/inflight').catch(function () { return { ok: false }; })]).then(function (y) {
+            if (!needSec.isConnected) return;
+            if (y[0] && y[0].ok !== false && Array.isArray(y[0].waiting)) {
+              drawNeeds(y[0], y[1] && y[1].ok !== false ? y[1].missing : [], y[2] && y[2].ok !== false ? (y[2].items || []).filter(isDecision) : []);
+              state.counts.today = todayCount(y[0], y[1]);
+              paintCounts();
+            }
+            pollNeeds(document.hidden ? 60000 : 15000);
+          }, function () { pollNeeds(30000); });
+        }, wait);
+      };
+      pollNeeds(15000);
+      needList.addEventListener('click', function (e) { if (e.target.closest('button')) pollNeeds(2000); });
+      var seenWaiting = null;
+      onNow(needSec, function (items) {
+        var sig = items.filter(function (x) { return x.kind === 'waiting'; }).map(function (x) { return x.id; }).sort().join('|');
+        if (seenWaiting !== null && sig !== seenWaiting) pollNeeds(300);
+        seenWaiting = sig;
+      });
       // Updates about the same thing as one row, unless asked for every update.
       var groups = workGroups(finished);
       var flat;
@@ -4594,7 +4679,7 @@ export const CONSOLE_JS = String.raw`
         ibStat('Delivered', String(groups.length), plural(finished.length, 'update', 'updates') + ' since yesterday', ibSpark(perDay, 'Delivered each day, last 7 days: ' + perDay.join(', '))),
         ibStat('In flight', String(moving.length), upcoming.length ? 'Next: ' + upcoming[0].name + ' ' + when(upcoming[0].nextShiftAt) : 'Nothing scheduled'),
         ibStat('Median time to done', median == null ? '—' : median < 60000 ? '<1 min' : took(median), spans.length ? 'Across ' + plural(spans.length, 'piece', 'pieces') + ' of work' : 'Nothing finished yet'),
-        ibStat('Needs you', String(needs), needs ? 'Waiting on a decision' : 'All clear', null, needs ? 'need' : ''),
+        needStat,
         ibStat('Spend this month', money(t.spend.spentUSD), allowance ? 'of ' + money(allowance) + ' allowed' : 'Heading for ' + money(t.spend.projectedUSD),
           allowance ? h('span', { class: 'ib-meter', role: 'img', 'aria-label': Math.round(spendPct) + '% of the allowance' }, h('i', { class: spendPct >= 90 ? 'high' : null, style: 'width:' + spendPct.toFixed(1) + '%' })) : null));
       var mainCol = [];
@@ -4603,10 +4688,8 @@ export const CONSOLE_JS = String.raw`
       mainCol.push(
         // Needs you shows only when something does: the title already says
         // when nothing does. A crew of nobody gets the way to hire one.
-        needs ? h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' },
-          h('span', { class: 'label if-needlabel', text: 'Needs you · ' + needs }),
-          h('div', { class: 'stack', style: 'gap:12px' }, [fixes.map(fixCard), (t.toolTrouble || []).map(troubleCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), (t.toolRequests || []).map(toolRequestCard), mineTasks.map(teamTaskCard)].map(function (cards) { return cards.map(framed); })))
-          : !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
+        needSec,
+        !needs && !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
               h('p', { text: 'Hire a worker and what it needs from you lands here.' }),
               state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null) : null,
         flightSec,
@@ -6383,8 +6466,39 @@ export const CONSOLE_JS = String.raw`
           kind: w.audience || w.visibility === 'team' ? 'picked' : w.visibility === 'org' ? 'everyone' : 'manager',
           audience: w.audience,
           managerGroupsOf: !w.audience && w.visibility === 'team' ? w.managerSlackUserId : null,
-          onChange: function () { later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
+          onChange: function () { drawOthers(); later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
         });
+        // Then what happens when they do: whose asks start straight away, and
+        // who approves the rest. An admin's; one card with who may ask.
+        var starts = audiencePicker({
+          label: 'Starts work for', readOnly: !state.me.admin,
+          kind: w.anyoneMayStart ? 'everyone' : w.startAudience ? 'picked' : 'manager', audience: w.startAudience,
+          ownLabel: 'Only its manager', everyoneLabel: 'Anyone who can ask it', ownNote: 'Its manager, and ',
+          onChange: function () { drawOthers(); later('starts', function () { var s = starts.value(); return { anyoneMayStart: s.kind === 'everyone', startAudience: s.kind === 'picked' ? s.audience : null }; }); },
+        });
+        var approvesPick = audiencePicker({
+          label: 'Approves the rest', readOnly: !state.me.admin, noEveryone: true,
+          kind: w.approvers ? 'picked' : 'manager', audience: w.approvers,
+          ownLabel: 'Its manager', ownHint: 'Its manager decides, and admins.', ownNote: 'Its manager, and ',
+          onChange: function () { drawOthers(); later('approves', function () { var a = approvesPick.value(); return { approvers: a.kind === 'picked' ? a.audience : null }; }); },
+        });
+        // What the three add up to, in a sentence or two, as they're picked.
+        var othersNote = h('p', { class: 'faint', style: 'font-size:13px;margin-top:8px' });
+        var drawOthers = function () {
+          if (!starts || !approvesPick) return;
+          var a = whoAsks.value(), s = starts.value(), p = approvesPick.value();
+          var reads = !!d.changes && !d.changes.length;
+          var who = a.kind === 'manager' ? 'Only its manager can ask it.' : a.kind === 'everyone' ? 'Anyone in the org can ask it.' : 'The people picked can ask it.';
+          var why = d.changes && d.changes.length ? ', because ' + d.changes.slice(0, 3).join('; ') + (d.changes.length > 3 ? '; and more' : '') : '';
+          var go = reads ? 'It only reads, so anyone who can ask it gets answers straight away.'
+            : s.kind === 'everyone' ? 'What anyone who can ask it asks for starts straight away, as its manager’s would.'
+            : s.kind === 'picked' ? 'What the people picked ask for starts straight away; anyone else’s waits for an OK' + why + '.'
+            : 'What anyone else asks for waits for an OK' + why + '.';
+          var ok = reads || s.kind === 'everyone' ? '' : p.kind === 'picked' ? ' Its manager or anyone picked under “Approves the rest” gives it, and each is asked in Slack.' : ' Its manager gives it.';
+          othersNote.className = reads ? 'msg ok' : 'faint';
+          othersNote.textContent = who + ' ' + go + ok;
+        };
+        drawOthers();
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(Math.round(w.budgetUSDPerMonth * 100) / 100), 'aria-label': 'Monthly budget' });
         var nameBox = h('input', { type: 'text', value: w.name, maxlength: '40', 'aria-label': 'Name', style: 'max-width:280px' });
         var tagline = h('input', { type: 'text', value: w.tagline || '', maxlength: '160', placeholder: 'What it does, in a line', 'aria-label': 'Tagline', style: 'max-width:480px' });
@@ -6431,7 +6545,7 @@ export const CONSOLE_JS = String.raw`
           return settingRow(title, sub, body, { note: note });
         };
         var saveNow = function (key, patch) {
-          var note = notes[key];
+          var note = notes[key] || (key === 'starts' || key === 'approves' ? notes.who : null);
           if (note) { note.className = 'faint'; note.textContent = 'Saving…'; }
           return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch }).then(function (x) {
             if (!note) return x;
@@ -6495,10 +6609,11 @@ export const CONSOLE_JS = String.raw`
           group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
             h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
               h('label', { class: 'field' }, 'Reports to (another worker)', reports))], 'boss'),
-          group('Who can ask it', 'Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
-            d.changes ? (d.changes.length
-              ? h('p', { class: 'faint', style: 'font-size:13px;margin-top:8px', text: 'When someone other than its manager asks, work it proposes waits for its manager’s OK, because ' + d.changes.slice(0, 3).join('; ') + (d.changes.length > 3 ? '; and more' : '') + '. A worker that only reads answers anyone it lets ask, with no OK.' })
-              : h('p', { class: 'msg ok', style: 'font-size:13px;margin-top:8px', text: 'It only reads, so anyone who can ask it gets answers straight away, with no OK from its manager.' })) : null], 'who'),
+          group('Who can ask it', 'Who may ask it, whose asks it starts on straight away, and who approves the rest. Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
+            h('b', { style: 'font-size:13px;margin-top:10px', text: 'Starts work for' }), starts.node,
+            h('b', { style: 'font-size:13px;margin-top:10px', text: 'Approves the rest' }), approvesPick.node,
+            !state.me.admin ? h('p', { class: 'faint', style: 'font-size:12.5px', text: 'Only an admin changes whose asks start straight away and who approves.' }) : null,
+            othersNote], 'who'),
           group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
             where ? h('div', { style: 'max-width:480px' }, where)
               : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })], 'where'),
@@ -6656,6 +6771,10 @@ export const CONSOLE_JS = String.raw`
             if (x.ok === false) { prs.checked = !prs.checked; prsOut.appendChild(msg(x)); } else { w.continueOpenPrs = prs.checked; prsOut.appendChild(msg(x, 'Saved. It applies from its next run.')); }
           });
         };
+        // Changed on General, beside who may ask it; said here so Access tells the whole story.
+        var othersLine = (w.anyoneMayStart ? 'Starts work for anyone who can ask it.' : w.startAudience ? 'Starts work for the people picked, and its manager.' : 'Starts work only for its manager.') +
+          ' ' + (w.anyoneMayStart ? '' : w.approvers ? 'Its manager and the people picked approve the rest.' : 'Its manager approves the rest.');
+        var toWho = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Change under Who can ask it →', onclick: function () { var el = document.getElementById('ws-general'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
         var toolsList = h('div');
         var drawTools = function () {
           fill(toolsList, (w.tools || []).length ? h('div', { class: 'stack access-tools', style: 'gap:0' }, w.tools.map(function (t) {
@@ -6685,6 +6804,8 @@ export const CONSOLE_JS = String.raw`
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
             })()),
           trustCard,
+          section('Work from others', 'When someone other than its manager asks. Set on General, with who may ask it.',
+            h('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, h('span', { style: 'font-size:13px', text: othersLine }), toWho)),
           section('Team pull requests', 'Whether it may add its fixes to pull requests other people opened, when its work names one. Only a branch with an open pull request; never forced, and a conflict it leaves unresolved is never pushed.',
             [prs ? h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, prs, h('span', { text: 'Push fixes to the team’s open pull requests' })), prsOut)
               : h('p', { class: 'faint', style: 'font-size:13px', text: w.continueOpenPrs ? 'It pushes fixes to the team’s open pull requests. An admin set this.' : 'It only adds to pull requests it opened. Only an admin can change that.' }),
@@ -17777,7 +17898,7 @@ export const CONSOLE_JS = String.raw`
     var ROLES = [['admin', 'Admins'], ['approver', 'Hire approvers'], ['hirer', 'People who can hire']];
     var changed = function () { if (opts.onChange) opts.onChange(); };
     var seg = h('div', { class: 'seg', role: 'group', 'aria-label': opts.label || 'Who can use it' });
-    var choices = [['manager', opts.ownLabel || 'Only its manager'], ['everyone', opts.everyoneLabel || 'Everyone in the org'], ['picked', 'Picked people, groups or roles']];
+    var choices = [['manager', opts.ownLabel || 'Only its manager'], ['everyone', opts.everyoneLabel || 'Everyone in the org'], ['picked', 'Picked people, groups or roles']].filter(function (c) { return !(opts.noEveryone && c[0] === 'everyone'); });
     var buttons = choices.map(function (c) {
       return h('button', { type: 'button', text: c[1], 'aria-pressed': kind === c[0] ? 'true' : 'false', disabled: !!opts.readOnly, onclick: function () { kind = c[0]; draw(); changed(); } });
     });
@@ -18682,8 +18803,8 @@ export const CONSOLE_JS = String.raw`
     if (!x) return null;
     var out = h('div', { 'aria-live': 'polite' });
     return h('section', { class: 'panel pad stack', style: 'gap:6px;border-color:var(--bad-line);background:var(--bad-soft)' },
-      h('b', { style: 'font-size:13.5px', text: x.kind === 'auth' ? 'Its calls are being refused: the key has likely expired or lost access.' : x.kind === 'gone' ? 'It says what it calls is retired or gone.' : 'Its last ' + x.count + ' calls failed.' }),
-      h('div', { class: 'quote', style: 'font-size:12.5px;overflow-wrap:anywhere', text: x.lastError }),
+      h('b', { style: 'font-size:13.5px', text: x.kind === 'auth' ? 'Its calls are being refused: the key has likely expired or lost access.' : x.kind === 'scope' ? 'It signs in, but its key lacks a permission some calls need' + (x.missing && x.missing.length ? ': ' + x.missing.join(', ') : '') + '. Other calls still work.' : x.kind === 'gone' ? 'It says what it calls is retired or gone.' : 'Its last ' + x.count + ' calls failed.' }),
+      troubleText(x, 'quote', 'font-size:12.5px'),
       h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Since ' + ago(x.since) + (x.workers.length ? '. Held up: ' + x.workers.join(', ') : '') + '. It clears itself the next time a call works.' }),
       canEdit ? h('div', { class: 'row', style: 'gap:8px' }, h('button', { class: 'btn small', text: 'Mark fixed', onclick: function (e) {
         var restore = busy(e.target, 'Saving…');
@@ -18893,7 +19014,7 @@ export const CONSOLE_JS = String.raw`
       if (r.ok === false) return [msg(r)];
       var onThisMac = function (t) { return /(^|\s)\/(Users|home)\//.test(t.target); };
       var stateOf = function (t) {
-        if (t.trouble) return { tone: 'bad', text: t.trouble.kind === 'auth' ? 'Can’t sign in since ' + ago(t.trouble.since) : t.trouble.kind === 'gone' ? 'Its API looks retired' : 'Failing since ' + ago(t.trouble.since) };
+        if (t.trouble) return { tone: 'bad', text: t.trouble.kind === 'auth' ? 'Can’t sign in since ' + ago(t.trouble.since) : t.trouble.kind === 'scope' ? 'Missing a permission since ' + ago(t.trouble.since) : t.trouble.kind === 'gone' ? 'Its API looks retired' : 'Failing since ' + ago(t.trouble.since) };
         if (t.signIn && t.signIn.ended) return { tone: 'need', text: 'Sign in again' };
         if (t.login && t.login.state === 'rejected') return { tone: 'bad', text: 'Login rejected' };
         if (t.status === 'connected') return { tone: 'ok', text: (onThisMac(t) ? 'Connects · Mac only' : 'Connects') + (t.login && t.login.state === 'ok' && t.login.as ? ' as ' + t.login.as : '') };

@@ -361,6 +361,7 @@ export function FlowRunRow({
   const visiblySelected = selected && detailMode === (run.workerId ? 'workers' : 'flows');
   return (
     <div
+      data-flip={run.id}
       className={
         'sidebar-row group w-full rounded text-xs truncate flex items-center gap-1.5 pr-1 ' +
         (visiblySelected

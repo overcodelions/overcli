@@ -26,12 +26,13 @@ import { flowRunActivityAt, flowRunIsOwnedBy, type FlowRun } from '@shared/flows
 import { isEverydayProject } from '@shared/everydayProjects';
 import { labOn } from '@shared/labs';
 import { backendColor } from '../theme';
-import { conversationActivityAt } from '../conversationLookup';
+import { conversationActivityAt, conversationPromptAt } from '../conversationLookup';
 import { partitionSleeping } from '../sidebarSleep';
 import { starredFlowsForPlace } from '../placeFlows';
 import { ConversationRow } from './ConversationRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
-import { byNewestFirst, isAgentConversation } from './sidebarItems';
+import { byLatestPrompt, flowRunPromptedAt, isAgentConversation } from './sidebarItems';
+import { useFlip } from './useFlip';
 import { FlowRunRow, WAITING_RUN_WINDOW_MS, flowRunsForPath, runIsLive } from './flows/FlowRunSidebarRow';
 import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
 import {
@@ -347,40 +348,50 @@ export function PlaceBody({
       (r) => !runIsLive(r, runners) && r.state.kind === 'paused' && flowRunActivityAt(r) > now - WAITING_RUN_WINDOW_MS,
     );
     const settled = runs.filter((r) => !liveRuns.includes(r) && !waiting.includes(r));
-    const quietPlain = byNewestFirst(plain.filter((c) => !isRunning(c)));
+    // Running ones stay in the same list as the rest, held awake, rather than
+    // lifted into a Running section of their own: finishing then changes the
+    // row's marker and nothing else. Moving between sections rebuilt the row
+    // and dropped two headings, so the whole place flashed and shifted.
+    // "Working on" at the top of the sidebar is where running work gathers.
     const sleepFacts = (c: Conversation) => ({
       touchedAt: conversationActivityAt(c),
-      pinned: c.id === selectedId,
+      pinned: c.id === selectedId || isRunning(c),
     });
-    const sleep = partitionSleeping(quietPlain, sleepFacts);
+    const sleep = partitionSleeping(byLatestPrompt(plain), sleepFacts);
     // Agents sleep the same way, minus the floor: one worked on recently (or
     // the one on screen) sits with Recent instead of vanishing into the
     // count line, but a quiet place isn't backfilled with old agents.
-    const agentSleep = partitionSleeping(byNewestFirst(agents.filter((c) => !isRunning(c))), sleepFacts, { floor: 0 });
+    const agentSleep = partitionSleeping(byLatestPrompt(agents), sleepFacts, { floor: 0 });
     // Finished runs too: one that ended this afternoon (or the one on screen)
     // sits with Recent rather than behind the count line.
     const runSleep = partitionSleeping(
-      [...settled].sort((a, b) => flowRunActivityAt(b) - flowRunActivityAt(a)),
-      (r) => ({ touchedAt: flowRunActivityAt(r), pinned: r.id === activeRunId }),
+      [...liveRuns, ...settled].sort((a, b) => flowRunActivityAt(b) - flowRunActivityAt(a)),
+      (r) => ({ touchedAt: flowRunActivityAt(r), pinned: r.id === activeRunId || liveRuns.includes(r) }),
       { floor: 0 },
     );
     return {
       waiting,
-      runningConvs: byNewestFirst([...plain, ...agents].filter(isRunning)),
-      liveRuns,
-      recent: byNewestFirst([...sleep.awake, ...agentSleep.awake]),
+      // One list, conversations and runs together, by your own last action
+      // on each: a run you just continued used to sit below every chat in
+      // the place because runs were drawn as a block after them.
+      recent: [
+        ...byLatestPrompt([...sleep.awake, ...agentSleep.awake]).map((c) => ({
+          kind: 'conv' as const,
+          at: conversationPromptAt(c),
+          conv: c,
+        })),
+        ...runSleep.awake.map((r) => ({ kind: 'run' as const, at: flowRunPromptedAt(r), run: r })),
+      ].sort((a, b) => b.at - a.at),
       older: sleep.sleeping,
       idleAgents: agentSleep.sleeping,
-      recentRuns: runSleep.awake,
       settled: runSleep.sleeping,
     };
   }, [conversations, runners, allRuns, path, selectedId, activeRunId, now]);
 
-  const hasLive = parts.waiting.length + parts.runningConvs.length + parts.liveRuns.length > 0;
+  const hasLive = parts.waiting.length > 0;
   const empty =
     !hasLive &&
     parts.recent.length +
-      parts.recentRuns.length +
       parts.older.length +
       parts.idleAgents.length +
       parts.settled.length +
@@ -393,8 +404,13 @@ export function PlaceBody({
     <FlowRunRow key={r.id} run={r} selected={r.id === activeRunId} isLive={runIsLive(r, runners)} />
   );
 
+  // A chat you continue rises to the top of the list: slid, not jumped, so
+  // the eye can follow it.
+  const listRef = useRef<HTMLDivElement>(null);
+  useFlip(listRef);
+
   return (
-    <div className="ml-[13px] border-l border-card pl-1.5">
+    <div ref={listRef} className="ml-[13px] border-l border-card pl-1.5">
       {empty && (
         <button
           onClick={onNewConversation}
@@ -409,18 +425,10 @@ export function PlaceBody({
           {parts.waiting.map(runRow)}
         </>
       )}
-      {parts.runningConvs.length + parts.liveRuns.length > 0 && (
-        <>
-          <BodyHeading tone="green">Running · {parts.runningConvs.length + parts.liveRuns.length}</BodyHeading>
-          {parts.runningConvs.map(convRow)}
-          {parts.liveRuns.map(runRow)}
-        </>
-      )}
-      {parts.recent.length + parts.recentRuns.length > 0 && (
+      {parts.recent.length > 0 && (
         <>
           {hasLive && <BodyHeading>Recent</BodyHeading>}
-          {parts.recent.map(convRow)}
-          {parts.recentRuns.map(runRow)}
+          {parts.recent.map((item) => (item.kind === 'conv' ? convRow(item.conv) : runRow(item.run)))}
         </>
       )}
       <Fold label={`${parts.older.length} older conversation${parts.older.length === 1 ? '' : 's'}`} count={parts.older.length}>

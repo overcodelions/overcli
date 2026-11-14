@@ -125,6 +125,26 @@ export function ServicesPane() {
   const loadAll = useServicesStore((s) => s.loadAll);
   const loadMachine = useServicesStore((s) => s.loadMachine);
 
+  // A port that was taken when Start was pressed is asked about again until
+  // it frees, and the start then goes ahead. Here, not on the banner: a row in
+  // a group start is rarely the one on screen, and only watching from the
+  // banner left every other one stuck saying "taken" after the port had gone.
+  const recheckLease = useServicesStore((s) => s.recheckLease);
+  const watchingPorts = useServicesStore((s) =>
+    Object.entries(s.pendingLease)
+      .filter(([, p]) => p?.lease.kind === 'held' && p.lease.claim.stackId === 'external')
+      .map(([id]) => id)
+      .join(','),
+  );
+  useEffect(() => {
+    if (!watchingPorts) return;
+    const ids = watchingPorts.split(',');
+    const tick = () => ids.forEach((id) => void recheckLease(id));
+    tick();
+    const timer = window.setInterval(tick, 3_000);
+    return () => window.clearInterval(timer);
+  }, [watchingPorts, recheckLease]);
+
   // A project in no workspace is a stack of one. Services are stored against
   // an opaque id, so a project id works exactly as a workspace id does — and
   // without this there is no way at all to run something that was never
@@ -823,6 +843,7 @@ function ListHeader({ item, ticking, nested }: { item: HeaderItem; ticking: bool
   const toggleCollapsed = useServicesStore((s) => s.toggleCollapsed);
   const startMany = useServicesStore((s) => s.startMany);
   const stopMany = useServicesStore((s) => s.stopMany);
+  const restartMany = useServicesStore((s) => s.restartMany);
 
   const ticked = item.rows.filter((key) => checked[key]).length;
   const all = ticked === item.rows.length;
@@ -881,6 +902,15 @@ function ListHeader({ item, ticking, nested }: { item: HeaderItem; ticking: bool
               fill
             >
               <path d="M4.5 3.5l8 4.5-8 4.5z" />
+            </IconButton>
+          )}
+          {item.running > 0 && (
+            <IconButton
+              title={`Restart ${item.running} running`}
+              onClick={() => void restartMany(item.rows)}
+            >
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2" />
+              <path d="M13.5 2.5V6H10" />
             </IconButton>
           )}
           {item.running > 0 && (
@@ -1585,7 +1615,10 @@ function Trouble({
   // page the user may not be looking at.
   if (blocked) {
     return (
-      <span className="flex-shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300">
+      <span
+        className="flex-shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300"
+        title={blocked.startsWith('waiting') ? 'Starts by itself once the port is free' : undefined}
+      >
         {blocked}
       </span>
     );
@@ -2275,6 +2308,7 @@ function Detail() {
   const binding = stack.bindings.find((b) => b.serviceId === spec.id);
   const runtime = stack.runtimes.find((r) => r.serviceId === spec.id);
   const headerDrift = taskDrift(runtime, binding);
+  const pendingLease = useServicesStore((s) => s.pendingLease[stack.workspaceId]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col border-l border-card">
@@ -2288,6 +2322,13 @@ function Detail() {
           )}
           {spec.task && (
             <span className="rounded bg-card-strong px-1.5 py-px text-[10px] text-ink-muted">runs once</span>
+          )}
+          {runtime && runtime.status !== 'ready' && runtime.status !== 'done' && (
+            <HeaderStatus
+              runtime={runtime}
+              task={!!spec.task}
+              blocked={blockedReason(pendingLease, spec.id)}
+            />
           )}
           {(runtime?.status === 'ready' || runtime?.status === 'done') && (
             // Amber when what it published is not what its checkout says now:
@@ -2949,7 +2990,6 @@ function Output({
   const lease = useServicesStore((s) => s.pendingLease[workspaceId]);
   const dismiss = useServicesStore((s) => s.dismissLease);
   const freePortAndStart = useServicesStore((s) => s.freePortAndStart);
-  const recheckLease = useServicesStore((s) => s.recheckLease);
 
   const held = lease?.serviceId === spec.id && lease.lease.kind === 'held' ? lease.lease : null;
   const outside = held?.claim.stackId === 'external';
@@ -2961,15 +3001,6 @@ function Output({
   // is the useful way out.
   const ownPort = outside && held?.claim.holderKind === 'self';
 
-  // The port was checked once, when Start was pressed. Keep asking while the
-  // banner is up, so it goes away when the port does rather than insisting
-  // on something that stopped being true seconds later.
-  useEffect(() => {
-    if (!outside) return;
-    void recheckLease(workspaceId);
-    const timer = window.setInterval(() => void recheckLease(workspaceId), 3_000);
-    return () => window.clearInterval(timer);
-  }, [outside, workspaceId, recheckLease]);
 
   return (
     <>
@@ -2997,6 +3028,7 @@ function Output({
               <>
                 Port <span className="font-mono">{lease.lease.claim.port}</span> is already taken
                 {lease.lease.claim.holder ? ` by ${lease.lease.claim.holder}` : ''}.
+                {outside && ' It starts by itself once the port is free.'}
               </>
             )}
           </span>
@@ -6088,6 +6120,53 @@ function MenuItem({
   );
 }
 
+/// What the service on screen is doing, in words, beside its name — every
+/// state, not only the good ones. In motion it pulses, so `starting` and
+/// `waiting on a port` never look like the amber of something that stopped
+/// trying.
+function HeaderStatus({
+  runtime,
+  task,
+  blocked,
+}: {
+  runtime: ServiceRuntime;
+  task: boolean;
+  blocked?: string | null;
+}) {
+  const [text, tone, moving] = blocked
+    ? [blocked, 'amber', blocked.startsWith('waiting')]
+    : runtime.status === 'starting'
+      ? [
+          runtime.waitingOn
+            ? `waiting for ${runtime.waitingOn}`
+            : runtime.queued
+              ? 'queued'
+              : task ? 'running' : 'starting',
+          'amber',
+          true,
+        ]
+      : runtime.status === 'stopped' && runtime.stopping
+        ? ['stopping', 'muted', true]
+        : runtime.status === 'unready'
+          ? [runtime.probeGaveUp ? 'never ready' : 'slow to start', 'amber', false]
+          : runtime.status === 'failed'
+            ? [`failed${runtime.exitCode ? ` · exit ${runtime.exitCode}` : ''}`, 'red', false]
+            : ['stopped', 'muted', false];
+  const colours =
+    tone === 'amber'
+      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+      : tone === 'red'
+        ? 'bg-red-500/15 text-red-700 dark:text-red-300'
+        : 'bg-card-strong text-ink-muted';
+  return (
+    <span className={`flex items-center gap-1.5 rounded px-1.5 py-px text-[10px] ${colours}`}>
+      {moving && <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}
+      {text}
+      {moving && '…'}
+    </span>
+  );
+}
+
 function StatusDot({
   status,
   adopted = false,
@@ -6122,7 +6201,7 @@ function StatusDot({
       : status === 'done'
       ? 'bg-green-500/50 dark:bg-green-400/50'
       : status === 'starting'
-        ? 'bg-amber-500 dark:bg-amber-400'
+        ? 'animate-pulse bg-amber-500 dark:bg-amber-400'
         : status === 'failed'
           ? 'bg-red-500 dark:bg-red-400'
           : status === 'unready'

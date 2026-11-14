@@ -231,11 +231,15 @@ Baked-in toolchains (`--build-arg JDKS=…` or `EXTRA_APT_PACKAGES`, see the [de
 
 ## Starter roles
 
-Three ready-made roles, so a new org can hire without writing a job first:
+Ready-made roles, so a new org can hire without writing a job first. Each is written for any org: what's particular to yours (your apps, your tracker, your house style) goes in Setup, in the repo's own notes, or in a line added at hire.
 
 - **Developer:** takes a ticket, changes the code, runs the tests and opens a pull request, then fixes CI failures on it. Needs a repo on Setup → Repos & workspaces.
 - **QA:** opens a ticket's feature environment signed in, through the `test-systems` tool, walks the journeys the ticket affects and reports each problem with steps and screenshots. Needs an app on Setup → Apps to test.
 - **Analyst:** answers questions from your databases through the `overdb` tool, read-only, and shows the query behind every number. Needs a database on Setup → Databases.
+- **PR Fixer:** keeps the team's open pull requests mergeable: fixes red builds, resolves conflicts and, for the people you choose, small review comments, each on the pull request's own branch. The server watches the pull requests and hands it the ones that need it (see [The team's pull requests](managers.md#the-teams-pull-requests)). Hiring from it switches on **Team pull requests** for the new worker. Needs a repo or workspace on Setup → Repos & workspaces, and your git host's tool (Bitbucket or GitHub) on Setup → Tools.
+- **Test Automation:** turns tickets that are ready for automation into end-to-end tests in the test repo's own framework and style, one pull request per ticket saying which acceptance criteria each test covers. Needs a test repo on Setup → Repos & workspaces, and an app on Setup → Apps to test.
+
+A catalog role can also say its hires work on the team's open pull requests (`teamPullRequests` in `org.json`, set on the PR Fixer). Only an admin adds a role, so only an admin grants that.
 
 They appear on the Hire page until they're in the catalog. **Add to the catalog** (admins) makes one the org's own role, and **Setup → Role catalog** lists them under **Starter roles**, where **Add** does the same and shows the role to change. From then on it's an ordinary catalog role: edit its job, tools and budget like any other, and hires from it follow the same allowances and approvals.
 

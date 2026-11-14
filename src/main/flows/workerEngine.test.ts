@@ -586,6 +586,29 @@ describe('WorkerEngine on-demand workers', () => {
       expect(prompt).toContain('THE STEP WINS');
     });
 
+    it('tells a worker on the team’s pull requests whose it works on, from its settings', async () => {
+      const caps = { maxItemsPerShift: 3, runIn: 'worktree' as const, continueOpenPrs: true, prAuthors: ['Dana Reviewer', 'Sam Acme'], prCommentAuthors: ['Dana Reviewer'] };
+      const h = makeHarness({ seed: [seedWorker({ cadence: null, caps })] });
+      h.engine.start();
+      await h.engine.runErrand('worker-1', '/run Fix PR #42');
+      const prompt = h.direct[0].prompt;
+      expect(prompt).toContain('YOUR PULL REQUEST SCOPE');
+      expect(prompt).toContain('pull requests opened by Dana Reviewer, Sam Acme');
+      expect(prompt).toContain('only on pull requests opened by Dana Reviewer');
+    });
+
+    it('says nothing about pull requests to a worker without team access, and says everyone when nobody is named', async () => {
+      const plain = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      plain.engine.start();
+      await plain.engine.runErrand('worker-1', '/run Fix it');
+      expect(plain.direct[0].prompt).not.toContain('PULL REQUEST SCOPE');
+      const open = makeHarness({ seed: [seedWorker({ cadence: null, caps: { maxItemsPerShift: 3, runIn: 'worktree', continueOpenPrs: true } })] });
+      open.engine.start();
+      await open.engine.runErrand('worker-1', '/run Fix it');
+      expect(open.direct[0].prompt).toContain('any open pull request in your place');
+      expect(open.direct[0].prompt).toContain('none; leave review comments to people');
+    });
+
     it('gives a ticket update the job description, so it knows how to fill the move’s fields', async () => {
       const job = 'Automation Required: "No", unless the change adds end-to-end tests.';
       const h = makeHarness({ seed: [seedWorker({ cadence: null, jobDescription: job })] });
