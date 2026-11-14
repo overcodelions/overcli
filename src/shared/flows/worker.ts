@@ -42,6 +42,13 @@ export function workerPace(w: Pick<Worker, 'pace'>): WorkerPace {
   return w.pace === 'full' ? 'full' : 'swift';
 }
 
+/// People (Slack ids), groups (`team:<name>`) and roles, as the org's Audience.
+export interface WorkerAudience {
+  people?: string[];
+  groups?: string[];
+  roles?: Array<'admin' | 'approver' | 'hirer'>;
+}
+
 export interface WorkerCaps {
   maxItemsPerShift: number;
   /// How many Slack conversations it answers at once (each its own thread
@@ -95,6 +102,16 @@ export interface WorkerCaps {
   /// request in its place counts, so its fixes land on that pull request.
   /// An admin's call: it pushes onto branches other people opened.
   continueOpenPrs?: boolean;
+  /// Take work from anyone who may ask it as its manager's own: what they ask
+  /// starts as the manager's ask would, under its trust, instead of waiting for
+  /// the manager's OK. Who may ask is still its audience. An admin's call.
+  anyoneMayStart?: boolean;
+  /// Or only these people, groups (`team:<name>`) and roles: what they ask
+  /// starts as its manager's would. The org's audience shape. An admin's call.
+  startAudience?: WorkerAudience;
+  /// Besides its manager, who may approve work others ask it for: anyone of
+  /// these. Each is asked in Slack; the first to decide settles it. An admin's call.
+  approvers?: WorkerAudience;
   /// Only the team's pull requests by these people (as the git host names
   /// them). Empty or absent: everyone's. Builds and conflicts.
   prAuthors?: string[];

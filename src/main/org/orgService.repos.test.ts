@@ -548,6 +548,19 @@ describe("giving a worker a tool", () => {
     expect(h.roster.get('triage')?.flowIds.filter((x) => x.startsWith('org-ticket-'))).toHaveLength(1);
   });
 
+  it('takes the "Ticket actions" flow away from a worker whose tracker is read only, and gives it back', () => {
+    const h = harness();
+    expect(h.svc.update(admin, 'Triage', { mcpServers: ['atlassian'] }).ok).toBe(true);
+    expect(h.roster.get('triage')?.flowIds).toContain('org-ticket-actions-atlassian');
+    expect(h.svc.update(admin, 'Triage', { toolScopes: { atlassian: { mode: 'read' } } }).ok).toBe(true);
+    expect(h.roster.get('triage')?.flowIds).toEqual(['triage-flow']);
+    // Saved again for something else, it stays off.
+    expect(h.svc.update(admin, 'Triage', { budgetUSDPerMonth: 40 }).ok).toBe(true);
+    expect(h.roster.get('triage')?.flowIds).toEqual(['triage-flow']);
+    expect(h.svc.update(admin, 'Triage', { toolScopes: { atlassian: null } }).ok).toBe(true);
+    expect(h.roster.get('triage')?.flowIds).toEqual(['triage-flow', 'org-ticket-actions-atlassian']);
+  });
+
   it('lets a manager give tools the org allows any hire, and leaves the rest to an admin', () => {
     const h = harness();
     expect(h.svc.update(pat, 'Triage', { mcpServers: ['tracker'] })).toMatchObject({ ok: false, error: expect.stringContaining('needs an admin') });

@@ -275,6 +275,16 @@ describe('rules from the console', () => {
     expect('orgBudgetUSD' in h.raw()).toBe(false);
   });
 
+  it('sets how much runs at once, refuses what isn\'t a sensible number, and clears back to the machine\'s', () => {
+    const h = harness();
+    expect(h.svc.setRules(admin, { answersAtOnce: 10, codeRunsAtOnce: 3 })).toMatchObject({ ok: true, rules: { answersAtOnce: 10, codeRunsAtOnce: 3 } });
+    expect(h.svc.setRules(admin, { codeRunsAtOnce: 0 })).toMatchObject({ ok: false, error: expect.stringMatching(/codeRunsAtOnce/) });
+    expect(h.svc.setRules(admin, { answersAtOnce: 2.5 }).ok).toBe(false);
+    expect(h.raw()).toMatchObject({ answersAtOnce: 10, codeRunsAtOnce: 3 });
+    expect(h.svc.setRules(admin, { codeRunsAtOnce: null })).toMatchObject({ ok: true, rules: { codeRunsAtOnce: null } });
+    expect(h.svc.setRules(pat, { answersAtOnce: 50 }).ok).toBe(false);
+  });
+
   it('ignores keys the Admin page may not change', () => {
     const h = harness();
     expect(h.svc.setRules(admin, { admins: [PAT] }).ok).toBe(false);

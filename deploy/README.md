@@ -335,6 +335,7 @@ The compose file binds 7420 to loopback and sets `OVERCLI_PUBLISHED_ON_LOOPBACK=
 ## Operating it
 
 - **Run one instance per Slack app.** Socket Mode spreads events across every open connection, so a second instance on the same tokens takes replies meant for the first. To grow past one box, split by department, each with its own Slack app and volume.
+- **How much runs at once.** Each worker has its own limits (how many Slack conversations it answers at once, how many of a shift's items run together); the server also has two across every worker. **Answers** are mostly waiting on the model, so they're limited by memory: two per GiB after the first 2 GiB, between 4 and 64 (12 on 8 GiB). **Code runs**, in a checkout of their own, build and test, so they're limited to one per CPU. Work over a limit waits its turn rather than failing. Admins change both on **Setup → Capacity**, which also says whether the box is the right size, applied without a restart. `OVERCLI_ANSWERS_AT_ONCE` or `OVERCLI_CODE_RUNS_AT_ONCE` fix one from the environment instead (`0` for no limit), and win over the console; startup logs the limits it took.
 - **A bind mount instead of the named volume** must be writable by uid 1000 (`chown -R 1000:1000 <dir>`), the `node` user the image runs as.
 - **Back up `/data`.** It holds every worker, journal, run, token hash, `org.json`, ratings and the decision log (`org/audit.jsonl`).
 - **Permissions.** `--permissions deny` lets worker runs use no tools; the compose file uses an allow-list, and `--max-access shell` lets an admin choose up to listed shell commands on **Setup → Permissions**. Raise or lower it there. External actions (push, send, publish) still stop for the manager's approval until the worker is trusted with them. Trust is raised from the worker's page when its record earns it.
@@ -354,6 +355,7 @@ Worker names and spend appear in the output. Keep the port on the private networ
 | `overcli_run_cost_usd_total{worker}` | What those runs cost |
 | `overcli_run_duration_seconds{worker}` | How long they took (histogram) |
 | `overcli_worker_queue_depth{worker}` | Work waiting for a worker to be free |
+| `overcli_answers_in_progress`, `overcli_answers_waiting`, `overcli_code_runs_in_progress`, `overcli_pool_limit{pool}` | Work at once across every worker, against the server's limits. Answers waiting for long mean the box is too small for its workers |
 | `overcli_worker_spend_month_usd{worker}`, `overcli_worker_budget_month_usd{worker}` | Spend this month against the budget |
 | `overcli_asks_in_progress`, `overcli_hires_awaiting_approval` | Questions being answered; hires waiting on an approver |
 | `overcli_tool_errors_in_a_row{tool,kind}` | Tools failing now (`auth`, `gone`, `failing`), as on Setup → Tools |

@@ -21,7 +21,7 @@
 // one the worker posted itself: everything it posts ends with OWN_MARK.
 
 import type { ConnectedRepo } from './repos';
-import { authFor, slugOf } from './ciWatch';
+import { HostError, authFor, slugOf } from './ciWatch';
 
 type Fetch = typeof fetch;
 
@@ -223,6 +223,8 @@ export function wakeText(changes: PrChange[]): string {
 export class PrWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
   private busy = false;
+  /// Per repo, the last reason it couldn't be checked: said once, not every poll.
+  private readonly cantCheck = new Map<string, string>();
   constructor(private readonly deps: PrWatchDeps) {}
 
   start(everyMs = 5 * 60_000): void {
@@ -255,10 +257,15 @@ export class PrWatcher {
           const each = here.map((w) => wantsOf(w, pr));
           return { fixes: each.some((x) => x.fixes), comments: each.some((x) => x.comments) };
         };
+        let why: string | undefined;
         const got = await changesIn(repo, host, state.repos[repo.name], this.deps.ownPush, this.deps.now?.() ?? Date.now(), wants).catch((err: unknown) => {
-          this.deps.log(`Couldn't check ${repo.name}'s pull requests: ${String(err)}`);
+          why = refusalWords(repo, err);
           return null;
         });
+        if (why !== undefined) {
+          if (this.cantCheck.get(repo.name) !== why) this.deps.log(`Couldn't check ${repo.name}'s pull requests: ${why}`);
+          this.cantCheck.set(repo.name, why);
+        } else if (got && this.cantCheck.delete(repo.name)) this.deps.log(`${repo.name}'s pull requests can be checked again.`);
         if (!got) continue;
         state.repos[repo.name] = got.now;
         changed.push(...got.changes);
@@ -295,22 +302,41 @@ export class PrWatcher {
   }
 }
 
+/// Why a repo's pull requests couldn't be read, in words an admin acts on.
+export function refusalWords(repo: ConnectedRepo, err: unknown): string {
+  if (!(err instanceof HostError)) return String(err);
+  const bb = slugOf(repo)?.host === 'bitbucket';
+  const [host, token] = bb ? ['Bitbucket', 'BITBUCKET_TOKEN'] : ['GitHub', 'GH_TOKEN'];
+  if (err.status === 401) return `${host} didn't accept ${token} (401): it may have expired. Replace it on Setup → Secrets.`;
+  if (err.status === 403) return `${token} isn't allowed to read pull requests here (403). Give it ${bb ? 'Repositories: Read and Pull requests: Read' : 'Pull requests: Read and Checks: Read'}.`;
+  if (err.status === 429) return `${host} is rate-limiting ${token} (429); it tries again next check.`;
+  return err.message;
+}
+
 // ---- hosts --------------------------------------------------------------------
 
 const BB = 'https://api.bitbucket.org/2.0/repositories';
 const GH = 'https://api.github.com/repos';
 
+/// The host refusing the token (401/403) or slowing it down (429) throws, so
+/// the poll says so instead of going quiet; a missing branch or a network blip
+/// is just no answer this time.
+const REFUSED = new Set([401, 403, 429]);
+
 async function getJson<T>(f: Fetch, url: string, headers: Record<string, string>): Promise<T | undefined> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 30_000);
+  let res: Response | undefined;
   try {
-    const res = await f(url, { headers: { Accept: 'application/json', ...headers }, signal: ctl.signal });
-    return res.ok ? ((await res.json()) as T) : undefined;
+    res = await f(url, { headers: { Accept: 'application/json', ...headers }, signal: ctl.signal });
+    if (res.ok) return (await res.json()) as T;
   } catch {
     return undefined;
   } finally {
     clearTimeout(timer);
   }
+  if (res && REFUSED.has(res.status)) throw new HostError(res.status, url);
+  return undefined;
 }
 
 /// Every page of a Bitbucket list, up to `pages`.

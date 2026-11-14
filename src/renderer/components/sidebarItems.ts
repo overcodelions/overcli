@@ -418,6 +418,17 @@ export function byNewestFirst<T extends { createdAt?: number }>(items: readonly 
   return [...items].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 }
 
+/// Conversations by when the user last sent something, newest first.
+///
+/// The middle ground between creation and activity: a chat you went back to
+/// and continued comes to the top of its place — where you will look for it
+/// next — but nothing moves on its own. Streaming replies, a run finishing,
+/// another window's activity: none of them change this key, so rows still do
+/// not slide out from under the pointer. Only your own Enter does.
+export function byLatestPrompt(items: readonly Conversation[]): Conversation[] {
+  return [...items].sort((a, b) => conversationPromptAt(b) - conversationPromptAt(a));
+}
+
 /// When a project last saw anything happen, for ordering and for deciding
 /// whether it's warm enough to stay out of the sleeping roll-up.
 export function projectActivityAt(

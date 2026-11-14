@@ -281,6 +281,12 @@ function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<
           value={local.showCost}
           onChange={(v) => patch({ showCost: v })}
         />
+        <Toggle
+          label="Name conversations from what they're about"
+          help="After a reply, a fast model gives the chat a short title, and refreshes it now and then as the chat moves on. Ticket keys and PR numbers you mention, or that are in the branch name, go at the front so you can search for them. A name you type yourself is never changed."
+          value={local.autoNameConversations !== false}
+          onChange={(v) => patch({ autoNameConversations: v })}
+        />
         <Row
           label="Conversation detail"
           help={`${TRANSCRIPT_LEVELS.find((l) => l.value === defaultTranscriptLevel(local))?.help ?? ''} Each conversation can pick its own from the eye in its header.`}

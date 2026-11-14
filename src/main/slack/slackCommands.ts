@@ -1535,7 +1535,8 @@ export class SlackCommands {
           if (channel && threadTs) await this.reply(channel, threadTs, res.error);
           return;
         }
-        await settle(approve ? `Approved by ${caller.name}: ${res.queued} started.` : `Skipped by ${caller.name}.`);
+        if (!approve) this.skippedBy.set(action.value, caller.name);
+        await settle(approve ? `${caller.name} approved it: ${res.queued} started.` : `${caller.name} skipped it.`);
         return;
       }
       case LINK_CONFIRM_ACTION:
@@ -1771,7 +1772,10 @@ export class SlackCommands {
   private toldBatches = new Set<string>();
   /// The card each batch was proposed on, to say so when it's decided
   /// somewhere else (the console, another tap) and not leave stale buttons.
-  private batchCards = new Map<string, { channel: string; ts: string }>();
+  /// Every approver's card for a batch, so whoever decides, all of them say so.
+  private batchCards = new Map<string, Array<{ channel: string; ts: string }>>();
+  /// Who skipped a batch from Slack: the batch itself only keeps who approved.
+  private skippedBy = new Map<string, string>();
   /// How long to wait for an errand's ask to be linked to its batch, so the
   /// card goes to the thread it was asked in.
   threadWaitMs = 1500;
@@ -1827,18 +1831,24 @@ export class SlackCommands {
     const items = o.items.filter((i) => i.status === 'proposed');
     // Decided somewhere else: the card says so, rather than waiting for a tap
     // to find out.
-    const card = this.batchCards.get(o.id);
-    if (card && !items.length) {
+    const asked = this.batchCards.get(o.id);
+    if (asked && !items.length) {
       this.batchCards.delete(o.id);
       const started = o.items.filter((i) => i.status !== 'cancelled' && i.status !== 'proposed').length;
       const bot = this.deps.botToken();
-      const text = started ? `Approved: ${started === 1 ? 'one thing' : `${started} things`} started.` : 'Skipped.';
-      if (bot) await updateMessage(bot, { channel: card.channel, ts: card.ts, text, blocks: [section(escapeMrkdwn(text))] }, this.deps.fetchImpl);
+      const skipper = this.skippedBy.get(o.id);
+      this.skippedBy.delete(o.id);
+      const text = started
+        ? `${o.approvedBy ? `${o.approvedBy} approved it` : 'Approved'}: ${started === 1 ? 'one thing' : `${started} things`} started.`
+        : skipper ? `${skipper} skipped it.` : 'Skipped.';
+      if (bot) for (const card of asked) await updateMessage(bot, { channel: card.channel, ts: card.ts, text, blocks: [section(escapeMrkdwn(text))] }, this.deps.fetchImpl);
       return;
     }
     if (this.toldBatches.has(o.id) || !items.length) return;
-    const to = this.deps.org.managerSlackId(o.origin.workerId);
-    if (!to || !this.deps.botToken()) return;
+    // Its manager, and everyone else it lets approve: the first to decide settles it.
+    const manager = this.deps.org.managerSlackId(o.origin.workerId);
+    const askees = this.deps.org.approverSlackIds?.(o.origin.workerId) ?? (manager ? [manager] : []);
+    if (!askees.length || !this.deps.botToken()) return;
     this.toldBatches.add(o.id);
     const name = o.origin.workerName;
     const lines = items.slice(0, 8).map((i) => `• ${escapeMrkdwn(clip(i.candidate.title, 140))}`).join('\n');
@@ -1850,6 +1860,9 @@ export class SlackCommands {
       await new Promise((r) => setTimeout(r, this.threadWaitMs));
       thread = this.deps.org.slackThreadFor({ orchestrationId: o.id });
     }
+    const others = askees.length > 1;
+    const cards: Array<{ channel: string; ts: string }> = [];
+    for (const to of askees) {
     const posted = await this.dm(to, `${name} proposes ${items.length} thing${items.length === 1 ? '' : 's'} to do`, {
       as: this.asOf(o.origin.workerId, name),
       ...(thread && thread.slackUserId === to ? { inThread: { channel: thread.channel, threadTs: thread.threadTs } } : {}),
@@ -1862,11 +1875,13 @@ export class SlackCommands {
             button('Skip', PROPOSALS_SKIP_ACTION, o.id),
           ],
         },
-        context('Pick item by item on the console’s Today page. Trusted workers start their own runs without asking.'),
+        context(`${others ? `You're one of ${askees.length} who can approve this; the first to decide settles it. ` : ''}Pick item by item on the console’s Today page. Trusted workers start their own runs without asking.`),
       ],
     });
-    if (!posted) this.toldBatches.delete(o.id);
-    else this.batchCards.set(o.id, posted);
+    if (posted) cards.push(posted);
+    }
+    if (!cards.length) this.toldBatches.delete(o.id);
+    else this.batchCards.set(o.id, cards);
   }
 
   private async onTeamTask(task: TeamTask): Promise<void> {
@@ -2273,10 +2288,12 @@ export class SlackCommands {
 
   /// A tool started failing: what, since when, who it holds up, what to do.
   notifyToolTrouble(t: ToolTrouble, admins: string[]): void {
-    const what = t.kind === 'auth' ? 'can’t sign in' : t.kind === 'gone' ? 'says its API is gone or retired' : `has failed ${t.count} times in a row`;
+    const what = t.kind === 'auth' ? 'can’t sign in' : t.kind === 'scope' ? `signs in, but its key is missing a permission (${t.count} calls refused)` : t.kind === 'gone' ? 'says its API is gone or retired' : `has failed ${t.count} times in a row`;
     const fix = t.kind === 'auth'
       ? 'Its key has likely expired or lost access. Replace it under Setup → Tools in the console.'
-      : t.kind === 'gone'
+      : t.kind === 'scope'
+        ? `Calls that need it are refused; the rest still work. ${t.missing?.length ? `Give the key ${t.missing.join(', ')}` : 'Give the key the permission named above'}, then save it under Setup → Tools.`
+        : t.kind === 'gone'
         ? 'The vendor may have retired what it calls. Check for a newer version of the tool under Setup → Tools.'
         : 'Check it under Setup → Tools; Check now shows whether it connects.';
     const text = `${t.tool} ${what}`;
@@ -2284,7 +2301,7 @@ export class SlackCommands {
       void this.dm(admin, text, {
         blocks: [
           section(`:warning: *${escapeMrkdwn(t.tool)}* ${what}${t.workers.length ? `. Workers held up: ${escapeMrkdwn(t.workers.join(', '))}` : ''}.`),
-          section(quote(clip(t.lastError, 300))),
+          section(quote(clip(t.gist ?? t.lastError, 300))),
           context(`${fix} I'll stay quiet about it for a day, and clear it the moment a call works.`),
         ],
       });

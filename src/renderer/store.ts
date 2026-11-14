@@ -54,6 +54,14 @@ import { isPathUnder, isSamePath } from '@shared/pathScope';
 import { workBranchAfterTurn } from '@shared/workRecords';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { suggestWorkspaceName } from '@shared/suggestWorkspaceName';
+import {
+  buildExcerpt,
+  composeTitle,
+  findRefs,
+  leadingRef,
+  placeholderName,
+  shouldRetitle,
+} from '@shared/conversationTitle';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
   findConversation as findConversationFromIndex,
@@ -554,7 +562,10 @@ interface StoreState {
   setCollabMaxTurns(id: UUID, turns: number): Promise<void>;
   setReviewOllamaModel(id: UUID, model: string | null): Promise<void>;
   setReviewYolo(id: UUID, yolo: boolean): Promise<void>;
+  /// A name the person typed: it sticks, and auto-naming leaves it alone.
   renameConversation(id: UUID, name: string): Promise<void>;
+  /// Hand the name back to auto-naming and re-title it from the chat now.
+  resetConversationName(id: UUID): Promise<void>;
 
   // Runner
   send(conversationId: UUID, prompt: string): Promise<void>;
@@ -2042,6 +2053,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // there is one — that is what lets the first turn skip CLI boot.
       id: takeWarmedConversationId({ projectId }) ?? uuid(),
       name: 'New conversation',
+      nameSource: 'auto',
       createdAt: Date.now(),
       totalCostUSD: 0,
       turnCount: 0,
@@ -2295,6 +2307,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // See `newConversation` — adopts the start page's warmed id.
       id: takeWarmedConversationId({ workspaceId }) ?? uuid(),
       name: 'New conversation',
+      nameSource: 'auto',
       createdAt: Date.now(),
       totalCostUSD: 0,
       turnCount: 0,
@@ -3371,8 +3384,19 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
   async renameConversation(id, name) {
-    mutateConversation(set, get, id, (c) => ({ ...c, name }));
+    mutateConversation(set, get, id, (c) => ({
+      ...c,
+      name,
+      nameSource: 'user',
+      autoNamedAt: undefined,
+      previousName: undefined,
+    }));
     await saveConversationState(get);
+  },
+  async resetConversationName(id) {
+    mutateConversation(set, get, id, (c) => ({ ...c, nameSource: 'auto', autoNamedAtTurn: undefined }));
+    await saveConversationState(get);
+    await autoNameConversation(set, get, id);
   },
 
   prewarmConversation(conversationId) {
@@ -3653,7 +3677,7 @@ export const useStore = create<StoreState>((set, get) => ({
       turnCount: c.turnCount + 1,
       name:
         c.name === 'New conversation' && prompt.trim().length > 0
-          ? prompt.trim().slice(0, 48)
+          ? placeholderName(prompt)
           : c.name,
     }));
 
@@ -4540,6 +4564,7 @@ export const useStore = create<StoreState>((set, get) => ({
         // The turn may have switched branch; the Work list files the chat
         // under the branch it ended up on.
         void get().captureWorkBranch(event.conversationId);
+        void autoNameConversation(set, get, event.conversationId);
       }
       const state = get();
       const conv = findConversation(state, event.conversationId);
@@ -4940,6 +4965,72 @@ if (typeof window !== 'undefined' && !isPopoutWindow) {
       window.overcli.invoke('store:saveFileTabs', serializeFileTabs(useStore.getState())),
     );
   });
+}
+
+/// Conversations with a naming turn in flight, so a quick run of finished
+/// turns asks once.
+const naming = new Set<UUID>();
+
+/// Re-title a conversation from what it's about, when it's ours to name and
+/// due (see `shouldRetitle`). Ticket keys and PR numbers lead the title and
+/// come from the person's words and the branch, not the model. Any failure
+/// leaves the name as it was — at worst the ref is still prefixed.
+async function autoNameConversation(
+  set: (fn: (s: StoreState) => Partial<StoreState>) => void,
+  get: () => StoreState,
+  id: UUID,
+): Promise<void> {
+  if (get().settings.autoNameConversations === false || naming.has(id)) return;
+  const conv = findConversation(get(), id);
+  if (!conv || conv.nameSource !== 'auto') return;
+  const runner = useRunnersStore.getState().runners[id];
+  if (!runner) return;
+
+  const messages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+  for (const e of runner.events) {
+    if (e.reviewer || e.parentToolUseId) continue;
+    if (e.kind.type === 'localUser') messages.push({ role: 'user', text: e.kind.text });
+    else if (e.kind.type === 'assistant' && !e.kind.info.isPartial && e.kind.info.text.trim()) {
+      messages.push({ role: 'assistant', text: e.kind.info.text });
+    }
+  }
+  if (!messages.some((m) => m.role === 'assistant')) return;
+
+  const ref = leadingRef(
+    findRefs(
+      messages.filter((m) => m.role === 'user').map((m) => m.text),
+      conv.workBranch ?? conv.branchName,
+    ),
+  );
+  if (!shouldRetitle({ turnCount: conv.turnCount, titledAtTurn: conv.autoNamedAtTurn, name: conv.name, ref })) return;
+
+  const firstTitle = conv.autoNamedAtTurn === undefined;
+  naming.add(id);
+  let next: string | null = null;
+  try {
+    const res = await window.overcli.invoke('conversation:suggestTitle', {
+      current: firstTitle ? null : conv.name,
+      excerpt: buildExcerpt(messages),
+    });
+    if (res.ok && 'title' in res) next = composeTitle(ref, res.title);
+    // Kept, or no model to ask: still make sure the ref leads the name.
+    else if (ref && !ref.split(' · ').every((r) => conv.name.includes(r))) next = composeTitle(ref, conv.name);
+    if (!res.ok && !next) return; // try again next turn
+  } catch {
+    return;
+  } finally {
+    naming.delete(id);
+  }
+
+  const now = findConversation(get(), id);
+  // Renamed by hand (or handed off) while we were asking: theirs wins.
+  if (!now || now.nameSource !== 'auto' || now.name !== conv.name) return;
+  mutateConversation(set, get, id, (c) =>
+    next && next !== c.name
+      ? { ...c, name: next, previousName: c.name, autoNamedAt: Date.now(), autoNamedAtTurn: c.turnCount }
+      : { ...c, autoNamedAtTurn: c.turnCount },
+  );
+  await saveConversationState(get);
 }
 
 async function saveConversationState(get: () => StoreState): Promise<void> {

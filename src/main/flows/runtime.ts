@@ -24,7 +24,7 @@
 import { SERVER_TOOL, roleRunNote } from '../../shared/org/roleTools';
 import { TEST_SYSTEMS_TOOL } from '../../shared/testSystems';
 import { removeRunEvidence } from './runEvidence';
-import { conflictNote, mergeDefaultWhereConflicting } from './mergeOnConflict';
+import { conflictNote, mergeDefaultInto, mergedNote } from './mergeOnConflict';
 import { resolveStepEffect, runGrantCovers, stepGrantAllows, stepOutsideTools } from './stepEffect';
 import { teamTaskDir } from './teamsStore';
 import { parseRunDigest, RUN_DIGEST_INSTRUCTION } from '../../shared/flows/runDigest';
@@ -149,6 +149,9 @@ export interface FlowRuntimeStartArgs {
   orchestrationItemTitle?: string;
   /// The pushed branch it was started on to add to (FlowRun.continues).
   continues?: string;
+  /// Fixing that branch's red build: merge its default branch in even when
+  /// it merges cleanly, since the host built the two merged (mergeOnConflict.ts).
+  mergeWhenBehind?: boolean;
   /// Set when a Schedule fired this run. Routes the run's terminal state back
   /// to the scheduler (which clears the overlap guard and notifies).
   scheduleId?: UUID;
@@ -1303,14 +1306,16 @@ export class FlowRuntimeImpl {
       const places = workspaceWorktrees
         ? workspaceWorktrees.map((m) => ({ name: m.name, worktreePath: m.worktreePath, projectPath: m.projectPath }))
         : [{ name: basename(args.projectPath), worktreePath: worktreeMeta!.worktreePath, projectPath: args.projectPath }];
-      const conflicts = await mergeDefaultWhereConflicting(
+      const merging = await mergeDefaultInto(
         await Promise.all(places.map(async (p) => ({ name: p.name, worktreePath: p.worktreePath, defaultBranch: await detectBaseBranchAsync(p.projectPath) }))),
         (gitArgs, at) => runGitAsync(gitArgs, at),
+        { whenBehind: args.mergeWhenBehind === true },
       ).catch((err: unknown) => {
         log('warn', 'flows', `Couldn't check ${args.continues} for conflicts: ${String(err)}`);
-        return [] as string[];
+        return { conflicts: [] as string[], merged: [] as string[] };
       });
-      if (conflicts.length) userPrompt += conflictNote(conflicts);
+      if (merging.merged.length) userPrompt += mergedNote(merging.merged);
+      if (merging.conflicts.length) userPrompt += conflictNote(merging.conflicts);
     }
 
     // Make room before adding a new run — keeps the in-memory map bounded.

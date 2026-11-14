@@ -1281,3 +1281,16 @@ body.dragging-divider iframe {
   border-top-style: dashed;
   border-top-color: var(--pil-amber);
 }
+
+/* A conversation that just named itself: the new name settles in with a
+   brief accent tint rather than swapping under the reader's eye. Quiet on
+   purpose — the tooltip carries the "was …". */
+@keyframes conversation-renamed {
+  0% { opacity: 0; transform: translateY(2px); color: var(--c-accent); }
+  25% { opacity: 1; transform: none; color: var(--c-accent); }
+  100% { opacity: 1; transform: none; }
+}
+.conversation-renamed { animation: conversation-renamed 2.4s ease-out 1; }
+@media (prefers-reduced-motion: reduce) {
+  .conversation-renamed { animation: none; }
+}

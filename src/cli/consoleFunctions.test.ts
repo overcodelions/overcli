@@ -386,3 +386,27 @@ describe('the teams and processes board', () => {
     expect(isQuestion({ status: 'done', stages: [{ state: 'done' }] })).toBe(false);
   });
 });
+
+describe('finding a Setup page', () => {
+  const from = CONSOLE_JS.indexOf('  var SETUP = [');
+  const to = CONSOLE_JS.indexOf('  // end of setupMatches');
+  const find = (q: string) =>
+    new Function('q', `${CONSOLE_JS.slice(from, to)}\nreturn setupMatches(q, SETUP, SETUP_WORDS).map(function (m) { return m.id; });`)(q) as string[];
+
+  it('takes the words people use to the page that has them', () => {
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    expect(find('concurrency')).toEqual(['capacity']);
+    expect(find('parallel')).toEqual(['capacity']);
+    expect(find('okta')).toEqual(['signin']);
+    expect(find('budget')[0]).toBe('spending');
+    expect(find('invite')).toEqual(['people']);
+  });
+
+  it('puts a page named for the word first, needs every word, and finds nothing in nothing', () => {
+    expect(find('work at once')[0]).toBe('capacity');
+    expect(find('limit')).toContain('capacity');
+    expect(find('budget okta')).toEqual([]);
+    expect(find('   ')).toEqual([]);
+  });
+});

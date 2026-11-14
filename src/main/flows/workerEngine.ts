@@ -128,6 +128,7 @@ import { publishDeliverableToProject } from './workerPublish';
 import { reportsChain, wouldCycle } from '../../shared/flows/org';
 import { WORKER_COMPACTION_KEEP_DAYS, compactionCutoff, isCompactionDue } from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
+import type { Pool } from './pools';
 import { buildWorkerReport, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
@@ -254,6 +255,9 @@ export interface WorkerEngineDeps {
   /// in place instead of checking out its own. Off (the desktop, which has no
   /// such guard): every worker's own `runIn` decides.
   readsInPlace?: boolean;
+  /// The server's limit on answers at once across every worker (pools.ts).
+  /// Taken after the worker's own slot. Absent: only each worker's own limit.
+  answerPool?: Pool;
   emit: (event: MainToRendererEvent) => void;
   notify: (args: NotifyArgs) => void;
   now?: () => number;
@@ -411,15 +415,33 @@ const REMEMBER_HINT = [
 const THREAD_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const THREAD_SESSION_MAX = 50;
 
+/// Whose pull requests a worker on the team's pull requests works on, from its
+/// settings (WorkerCaps.prAuthors, prCommentAuthors), in every prompt it gets.
+/// The watcher filters by them already; this is so a shift's own scan, or Run
+/// now, does too, and the people live only in the settings, not the job.
+export function prScopeLines(caps: Partial<Worker['caps']> | undefined): string[] {
+  if (!caps?.continueOpenPrs) return [];
+  const authors = caps.prAuthors ?? [];
+  const commenters = caps.prCommentAuthors ?? [];
+  return [
+    '',
+    'YOUR PULL REQUEST SCOPE (from your settings; it decides whose pull requests you touch, whatever your job description says about people)',
+    `- Broken builds and conflicts: ${authors.length ? `pull requests opened by ${authors.join(', ')}` : 'any open pull request in your place'}.`,
+    `- Review comments: ${commenters.length ? `only on pull requests opened by ${commenters.join(', ')}` : 'none; leave review comments to people'}.`,
+    '- Leave every other pull request alone. A pull request the server hands you is already in scope.',
+  ];
+}
+
 export class WorkerEngine {
   /// The org's handbook, read by every worker after its job. Set by the org
   /// server; absent (the desktop): none.
   handbook?: () => string;
 
-  private handbookLines(w?: Pick<Worker, 'knowledge'>): string[] {
+  private handbookLines(w?: Pick<Worker, 'knowledge'> & Partial<Pick<Worker, 'caps'>>): string[] {
     const text = this.handbook?.().trim();
     const known = w?.knowledge?.body?.trim();
     return [
+      ...prScopeLines(w?.caps),
       ...(text ? ['', 'YOUR ORGANIZATION’S HANDBOOK (what every worker here should know; your job description and the step you are running come first)', text.slice(0, 12_000)] : []),
       ...(known
         ? ['', `WHAT YOU FOUND OUT ABOUT YOUR TOOLS AND WORK (your onboarding${w!.knowledge!.updatedAt ? `, ${new Date(w!.knowledge!.updatedAt).toISOString().slice(0, 10)}` : ''}; check anything that may have changed since)`, known.slice(0, 10_000)]
@@ -2008,12 +2030,17 @@ export class WorkerEngine {
         this.answering.set(w.id, (this.answering.get(w.id) ?? 0) + 1);
         return true;
       });
-      const fresh = this.workers.get(w.id) ?? w;
-      if (!this.planningSince.has(w.id)) this.planningSince.set(w.id, { since: Date.now(), task: 'errand', ...(opts.manual ? { manual: true } : {}) });
+      let releaseServerSlot: (() => void) | undefined;
       try {
+        // Then a place on the server, behind other workers' answers. The
+        // worker's own slot is held meanwhile: this answer is next for it.
+        releaseServerSlot = await this.deps.answerPool?.take();
+        const fresh = this.workers.get(w.id) ?? w;
+        if (!this.planningSince.has(w.id)) this.planningSince.set(w.id, { since: Date.now(), task: 'errand', ...(opts.manual ? { manual: true } : {}) });
         if (opts.deferIfAway?.()) return { ok: true };
         return await this.fireInner(fresh, opts);
       } finally {
+        releaseServerSlot?.();
         const left = (this.answering.get(w.id) ?? 1) - 1;
         if (left > 0) this.answering.set(w.id, left);
         else {

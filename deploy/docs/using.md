@@ -34,6 +34,7 @@ What happens:
 ### Things to know
 
 - **Some work waits for approval.** Work that reaches outside the server, such as pushing code, posting or sending, waits for the worker's manager to approve it while the worker is on probation. You'll hear back once it's done.
+- **Asking someone else's worker.** If it only reads, it answers you straight away. If it can change things (a ticket, a push, a message), what you ask waits for its manager or one of its approvers, unless its manager lets it start work for you. Being able to ask a worker isn't the same as being able to start its work.
 - **You can only ask workers you're allowed to see.** Each worker has a "who may ask it" setting: just its manager, its team, or everyone.
 - **Not in yet?** Type `/overgo join` in Slack. An admin lets you in, or you're in straight away if the org allows it.
 

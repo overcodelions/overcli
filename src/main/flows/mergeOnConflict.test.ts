@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runGitAsync } from '../git';
-import { conflictNote, leftoverMarkers, mergeDefaultWhereConflicting } from './mergeOnConflict';
+import { conflictNote, leftoverMarkers, mergeDefaultInto, mergeDefaultWhereConflicting, mergedNote } from './mergeOnConflict';
 
 const git = (args: string[], cwd: string) =>
   execFileSync('git', ['-c', 'user.email=t@acme.test', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -68,6 +68,22 @@ describe('mergeDefaultWhereConflicting', () => {
     expect(await mergeDefaultWhereConflicting([{ name: 'acme-api', worktreePath: work, defaultBranch: 'main' }], asyncGit)).toEqual([]);
     expect(git(['rev-parse', 'HEAD'], work)).toBe(head);
     expect(git(['status', '--porcelain'], work)).toBe('');
+  });
+
+  it('merges a branch that is only behind when its red build needs it, and leaves the merge for the run', async () => {
+    const work = setup(true);
+    const got = await mergeDefaultInto([{ name: 'acme-api', worktreePath: work, defaultBranch: 'main' }], asyncGit, { whenBehind: true });
+    expect(got).toEqual({ conflicts: [], merged: ['- acme-api: merged origin/main in cleanly'] });
+    // What only the default branch had is in the checkout now, not yet committed.
+    expect(fs.existsSync(path.join(work, 'other.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(work, '.git', 'MERGE_HEAD'))).toBe(true);
+    expect(mergedNote(got.merged)).toContain('THE DEFAULT BRANCH WAS MERGED IN');
+  });
+
+  it('still hands a conflict back as a conflict when merging a red build', async () => {
+    const work = setup();
+    const got = await mergeDefaultInto([{ name: 'acme-api', worktreePath: work, defaultBranch: 'main' }], asyncGit, { whenBehind: true });
+    expect(got).toEqual({ conflicts: ['- acme-api: merging origin/main conflicts in app.txt'], merged: [] });
   });
 
   it('skips a repo whose default branch it cannot find', async () => {

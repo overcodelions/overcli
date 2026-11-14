@@ -215,6 +215,7 @@ export function startDaemon(
   const zoneFromOrg = !process.env.TZ;
   if (orgZone && zoneFromOrg) process.env.TZ = orgZone;
   engines.scheduler.start();
+  engines.capacity.start();
   engines.workerEngine.start();
   for (const w of autonomousWithoutGrant(engines.workerEngine.roster())) engines.workerEngine.save(w);
   const carried = carryOnInterrupted(engines, opts);
@@ -241,6 +242,10 @@ export function startDaemon(
     spentThisMonth: () => engines.workerEngine.spendThisMonth(),
     runs: () => engines.flowRuntime.listRuns(),
     waiting: () => engines.workerEngine.waitingCount(),
+    pools: () => ({
+      answers: { inUse: engines.answerPool?.inUse ?? 0, waiting: engines.answerPool?.waiting ?? 0, cap: engines.answerPool?.cap ?? null },
+      code: engines.orchestrator.codeRunLoad(),
+    }),
     counts: () => engines.org.opsCounts(),
     version,
   });
@@ -282,6 +287,7 @@ export function startDaemon(
       draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out,
       metrics: () => metricsStatus,
       metricsText: () => metrics.render(),
+      capacity: () => engines.capacity.report(),
       testModelIds: (models) => {
         const bin = resolveBackendPath('claude', Store.load().settings.backendPaths.claude);
         return testModelIds(models, { bin, env: buildBackendEnv(process.env, bin), provider: modelProvider() });

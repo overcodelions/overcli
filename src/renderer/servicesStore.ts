@@ -59,6 +59,13 @@ const pendingLines = new Map<string, string[]>();
 /// to a Start button under the user's cursor.
 const inFlightStarts = new Set<string>();
 
+/// What main can say about a service before it has taken up a start pressed
+/// here — the run being replaced, not news. `failed` included: a row that
+/// last died red flashed red again under a press that was still on its way.
+function heldOver(status: ServiceRuntime['status']): boolean {
+  return status === 'stopped' || status === 'failed';
+}
+
 /// A view from main, with any start still in flight kept as `starting`. Main
 /// reports `stopped` until its port and process checks are done — seconds on
 /// a machine running a dozen JVMs — and a reload in that window (the window
@@ -67,11 +74,37 @@ const inFlightStarts = new Set<string>();
 function withPressedStarts(view: StackView): StackView {
   if (inFlightStarts.size === 0) return view;
   const runtimes = view.runtimes.map((r) =>
-    r.status === 'stopped' && inFlightStarts.has(logKey(view.workspaceId, r.serviceId))
+    heldOver(r.status) && inFlightStarts.has(logKey(view.workspaceId, r.serviceId))
       ? { ...r, status: 'starting' as const, stopping: undefined }
       : r,
   );
   return { ...view, runtimes };
+}
+
+/// The row as `starting`, from the press. `replacing` is a restart: the row
+/// is live, and reads starting through the stop rather than flashing stopped
+/// while the old run lets go of its port.
+function markStarting(
+  stacks: Record<string, StackView>,
+  workspaceId: string,
+  serviceId: string,
+  replacing = false,
+): Record<string, StackView> | undefined {
+  const stack = stacks[workspaceId];
+  if (!stack) return undefined;
+  const current = stack.runtimes.find((r) => r.serviceId === serviceId);
+  if (current && isServiceLive(current.status) && !replacing) return undefined;
+  const runtime: ServiceRuntime = {
+    ...(current ?? { serviceId }),
+    status: 'starting',
+    stopping: undefined,
+    exitCode: undefined,
+    lastError: undefined,
+  };
+  const runtimes = current
+    ? stack.runtimes.map((r) => (r.serviceId === serviceId ? runtime : r))
+    : [...stack.runtimes, runtime];
+  return { ...stacks, [workspaceId]: { ...stack, runtimes } };
 }
 
 /// What an IPC rejection says, without Electron's "Error invoking remote
@@ -209,6 +242,7 @@ interface ServicesState {
   /// Unlike `start`, this does not select each in turn.
   startMany(keys: string[]): Promise<void>;
   stopMany(keys: string[]): Promise<void>;
+  restartMany(keys: string[]): Promise<void>;
   /// Gone from the list at once, stopped if running, and undoable.
   removeMany(keys: string[]): Promise<void>;
   undoRemove(): Promise<void>;
@@ -622,21 +656,8 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     const key = logKey(workspaceId, serviceId);
     inFlightStarts.add(key);
     set((s) => {
-      const stack = s.stacks[workspaceId];
-      if (!stack) return {};
-      const current = stack.runtimes.find((r) => r.serviceId === serviceId);
-      if (current && isServiceLive(current.status)) return {};
-      const runtime: ServiceRuntime = {
-        ...(current ?? { serviceId }),
-        status: 'starting',
-        stopping: undefined,
-        exitCode: undefined,
-        lastError: undefined,
-      };
-      const runtimes = current
-        ? stack.runtimes.map((r) => (r.serviceId === serviceId ? runtime : r))
-        : [...stack.runtimes, runtime];
-      return { stacks: { ...s.stacks, [workspaceId]: { ...stack, runtimes } } };
+      const stacks = markStarting(s.stacks, workspaceId, serviceId);
+      return stacks ? { stacks } : {};
     });
 
     try {
@@ -662,19 +683,50 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   },
 
   async stop(workspaceId, serviceId) {
+    // Calls off a start still waiting its turn in a group start, which main
+    // has not heard of yet and so cannot stop.
+    const held = inFlightStarts.delete(logKey(workspaceId, serviceId));
     try {
       await window.overcli.invoke('services:stop', { workspaceId, serviceId });
     } catch (err) {
       get().reportFailure('stop', workspaceId, serviceId, err);
     }
+    if (held) await get().load(workspaceId).catch(() => {});
   },
 
   async restart(workspaceId, serviceId) {
+    // Starting from the press, held through the stop: main reports `stopped`
+    // while the old run lets go of its port, and that flash read as the
+    // restart having failed.
+    const key = logKey(workspaceId, serviceId);
+    inFlightStarts.add(key);
+    set((s) => {
+      const stacks = markStarting(s.stacks, workspaceId, serviceId, true);
+      return stacks ? { stacks } : {};
+    });
     try {
       await window.overcli.invoke('services:restart', { workspaceId, serviceId });
     } catch (err) {
       get().reportFailure('restart', workspaceId, serviceId, err);
+    } finally {
+      inFlightStarts.delete(key);
     }
+    // A failure held over as starting has no later event to correct it.
+    await get().load(workspaceId).catch(() => {});
+  },
+
+  /// The running ones among `keys`: a group's restart is not a start for the
+  /// rows that were deliberately left stopped.
+  async restartMany(keys) {
+    const live = keys.filter((key) => {
+      const { workspaceId, serviceId } = splitKey(key);
+      const runtime = get().stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
+      return !!runtime && isServiceLive(runtime.status);
+    });
+    await Promise.all(live.map((key) => {
+      const { workspaceId, serviceId } = splitKey(key);
+      return get().restart(workspaceId, serviceId);
+    }));
   },
 
   reportFailure(action, workspaceId, serviceId, err) {
@@ -734,6 +786,28 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     // rebind, and a stale "live" skips the start just the same.
     await get().loadAll([...requested.keys()]);
 
+    // Every row reads starting from the press, not only the first layer: a
+    // group start runs in layers, and rows still waiting their turn sat on
+    // `stopped` long enough to look skipped.
+    // Read before marking, since `starting` counts as live.
+    const pressed = new Set<string>();
+    for (const [workspaceId, serviceIds] of requested) {
+      const runtimes = get().stacks[workspaceId]?.runtimes ?? [];
+      for (const serviceId of serviceIds) {
+        const runtime = runtimes.find((r) => r.serviceId === serviceId);
+        if (!runtime || !isServiceLive(runtime.status)) pressed.add(logKey(workspaceId, serviceId));
+      }
+    }
+    for (const key of pressed) inFlightStarts.add(key);
+    set((s) => {
+      let stacks = s.stacks;
+      for (const key of pressed) {
+        const { workspaceId, serviceId } = splitKey(key);
+        stacks = markStarting(stacks, workspaceId, serviceId) ?? stacks;
+      }
+      return { stacks };
+    });
+
     // Keep workspaces serial: their supervisors coordinate port claims, and
     // starting two stacks at the exact same instant could race that check.
     for (const [workspaceId, serviceIds] of requested) {
@@ -741,8 +815,9 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
       if (!stack) continue;
       for (const layer of startLayers(stack.services, serviceIds)) {
         await runWithConcurrency(layer, 4, async (serviceId) => {
-          const runtime = get().stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
-          if (runtime && isServiceLive(runtime.status)) return;
+          const key = logKey(workspaceId, serviceId);
+          // Already running, or stopped while it waited its turn.
+          if (!pressed.has(key) || !inFlightStarts.has(key)) return;
           try {
             const result = await window.overcli.invoke('services:start', { workspaceId, serviceId });
             if (!result.started && result.lease) {
@@ -752,9 +827,12 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
             }
           } catch (err) {
             get().reportFailure('start', workspaceId, serviceId, err);
+          } finally {
+            inFlightStarts.delete(key);
           }
         });
       }
+      await get().load(workspaceId).catch(() => {});
     }
   },
 
@@ -992,7 +1070,11 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     // Another start may have replaced the complaint while we were asking.
     if (get().pendingLease[workspaceId] !== pending) return;
     if (!status.open) {
+      // Free now, so do what was asked. Clearing the banner and leaving it
+      // there dropped the row back to its last state — red, for a service
+      // the user had just pressed Start on.
       set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
+      await get().start(workspaceId, pending.serviceId);
       return;
     }
     const { claim } = pending.lease;
@@ -1048,7 +1130,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     // during a long boot has to show.
     const pressed = logKey(workspaceId, runtime.serviceId);
     if (inFlightStarts.has(pressed)) {
-      if (runtime.status === 'stopped') runtime = { ...runtime, status: 'starting', stopping: undefined };
+      if (heldOver(runtime.status)) runtime = { ...runtime, status: 'starting', stopping: undefined };
       else inFlightStarts.delete(pressed);
     }
 
@@ -1142,7 +1224,11 @@ export function blockedReason(
 ): string | null {
   if (!pending || pending.serviceId !== serviceId) return null;
   if (pending.lease.kind !== 'held') return null;
-  return `port ${pending.lease.claim.port} taken`;
+  // Only a holder outside overcli is watched for going away (see
+  // `recheckLease`); one held by another stack needs a decision.
+  return pending.lease.claim.stackId === 'external'
+    ? `waiting for :${pending.lease.claim.port}`
+    : `port ${pending.lease.claim.port} taken`;
 }
 
 /// Whether a status should read as live in the sidebar and the tab count.

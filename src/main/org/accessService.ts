@@ -16,6 +16,7 @@
 // and People can list and revoke each one. Codes are random and stored as
 // hashes; pairing secrets live in memory for ten minutes and no longer.
 
+import { poolLimitsHere, type PoolLimits } from '../flows/pools';
 import { STARTER_ROLES, asCatalogRole, starterRole, type StarterRole } from '../../shared/org/starterRoles';
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso, type WebFetchMode } from '../../shared/org/policy';
@@ -145,6 +146,7 @@ export const EDITABLE_RULES = [
   'otherPeopleLimitUSD',
   'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'tuningWatch', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
+  'answersAtOnce', 'codeRunsAtOnce',
   'redactSecrets', 'providerModels', 'workerAccess',
 ] as const;
 
@@ -171,6 +173,11 @@ export interface EditableRules {
   prSavedMultiplier: number;
   prSavedMinHours: number;
   retentionDays: number | null;
+  answersAtOnce: number | null;
+  codeRunsAtOnce: number | null;
+  /// Read only, for Setup → Capacity: what the machine can take, and
+  /// what the server's environment says (which wins). Null: not a server.
+  workAtOnce: PoolLimits | null;
   sso: OrgSso | null;
   people: Record<string, string>;
   fleet: Array<{ name: string; url: string }>;
@@ -693,6 +700,9 @@ export class AccessService {
         prSavedMultiplier: p.prSavedMultiplier,
         prSavedMinHours: p.prSavedMinHours,
         retentionDays: p.retentionDays ?? null,
+        answersAtOnce: p.answersAtOnce ?? null,
+        codeRunsAtOnce: p.codeRunsAtOnce ?? null,
+        workAtOnce: poolLimitsHere(),
         sso: p.sso ?? null,
         people: p.people,
         fleet: p.fleet,

@@ -2,7 +2,7 @@
 // window.confirm()/alert() flow. For agents, fetches WorktreeStatus so
 // the user can see what will be destroyed before confirming Delete.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { useRunnerIsRunning } from '../../runnersStore';
 import { Conversation, UUID, WorktreeStatus } from '@shared/types';
@@ -16,6 +16,8 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
   const workspaces = useStore((s) => s.workspaces);
   const openSheet = useStore((s) => s.openSheet);
   const renameConversation = useStore((s) => s.renameConversation);
+  const resetConversationName = useStore((s) => s.resetConversationName);
+  const autoNaming = useStore((s) => s.settings.autoNameConversations !== false);
   const setConversationHidden = useStore((s) => s.setConversationHidden);
   const removeConversation = useStore((s) => s.removeConversation);
   const removeAgent = useStore((s) => s.removeAgent);
@@ -55,9 +57,17 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Follow the stored name (an auto-title can land while the sheet is
+  // open) unless the person has started typing their own.
+  const syncedName = useRef('');
   useEffect(() => {
-    if (conv) setName(conv.name);
-  }, [conv?.id]);
+    if (!conv) return;
+    // Captured now: the updater runs at render time, after the ref below
+    // has already moved on to the new name.
+    const prev = syncedName.current;
+    setName((typed) => (typed === prev ? conv.name : typed));
+    syncedName.current = conv.name;
+  }, [conv?.id, conv?.name]);
 
   const isAgent = !!conv?.worktreePath;
   const isCoordinator = (conv?.workspaceAgentMemberIds?.length ?? 0) > 0;
@@ -225,7 +235,27 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
           disabled={working}
         />
         <div className="text-[10px] text-ink-faint">
-          Renames take effect immediately.
+          {conv.nameSource !== 'auto' ? (
+            <>
+              {conv.nameSource === 'user' ? 'You named this, so it stays as you wrote it. ' : 'Renames take effect immediately. '}
+              {autoNaming && (
+                <button
+                  type="button"
+                  className="underline hover:text-ink"
+                  disabled={working}
+                  onClick={() => void resetConversationName(conv.id)}
+                >
+                  Name it from the conversation instead
+                </button>
+              )}
+            </>
+          ) : autoNaming ? (
+            conv.previousName
+              ? `Named from the conversation (was “${conv.previousName}”). Type a name to keep your own.`
+              : 'Named from the conversation as it goes. Type a name to keep your own.'
+          ) : (
+            'Renames take effect immediately.'
+          )}
         </div>
       </div>
 

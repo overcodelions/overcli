@@ -630,7 +630,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
           "Admins: change some of the org's rules. Pass only the keys to change; null removes an optional one. " +
           'Keys: name, publicUrl, timezone, hirers ("*" or Slack ids), budgetAllowanceUSD, approvers, orgVisibilityNeedsAdmin, webFetch ("ask", "safe": only addresses a worker was shown or the org’s own sites, "any"), ownDomains (the org’s own sites), ' +
           'allowedMcpServers, teams ({name: [Slack ids]}), roles ([{name, job, tools, budgetUSDPerMonth}]), orgBudgetUSD, alertAtPercent, ' +
-          'retentionDays, sso ({issuer, clientId, allowedDomains, required}), people ({email: Slack id}), fleet ([{name, url}]), ' +
+          'retentionDays, answersAtOnce and codeRunsAtOnce (answers and runs in their own checkout every worker together may have going at once; null: what the machine can take), sso ({issuer, clientId, allowedDomains, required}), people ({email: Slack id}), fleet ([{name, url}]), ' +
           'redactSecrets (scrub credentials out of what workers say), providerModels ({model id: Bedrock or Vertex id}). ' +
           'Read org_rules first, and confirm the change with the person.',
         inputSchema: { patch: z.record(z.string(), z.unknown()) },

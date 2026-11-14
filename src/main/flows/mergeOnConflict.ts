@@ -3,8 +3,13 @@
 // resolves the conflicts where they are and its push makes the pull request
 // mergeable again. The model never runs git; it only edits the files.
 //
-// Only on a real conflict. A branch that is merely behind is left as it is:
-// a merge commit nobody needed is noise in someone else's pull request.
+// Only on a real conflict, unless the run is fixing a red build: then a
+// branch that is merely behind gets the default branch merged in too
+// (mergeDefaultInto's whenBehind). A host that builds a pull request merged
+// with its target can fail on tests that exist only there, and the run can't
+// see them, let alone fix them, without the merge. Otherwise a branch that is
+// only behind is left as it is: a merge commit nobody needed is noise in
+// someone else's pull request.
 // The merge is left uncommitted, so the run's change and its resolution
 // land as one merge commit (BranchLander commits it), and that commit sits
 // on top of the branch, so the push adds to it and is never forced.
@@ -21,7 +26,15 @@ export interface MergePlace {
 
 /// One line per repo where the merge was started, naming the conflicted files.
 export async function mergeDefaultWhereConflicting(places: MergePlace[], git: MergeGit): Promise<string[]> {
+  return (await mergeDefaultInto(places, git)).conflicts;
+}
+
+/// The merge of each repo's default branch into a checkout that lacks it:
+/// `conflicts`, a line per repo with the files left to resolve; `merged`, a
+/// line per repo merged cleanly (only `whenBehind`). Neither is committed.
+export async function mergeDefaultInto(places: MergePlace[], git: MergeGit, opts: { whenBehind?: boolean } = {}): Promise<{ conflicts: string[]; merged: string[] }> {
   const lines: string[] = [];
+  const merged: string[] = [];
   for (const p of places) {
     const theirs = `refs/remotes/origin/${p.defaultBranch}`;
     const run = (args: string[]) => git(args, p.worktreePath);
@@ -29,7 +42,14 @@ export async function mergeDefaultWhereConflicting(places: MergePlace[], git: Me
     // Already has everything the default branch has: nothing to merge.
     if ((await run(['merge-base', '--is-ancestor', theirs, 'HEAD'])).exitCode === 0) continue;
     // Exit 1 is a conflict; 0 merges cleanly; anything else, we can't tell.
-    if ((await run(['merge-tree', '--write-tree', 'HEAD', theirs])).exitCode !== 1) continue;
+    const tree = (await run(['merge-tree', '--write-tree', 'HEAD', theirs])).exitCode;
+    if (tree === 0 && opts.whenBehind) {
+      const clean = await run(['merge', '--no-commit', '--no-ff', theirs]);
+      if (clean.exitCode === 0) merged.push(`- ${p.name}: merged origin/${p.defaultBranch} in cleanly`);
+      else await run(['merge', '--abort']);
+      continue;
+    }
+    if (tree !== 1) continue;
     await run(['merge', '--no-commit', '--no-ff', theirs]);
     const conflicted = await run(['diff', '--name-only', '--diff-filter=U']);
     const files = conflicted.exitCode === 0 ? conflicted.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : [];
@@ -40,7 +60,23 @@ export async function mergeDefaultWhereConflicting(places: MergePlace[], git: Me
     }
     lines.push(`- ${p.name}: merging origin/${p.defaultBranch} conflicts in ${files.join(', ')}`);
   }
-  return lines;
+  return { conflicts: lines, merged };
+}
+
+/// What the run is told, after its prompt, when the default branch was merged in cleanly.
+export function mergedNote(lines: string[]): string {
+  return [
+    '',
+    '',
+    'THE DEFAULT BRANCH WAS MERGED IN',
+    'This branch was behind its default branch, and its failing build ran on the two merged together,',
+    'so the server merged the default branch into your checkout first. Tests, fixtures and code that',
+    'came from the default branch are here now:',
+    ...lines,
+    'Do not commit or abort the merge: the server commits it with the rest of your change. Your diff',
+    'also shows what the merge brought in; that part is not yours to change, unless the failure needs',
+    'it (a fixture recorded before this branch\'s change, for example).',
+  ].join('\n');
 }
 
 /// What the run is told, after its prompt, when a merge was started.

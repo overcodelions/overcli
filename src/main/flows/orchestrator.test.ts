@@ -56,6 +56,7 @@ function makeHarness(opts: {
     baseBranch?: string;
     worktreeName?: string;
     adoptWorktrees?: unknown;
+    mergeWhenBehind?: boolean;
     workerId?: string;
     workerName?: string;
     allowExternalActions?: boolean;
@@ -100,6 +101,7 @@ function makeHarness(opts: {
         baseBranch: args.baseBranch,
         worktreeName: args.worktreeName,
         adoptWorktrees: args.adoptWorktrees,
+        mergeWhenBehind: args.mergeWhenBehind,
         workerId: args.workerId,
         workerName: args.workerName,
         allowExternalActions: args.allowExternalActions,
@@ -237,6 +239,78 @@ function items(n: number) {
     flowId: 'flow-a',
   }));
 }
+
+describe('the server\'s limit on code runs', () => {
+  it('holds code runs across batches to the limit, oldest batch first, and lets runs in place by', async () => {
+    const h = makeHarness();
+    h.engine.setCodeRunCap(2);
+    await h.engine.startBatch({ title: 'a', projectPath: '/proj', maxConcurrent: 2, items: items(2) });
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 2, items: items(2) });
+    // Two places, both taken by the first batch.
+    expect(h.started).toHaveLength(2);
+    expect(h.engine.codeRunLoad()).toEqual({ running: 2, cap: 2 });
+    // A run in place builds nothing in a checkout of its own, so it goes.
+    await h.engine.startBatch({ title: 'c', projectPath: '/proj', runIn: 'cwd', maxConcurrent: 1, items: items(1) });
+    expect(h.started).toHaveLength(3);
+    expect(h.started[2].runIn).toBe('cwd');
+    // One finishes: the second batch takes its place, and no more.
+    await h.finish('run-1');
+    expect(h.started).toHaveLength(4);
+    expect(h.engine.codeRunLoad().running).toBe(2);
+    // A paused run isn't doing anything: its place goes to the next.
+    await h.transition('run-2', { kind: 'paused', nextStepId: 's2', reason: 'externalAction' });
+    expect(h.started).toHaveLength(5);
+    expect(h.engine.codeRunLoad().running).toBe(2);
+  });
+
+  it('counts the code runs waiting for a place, and none while there is room', async () => {
+    const h = makeHarness();
+    h.engine.setCodeRunCap(2);
+    await h.engine.startBatch({ title: 'a', projectPath: '/proj', maxConcurrent: 2, items: items(2) });
+    expect(h.engine.codeRunsWaiting()).toBe(0);
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 2, items: items(3) });
+    // Three queued, but the batch would only launch two at once.
+    expect(h.engine.codeRunsWaiting()).toBe(2);
+    // b takes the freed place; with one of its own running it would start one more.
+    await h.finish('run-1');
+    expect(h.engine.codeRunsWaiting()).toBe(1);
+  });
+
+  it('gives an aborted batch\'s places to a batch waiting for them', async () => {
+    const h = makeHarness();
+    h.engine.setCodeRunCap(1);
+    const a = await h.engine.startBatch({ title: 'a', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    expect(h.started).toHaveLength(1);
+    h.engine.abort({ id: (a as { orchestrationId: string }).orchestrationId });
+    await h.flush();
+    expect(h.started).toHaveLength(2);
+  });
+
+  it('starts what fits when the limit is raised', async () => {
+    const h = makeHarness();
+    let cap = 1;
+    h.engine.setCodeRunCap(() => cap);
+    await h.engine.startBatch({ title: 'a', projectPath: '/proj', maxConcurrent: 3, items: items(3) });
+    expect(h.started).toHaveLength(1);
+    h.engine.pokeCodeQueue();
+    await h.flush();
+    expect(h.started).toHaveLength(1);
+    cap = 3;
+    h.engine.pokeCodeQueue();
+    await h.flush();
+    expect(h.started).toHaveLength(3);
+  });
+
+  it('has no limit until one is set', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({ title: 'a', projectPath: '/proj', maxConcurrent: 3, items: items(3) });
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 3, items: items(3) });
+    expect(h.started).toHaveLength(6);
+    // Still counted, for the metrics.
+    expect(h.engine.codeRunLoad()).toEqual({ running: 6, cap: null });
+  });
+});
 
 describe('OrchestratorImpl dispatch', () => {
   it('parks an item whose run paused before its id came back', async () => {
@@ -714,6 +788,8 @@ describe('OrchestratorImpl runIn', () => {
     expect(asked).toEqual([{ projectPath: '/proj', branch: 'feature/ACME-9-sort' }]);
     expect(h.started[0].prompt).toContain('WHY ITS LATEST BUILD FAILED');
     expect(h.started[0].prompt).toContain('SortTest.sortsByDate');
+    // The host built it merged with its target: the run starts from that too.
+    expect(h.started[0].mergeWhenBehind).toBe(true);
   });
 
   it('launches cwd items in the project tree, with no base branch to fork from', async () => {
