@@ -788,6 +788,12 @@ pre.diff .da { color: var(--ok); } pre.diff .dd { color: var(--bad); } pre.diff 
 .t-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .t-spend { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--faint); }
 .t-spend .meter { width: 160px; flex: none; }
+.cap-days { display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 8px 14px; align-items: center; font-size: 13px; }
+.cap-days .cap-h { color: var(--faint); font-size: 12px; }
+.cap-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cap-cell .meter { flex: 1; min-width: 40px; }
+.cap-cell .n { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 640px) { .cap-days { grid-template-columns: auto 1fr 1fr; } .cap-days .cap-cpu { display: none; } }
 /* Team tasks: a summary card on the team page, a page of its own. */
 .tmgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
 .tmcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -2824,6 +2830,8 @@ export const CONSOLE_JS = String.raw`
     if (parts[0] === 'processedit') state.processId = parts[1] ? decodeURIComponent(parts[1]) : null;
     if (parts[0] === 'teamtask' || parts[0] === 'teamfiles') { state.taskId = decodeURIComponent(parts[1] || ''); if (!state.taskId) state.tab = 'teams'; }
     if (parts[0] === 'setup' && parts[1]) state.setupTab = parts[1];
+    // An old #people link.
+    if (parts[0] === 'people') { state.tab = 'setup'; state.setupTab = 'people'; }
   }
   fromHash();
   window.addEventListener('popstate', function () { fromHash(); render(); });
@@ -3152,6 +3160,8 @@ export const CONSOLE_JS = String.raw`
       action ? h('div', { style: 'margin-top:18px' }, action) : null);
   }
   function go(tab, extra) {
+    // People lives in Setup; every way to it lands there.
+    if (tab === 'people') { tab = 'setup'; extra = Object.assign({}, extra, { setupTab: 'people' }); }
     if (extra && extra.teamId && extra.teamId !== state.teamId) state.teamTab = null;
     if (extra && extra.processId && extra.processId !== state.processId) state.processView = null;
     state.tab = tab; state.hashQuery = null; if (extra) Object.assign(state, extra);
@@ -3389,6 +3399,8 @@ export const CONSOLE_JS = String.raw`
 
   /// Which nav item a page belongs under.
   function navFor(tab) {
+    // Setup → People lights People in the org menu, its shortcut.
+    if (tab === 'setup' && state.setupTab === 'people') return 'people';
     return { process: 'processes', processedit: 'processes', proclib: 'processes', worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', run: 'workers', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
   }
 
@@ -3460,7 +3472,7 @@ export const CONSOLE_JS = String.raw`
   var FIND_STATUS = { running: ['working', 'Running'], waiting: ['waiting', 'Waiting'], done: ['ok', 'Done'], failed: ['bad', 'Failed'], stopped: ['plain', 'Stopped'] };
   function finder() {
     var mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
-    var find = h('input', { type: 'search', id: 'top-search', placeholder: 'Search workers, teams, processes and work', 'aria-label': 'Search', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'false', 'aria-controls': 'top-search-pop', value: state.findQuery || '' });
+    var find = h('input', { type: 'search', id: 'top-search', placeholder: state.me && state.me.admin ? 'Search workers, work and settings' : 'Search workers, teams, processes and work', 'aria-label': 'Search', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'false', 'aria-controls': 'top-search-pop', value: state.findQuery || '' });
     var pop = h('div', { class: 'find-pop', id: 'top-search-pop', role: 'listbox', hidden: true });
     var rows = [], sel = -1, timer = null, seq = 0, shown = null;
     function close() { pop.hidden = true; find.setAttribute('aria-expanded', 'false'); }
@@ -3491,6 +3503,7 @@ export const CONSOLE_JS = String.raw`
       shown = q; rows = []; sel = -1;
       if (!r || r.ok === false) { pop.replaceChildren(h('p', { class: 'muted find-note', text: (r && r.error) || "Couldn't search just now." })); return; }
       var parts = [].concat(
+        section('Settings', state.me && state.me.admin ? setupMatches(q, SETUP, SETUP_WORDS) : [], function (p) { return row(lead('gear'), p.title, p.sub, null, null, function () { go('setup', { setupTab: p.id }); }); }),
         section('Workers', r.workers, function (w) { return row(avatar(w.id, w.name, 's'), w.name, w.tagline, null, null, function () { openWorker(w.id); }); }),
         section('Teams', r.teams, function (t) { return row(lead('team'), t.name, t.purpose, null, null, function () { go('team', { teamId: t.id }); }); }),
         section('Processes', r.processes, function (p) { return row(lead('arrow'), p.name, p.purpose, null, null, function () { go('process', { processId: p.id }); }); }),
@@ -12758,6 +12771,25 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Keep for (days, 7 or more)', keep)),
         function () { return { retentionDays: numOrNull(keep) }; });
 
+      // Work at once: answers and code runs every worker together may have going.
+      var W = R.workAtOnce;
+      var atOnceField = function (label, rule, limit, envName) {
+        var input = h('input', { type: 'number', min: '1', max: '256', step: '1', value: rule == null ? '' : String(rule), placeholder: limit ? String(limit.machine) + ' (what this machine can take)' : '' });
+        var set = limit && limit.env !== undefined;
+        if (set) input.disabled = true;
+        return { input: input, node: h('div', { class: 'stack', style: 'gap:6px' }, h('label', { class: 'field' }, label, input),
+          set ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: (limit.env === null ? 'No limit' : String(limit.env)) + ', set by ' + envName + ' on the server, which wins over this.' }) : null) };
+      };
+      var answersAt = atOnceField('Answers at once', R.answersAtOnce, W && W.answers, 'OVERCLI_ANSWERS_AT_ONCE');
+      var codeAt = atOnceField('Code runs at once', R.codeRunsAtOnce, W && W.code, 'OVERCLI_CODE_RUNS_AT_ONCE');
+      var capacity = ruleSection('Work at once', 'How many questions and code runs every worker together may have going at once. Work over a limit waits its turn. Each worker’s own limits still apply under these.',
+        h('div', { class: 'stack', style: 'gap:14px' },
+          h('div', { class: 'grid2' }, answersAt.node, codeAt.node),
+          h('p', { class: 'faint', style: 'font-size:13px', text: W
+            ? 'Answers mostly wait on the model, so memory limits them: two per GB after the first 2 GB. Code runs build and test in a checkout of their own, so CPUs limit them: one per CPU. Raise them if the box stays comfortable; left blank, the machine decides. Watch overcli_answers_waiting in the metrics to see work waiting.'
+            : 'These apply on an org server only.' })),
+        function () { return { answersAtOnce: numOrNull(answersAt.input), codeRunsAtOnce: numOrNull(codeAt.input) }; });
+
       // Teams.
       var teamRows = h('div', { class: 'listed' });
       var addTeam = function (tname, members) {
@@ -13065,7 +13097,7 @@ export const CONSOLE_JS = String.raw`
         });
 
       var signin = ssoSection(R)[0], servers = fleetSection(R)[0];
-      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, signin: signin, servers: servers, redaction: redaction, models: models, permissions: permissions };
+      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, capacity: capacity, signin: signin, servers: servers, redaction: redaction, models: models, permissions: permissions };
       if (typeof only === 'string' && parts[only]) {
         var sec = parts[only];
         [].slice.call(sec.children, 0, sec._sub ? 2 : 1).forEach(function (el) { el.remove(); });
@@ -13073,7 +13105,7 @@ export const CONSOLE_JS = String.raw`
         return [head(sec._title, sec._sub)].concat(only === 'teams' ? [rosterPanel(people, R.teams)] : []).concat([sec]).concat(only === 'spending' ? [budgetsByManager()] : []);
       }
       return [head('Rules', 'What people may do with the workers. Changes apply at once, and each is written to the decision log.', null),
-        identity, hiring, spending, teams, roles, records, permissions, redaction, models, signin, servers];
+        identity, hiring, spending, capacity, teams, roles, records, permissions, redaction, models, signin, servers];
     });
   }
 
@@ -16041,6 +16073,7 @@ export const CONSOLE_JS = String.raw`
     { group: null, pages: [['ready', 'Readiness', 'What this server needs so workers can do their jobs.']] },
     { group: 'Organization', pages: [
       ['general', 'General', 'Its name, the address people use, and the time zone schedules run in.'],
+      ['people', 'People', 'Who can use the workers, their roles, invites and who is asking to join.'],
       ['teams', 'Groups', 'Groups of people. A worker set to "my team may ask it" is open to everyone who shares a team with its manager.'],
       ['signin', 'Sign-in', 'Let people sign in with the company account (Okta, Entra ID, Google — anything that speaks OpenID Connect).'],
       ['records', 'Records', 'How long the decision log, finished runs and each run’s step-by-step activity are kept. Older ones are deleted each night. Left blank, records stay forever and run activity a week.']] },
@@ -16049,6 +16082,7 @@ export const CONSOLE_JS = String.raw`
       ['roles', 'Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.'],
       ['handbook', 'Handbook', 'What every worker reads after its job: names, project keys, who owns what, house style.'],
       ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.'],
+      ['capacity', 'Capacity', 'Whether this server is the right size, and how many questions and code runs every worker together may have going at once.'],
       ['permissions', 'Permissions', 'What workers may do on this server without asking: read only, edit files, run listed commands, or everything.'],
       ['redaction', 'Secrets in answers', 'Passwords, AWS keys, tokens and stored secrets kept out of what workers say to people.'],
       ['models', 'Model ids', 'The id each model goes by on Bedrock or Vertex.']] },
@@ -16065,8 +16099,52 @@ export const CONSOLE_JS = String.raw`
   ];
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
-  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, capacity: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', capacity: 'setup--capacity', people: 'people', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  /// Words people search for that a Setup page's own title and blurb don't
+  /// say, so the finder takes "concurrency" to Capacity.
+  var SETUP_WORDS = {
+    ready: 'health status checklist setup problems missing',
+    general: 'org name url address domain timezone time zone',
+    teams: 'groups people members departments',
+    signin: 'sso okta entra google oidc openid login single sign-on',
+    records: 'retention history audit log delete keep days',
+    hiring: 'hire approve approval allowance web pages fetch browsing urls',
+    roles: 'roles catalog templates jobs starter',
+    handbook: 'context instructions knowledge style guide prompt',
+    spending: 'budget cost money spend dollars usd cap alert limit',
+    people: 'users members invite invitations roles admins approvers hirers access join offboard sign out',
+    capacity: 'work at once concurrency concurrent parallel parallelism simultaneous limit limits throttle queue slots load cpu memory capacity performance answers code runs',
+    permissions: 'access tools shell commands allow list allowlist sandbox',
+    redaction: 'redact scrub mask secrets passwords keys tokens',
+    models: 'bedrock vertex model ids provider aws gcp',
+    tools: 'mcp servers integrations connectors',
+    secrets: 'keys tokens credentials env environment api key',
+    toolchains: 'java node python go jdk runtime build sdk',
+    repos: 'git github gitlab bitbucket repositories workspaces branches',
+    databases: 'overdb sql postgres mysql data',
+    apis: 'overapi http rest endpoints',
+    systems: 'qa test browser apps environments staging',
+    offers: 'desktop app publish import',
+    servers: 'fleet other servers departments'
+  };
+  /// The Setup pages a search names: every word somewhere in the page's
+  /// title, blurb, group or extra words. Best first: a title hit.
+  function setupMatches(q, setup, words) {
+    var terms = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return [];
+    var out = [];
+    setup.forEach(function (g) {
+      g.pages.forEach(function (p) {
+        var title = p[1].toLowerCase();
+        var hay = [title, p[2], g.group || '', words[p[0]] || ''].join(' ').toLowerCase();
+        if (!terms.every(function (t) { return hay.indexOf(t) >= 0; })) return;
+        out.push({ id: p[0], title: p[1], sub: (g.group ? g.group + ' · ' : '') + p[2], score: terms.some(function (t) { return title.indexOf(t) >= 0; }) ? 0 : 1 });
+      });
+    });
+    return out.sort(function (a, b) { return a.score - b.score; }).slice(0, 5);
+  }
+  // end of setupMatches
   function viewSetup() {
     if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
     var tab = state.setupTab || 'ready', page = null, group = null;
@@ -16083,6 +16161,8 @@ export const CONSOLE_JS = String.raw`
       var opts = g.pages.map(function (p) { return h('option', { value: p[0], text: p[1], selected: p[0] === tab }); });
       return g.group ? h('optgroup', { label: g.group }, opts) : opts;
     }));
+    // People asking to join, as on the org menu's People.
+    if (state.counts && state.counts.people) setupNavNote('people', String(state.counts.people), 'need');
     // What still needs doing, as a light beside its page.
     Promise.all([api('GET', '/api/admin/health').catch(function () { return { ok: false }; }), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
       var mark = function (id, cls, why) { var b = buttons[id]; if (b && !b.querySelector('.light, .rd-navm')) b.appendChild(h('span', { class: 'light ' + cls, title: why, 'aria-label': why })); };
@@ -16100,10 +16180,52 @@ export const CONSOLE_JS = String.raw`
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), null);
     setChrome([['Setup', function () { go('setup', { setupTab: 'ready' }); }]].concat(group ? [[group]] : [], [[page[1]]]));
-    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'people' ? viewPeople() : tab === 'capacity' ? viewCapacity() : tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
-      return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
+      // People keeps its own heading, which carries Invite people.
+      return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, tab === 'people' ? null : headNode, tab === 'ready' || tab === 'people' ? nodes : nodes.slice(1)))];
     });
+  }
+
+  /// Setup → Capacity: what the last week says about the server's size, each
+  /// day's busiest against the limits, then the limits themselves.
+  function viewCapacity() {
+    return Promise.all([api('GET', '/api/admin/capacity').catch(function () { return { ok: false }; }), viewRules('capacity')]).then(function (r) {
+      var rules = r[1];
+      return [rules[0], capacityPanel(r[0]), h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Limits' }))].concat(rules.slice(1));
+    });
+  }
+
+  var CAPACITY_TONE = { more: ['bad', 'Needs more'], raise: ['waiting', 'Work is waiting'], learning: ['plain', 'Learning'], right: ['ok', 'About right'], less: ['ok', 'Could use less'] };
+  function capacityPanel(c) {
+    if (!c || c.ok === false) return h('section', { class: 'panel pad' }, msg(c && c.error ? c : { ok: false, error: 'Couldn’t read how busy the server has been.' }));
+    var a = c.assessment, tone = CAPACITY_TONE[a.verdict] || CAPACITY_TONE.right;
+    // Each day's busiest, from the hours.
+    var byDay = {};
+    (c.hours || []).forEach(function (x) {
+      var d = new Date(x.at), k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+      var b = byDay[k] || (byDay[k] = { at: x.at, answers: 0, code: 0, cpu: 0, waited: 0 });
+      b.answers = Math.max(b.answers, x.answersPeak); b.code = Math.max(b.code, x.codePeak); b.cpu = Math.max(b.cpu, x.cpuPeak);
+      b.answersCap = x.answersCap; b.codeCap = x.codeCap; b.waited += x.answersWaitN + x.codeWaitN;
+    });
+    var days = Object.keys(byDay).map(function (k) { return byDay[k]; }).sort(function (x, y) { return y.at - x.at; }).slice(0, 7);
+    var cell = function (n, cap) {
+      var pct = cap ? Math.min(100, (n / cap) * 100) : 0;
+      return h('span', { class: 'cap-cell' }, h('div', { class: 'meter' + (cap && n >= cap ? ' over' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })),
+        h('span', { class: 'n', text: cap ? n + ' of ' + cap : n + ' · no limit' }));
+    };
+    var grid = days.length ? h('div', { class: 'cap-days' },
+      [h('span', { class: 'cap-h', text: 'Day' }), h('span', { class: 'cap-h', text: 'Answers at once' }), h('span', { class: 'cap-h', text: 'Code runs at once' }), h('span', { class: 'cap-h cap-cpu', text: 'CPU' })].concat(
+        days.map(function (d) {
+          return [h('span', null, new Date(d.at).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), d.waited ? h('span', { class: 'badge waiting', style: 'margin-left:8px', title: 'Something waited for a place this day', text: 'waited' }) : null),
+            cell(d.answers, d.answersCap), cell(d.code, d.codeCap), h('span', { class: 'n cap-cpu faint', text: Math.round(d.cpu * 100) + '%' })];
+        }).reduce(function (x, y) { return x.concat(y); }, [])))
+      : h('p', { class: 'faint', text: 'Nothing recorded yet. It notes how busy the server is once a minute.' });
+    return h('section', { class: 'panel pad stack' },
+      h('div', { class: 'row', style: 'gap:10px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'badge ' + tone[0], text: tone[1] }), h('h2', { class: 'section-title', style: 'margin:0', text: a.title })),
+      h('p', { class: 'hint', style: 'font-size:13px', text: a.detail }),
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Each day’s busiest moment, against the limits then. Judged on the last week of busy hours.' }),
+      grid);
   }
 
   /// The handbook every worker reads after its job: names, project keys, who
@@ -17498,13 +17620,15 @@ export const CONSOLE_JS = String.raw`
       if (os && !os.exists) orgBox.appendChild(orgSetupForm(os));
       if (hl.ok === false) return msg(hl);
       var item = function (name) { return hl.items.filter(function (i) { return i.name === name; })[0]; };
-      var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in');
+      var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in'), capacity = item('Capacity');
       var missing = tl.ok === false ? [] : tl.missing;
       var toolCount = tl.ok === false || !tl.tools ? null : tl.tools.length;
       var people = ppl.ok === false ? [] : ppl.people;
       var asking = req.ok === false ? 0 : req.requests.length;
       var spaces = places.filter(function (p) { return p.kind === 'workspace'; }).length;
-      var repos = places.length - spaces;
+      // The server's own Workers folder is somewhere to work, but not a repo.
+      var repos = places.filter(function (p) { return p.kind !== 'workspace' && !p.everyday; }).length;
+      var hasFolder = places.some(function (p) { return p.everyday; });
       var orgOk = !!(os && os.exists && os.name && !os.slackMismatch && !(os.slackConnectedTo && !os.slackTeamId));
       var unpinned = !!(os && os.exists && os.slackConnectedTo && !os.slackTeamId);
       var toggleOrg = function () {
@@ -17529,7 +17653,7 @@ export const CONSOLE_JS = String.raw`
         { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? trim(slack.detail) : '', problem: slack ? slack.detail : 'Not connected.',
           action: ['How to connect it', function () { go('connect', { connectTab: 'slack' }); }],
           link: ['Open', function () { go('connect', { connectTab: 'slack' }); }] },
-        { ok: places.length > 0, title: 'A place to work', detail: [repos ? plural(repos, 'repo', 'repos') : null, spaces ? plural(spaces, 'workspace', 'workspaces') : null].filter(Boolean).join(' · '),
+        { ok: places.length > 0, title: 'A place to work', detail: repos || spaces ? [repos ? plural(repos, 'repo', 'repos') : null, spaces ? plural(spaces, 'workspace', 'workspaces') : null].filter(Boolean).join(' · ') : hasFolder ? 'The Workers folder only. Connect a repo for code work.' : '',
           problem: 'No repo or folder yet. Connect a repo on the Repos tab, or an operator adds a folder with: overcli projects add <folder>',
           action: ['Connect a repo', function () { state.setupTab = 'repos'; render(); }],
           link: ['View all', function () { state.setupTab = 'repos'; render(); }] },
@@ -17542,7 +17666,11 @@ export const CONSOLE_JS = String.raw`
           problem: plural(people.length, 'person', 'people') + ' in' + (asking ? ', ' + asking + ' asking to join.' : '. Invite the people who will manage workers.'),
           action: asking ? ['Let them in', function () { go('people'); }] : ['Invite people', function () { go('people'); }],
           link: ['People', function () { go('people'); }] }
-      ];
+      ].concat(capacity ? [
+        // Learning (no verdict yet) counts as fine; only "needs more" or "work is waiting" asks for attention.
+        { ok: capacity.ok !== false, title: 'Capacity', detail: trim(capacity.detail.split('. ')[0]), problem: capacity.detail,
+          action: ['Open Capacity', function () { state.setupTab = 'capacity'; render(); }],
+          link: ['Capacity', function () { state.setupTab = 'capacity'; render(); }] }] : []);
       var optional = [
         { ok: !!(sso && sso.ok), title: 'Company sign-in', detail: sso && sso.ok ? trim(sso.detail) : sso ? sso.detail : 'People sign in through Slack links until you set it up.',
           action: ['Set up sign-in', function () { state.setupTab = 'signin'; render(); }] }
@@ -17552,7 +17680,7 @@ export const CONSOLE_JS = String.raw`
       var optOff = optional.filter(function (c) { return !c.ok; }).length;
       var done = ready.length, total = checks.length;
       setupNavNote('ready', done + '/' + total, done === total ? '' : 'need');
-      if (places.length) setupNavNote('repos', String(places.length));
+      if (repos + spaces) setupNavNote('repos', String(repos + spaces));
 
       var checkedAt = h('span', { class: 'faint rd-checked' + (rechecked ? ' rechecked' : '') }, rechecked ? icon('check', 14) : null, rechecked ? 'Checked just now' : 'Checked at ' + clock(Date.now()));
       var again = h('button', { class: 'btn small', text: 'Check again', onclick: function (e) {

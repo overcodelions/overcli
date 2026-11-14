@@ -62,6 +62,7 @@ import type { HeldHandoff, Worker, WorkerJournalEntry, WorkersAway } from '../..
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 import { compactionCutoff } from '../../shared/flows/workerCompaction';
+import { Pool } from './pools';
 
 function local(y: number, mo: number, d: number, h = 0, min = 0): number {
   return new Date(y, mo - 1, d, h, min, 0, 0).getTime();
@@ -87,6 +88,7 @@ function makeHarness(
     runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
     flowsFor?: WorkerEngineDeps['flowsFor'];
     readsInPlace?: boolean;
+    answerPool?: WorkerEngineDeps['answerPool'];
     sharedMcpServers?: WorkerEngineDeps['sharedMcpServers'];
     activeRuns?: WorkerEngineDeps['activeRuns'];
     pieceFlow?: WorkerEngineDeps['pieceFlow'];
@@ -238,6 +240,7 @@ function makeHarness(
     generatedFlow: opts.generatedFlow,
     flowsFor: opts.flowsFor,
     ...(opts.readsInPlace ? { readsInPlace: true } : {}),
+    ...(opts.answerPool ? { answerPool: opts.answerPool } : {}),
     sharedMcpServers: opts.sharedMcpServers,
     activeRuns: opts.activeRuns,
     pieceFlow: opts.pieceFlow,
@@ -3874,5 +3877,22 @@ describe('answering several Slack conversations at once', () => {
     // The shift went ahead of the answer still waiting, so a busy Slack can't hold it off.
     expect(h.parked).toHaveLength(3);
     expect(h.parked[1].prompt).not.toContain('ACME-2');
+  });
+
+  it('keeps to the server\'s limit across workers, and lets the next one go as one finishes', async () => {
+    const pool = new Pool(1);
+    const h = makeHarness({ seed: [seedWorker({ cadence: null }), seedWorker({ id: 'worker-2', name: 'Pip', cadence: null })], answerPool: pool });
+    h.engine.start();
+    const release = h.holdPark();
+    const a = h.engine.runErrand('worker-1', 'status of ACME-1?', undefined, { conversation: 'slack:C1:1.0' });
+    const b = h.engine.runErrand('worker-2', 'status of ACME-2?', undefined, { conversation: 'slack:C2:1.0' });
+    await settle(h);
+    // Each worker may answer three at once, but the server takes one.
+    expect(h.parked).toHaveLength(1);
+    expect(pool.waiting).toBe(1);
+    release();
+    await Promise.all([a, b]);
+    expect(h.parked.map((p) => p.prompt).filter((t) => /ACME-[12]/.test(t))).toHaveLength(2);
+    expect(pool.inUse).toBe(0);
   });
 });

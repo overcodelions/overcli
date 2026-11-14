@@ -16,6 +16,7 @@
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
 import type { Attachment } from '../shared/types';
+import type { CapacityReport } from '../main/org/capacity';
 import type { MetricsStatus } from './metricsServer';
 import type { TestSystemsService } from '../main/org/testSystems';
 import { parseCron } from '../shared/flows/cron';
@@ -121,6 +122,8 @@ export interface ControlPlaneDeps {
   metrics?: () => MetricsStatus;
   /// What /metrics would send now, for Readiness's preview. Absent: no preview.
   metricsText?: () => string;
+  /// Setup → Capacity: the last fortnight by the hour, and what it says. Absent: not on this server.
+  capacity?: () => CapacityReport;
   log: (line: string) => void;
   /// Injected for tests; production reads the token file.
   authenticate?: (token: string | undefined) => OrgCaller | null;
@@ -1050,11 +1053,14 @@ export function parseCadence(raw: unknown): ScheduleTrigger | null | undefined {
 
 /// Where workers may work: what the hire offer's "Works in" picker lists.
 /// The kind lets Readiness say "38 repos · 2 workspaces".
-function workPlaces(): Array<{ name: string; path: string; kind: 'workspace' | 'project' }> {
+/// `everyday` marks the server's own Workers folder (see defaultProject.ts):
+/// somewhere for non-code work, not a repo anyone connected, so the console
+/// leaves it out when it counts repos.
+function workPlaces(): Array<{ name: string; path: string; kind: 'workspace' | 'project'; everyday?: true }> {
   const store = Store.load();
   return [
     ...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath, kind: 'workspace' as const })),
-    ...store.projects.map((p) => ({ name: p.name, path: p.path, kind: 'project' as const })),
+    ...store.projects.map((p) => ({ name: p.name, path: p.path, kind: 'project' as const, ...((p as { everyday?: boolean }).everyday ? { everyday: true as const } : {}) })),
   ];
 }
 
@@ -1109,7 +1115,7 @@ function testSystemRoutes(systems: TestSystemsService): Array<{ method: string; 
 }
 
 /// Setup → Readiness's Metrics card: on or off, and whether anything scrapes it.
-function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlaneDeps['metricsText']): Array<{ method: string; path: RegExp; handle: Handler }> {
+function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlaneDeps['metricsText'], capacity?: ControlPlaneDeps['capacity']): Array<{ method: string; path: RegExp; handle: Handler }> {
   const admin = (c: OrgCaller) => isAdmin(loadOrgPolicy().policy, c);
   return [
     {
@@ -1117,6 +1123,12 @@ function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlan
       path: /^\/api\/admin\/metrics\/preview$/,
       handle: (c) =>
         !admin(c) ? { ok: false, error: 'Only admins can see the server’s metrics.' } : text ? { ok: true, text: text() } : { ok: false, error: 'This server can’t show its metrics.' },
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/admin\/capacity$/,
+      handle: (c) =>
+        !admin(c) ? { ok: false, error: 'Only admins can see the server’s capacity.' } : capacity ? { ok: true, ...capacity() } : { ok: false, error: 'This server doesn’t record how busy it is.' },
     },
     {
       method: 'GET',
@@ -1890,7 +1902,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess, deps.slackPeople) : []),
     ...searchRoutes(deps.org, deps.processes),
     ...slackRoutes(deps.slackConversations),
-    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),
+    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText, deps.capacity), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),
   ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),

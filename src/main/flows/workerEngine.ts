@@ -128,6 +128,7 @@ import { publishDeliverableToProject } from './workerPublish';
 import { reportsChain, wouldCycle } from '../../shared/flows/org';
 import { WORKER_COMPACTION_KEEP_DAYS, compactionCutoff, isCompactionDue } from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
+import type { Pool } from './pools';
 import { buildWorkerReport, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
@@ -254,6 +255,9 @@ export interface WorkerEngineDeps {
   /// in place instead of checking out its own. Off (the desktop, which has no
   /// such guard): every worker's own `runIn` decides.
   readsInPlace?: boolean;
+  /// The server's limit on answers at once across every worker (pools.ts).
+  /// Taken after the worker's own slot. Absent: only each worker's own limit.
+  answerPool?: Pool;
   emit: (event: MainToRendererEvent) => void;
   notify: (args: NotifyArgs) => void;
   now?: () => number;
@@ -2026,12 +2030,17 @@ export class WorkerEngine {
         this.answering.set(w.id, (this.answering.get(w.id) ?? 0) + 1);
         return true;
       });
-      const fresh = this.workers.get(w.id) ?? w;
-      if (!this.planningSince.has(w.id)) this.planningSince.set(w.id, { since: Date.now(), task: 'errand', ...(opts.manual ? { manual: true } : {}) });
+      let releaseServerSlot: (() => void) | undefined;
       try {
+        // Then a place on the server, behind other workers' answers. The
+        // worker's own slot is held meanwhile: this answer is next for it.
+        releaseServerSlot = await this.deps.answerPool?.take();
+        const fresh = this.workers.get(w.id) ?? w;
+        if (!this.planningSince.has(w.id)) this.planningSince.set(w.id, { since: Date.now(), task: 'errand', ...(opts.manual ? { manual: true } : {}) });
         if (opts.deferIfAway?.()) return { ok: true };
         return await this.fireInner(fresh, opts);
       } finally {
+        releaseServerSlot?.();
         const left = (this.answering.get(w.id) ?? 1) - 1;
         if (left > 0) this.answering.set(w.id, left);
         else {

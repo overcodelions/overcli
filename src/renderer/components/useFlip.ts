@@ -7,10 +7,32 @@
 // down into Recent — still slides even though React built it a new node.
 //
 // Measured relative to the container, so scrolling the sidebar is not a move.
+//
+// Only a change of ORDER slides. A row that sits lower only because a new row
+// arrived above it (or higher because one left) has not moved anywhere the
+// eye needs to follow — and sliding it made it start out on top of the row
+// that just appeared, so starting a conversation sent every row in the place
+// gliding down over the new one, which read as the whole list flashing.
+// Those rows snap; the new row simply appears.
 
 import { useLayoutEffect, useRef, type RefObject } from 'react';
 
 const DURATION_MS = 280;
+
+/// The keys whose order changed relative to the rows that were there both
+/// times. Rows only added or removed never count, and neither do the rows
+/// whose neighbours they were: that is a shift, not a move.
+export function reorderedKeys(prev: readonly string[], next: readonly string[]): Set<string> {
+  const before = new Set(prev);
+  const after = new Set(next);
+  const prevKept = prev.filter((k) => after.has(k));
+  const nextKept = next.filter((k) => before.has(k));
+  const moved = new Set<string>();
+  nextKept.forEach((k, i) => {
+    if (prevKept[i] !== k) moved.add(k);
+  });
+  return moved;
+}
 
 export function useFlip(container: RefObject<HTMLElement | null>): void {
   const last = useRef<Map<string, number>>(new Map());
@@ -19,9 +41,13 @@ export function useFlip(container: RefObject<HTMLElement | null>): void {
     const root = container.current;
     if (!root) return;
     const origin = root.getBoundingClientRect().top;
-    const rows = root.querySelectorAll<HTMLElement>('[data-flip]');
+    const rows = Array.from(root.querySelectorAll<HTMLElement>('[data-flip]'));
     const next = new Map<string, number>();
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const moved = reorderedKeys(
+      [...last.current.keys()],
+      rows.map((el) => el.dataset.flip!),
+    );
 
     for (const el of rows) {
       const key = el.dataset.flip!;
@@ -30,7 +56,7 @@ export function useFlip(container: RefObject<HTMLElement | null>): void {
       const top = el.getBoundingClientRect().top - origin;
       next.set(key, top);
       const was = last.current.get(key);
-      if (reduce || was === undefined) continue;
+      if (reduce || was === undefined || !moved.has(key)) continue;
       const delta = was - top;
       if (Math.abs(delta) < 1) continue;
       el.style.transition = 'none';

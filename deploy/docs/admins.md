@@ -322,6 +322,27 @@ The org's rules, kept in `org.json` on the volume (or set by Claude with `set_or
 - **Your own sites (always open):** sites workers may always open, such as `acme.atlassian.net, wiki.acme.com`. Subdomains count. List a private address here if workers should read it.
 - **Company sign-in:** OpenID Connect (Okta, Entra ID, Google Workspace). Enter the issuer and client ID here; a confidential client's secret goes on Setup → Secrets as `OVERCLI_SSO_CLIENT_SECRET`. "Everyone signs in this way" turns invite links into role grants.
 
+## Setup → Capacity
+
+Whether this server is the right size, and how much it may do at once.
+
+**The verdict.** Once a minute the server notes how many answers and code runs are going and waiting, and how busy the machine is (CPU and memory, against the container's own limits where it has them). From the last week of busy hours it says one of:
+
+- **About right:** work rarely waited, and the machine had room.
+- **Work is waiting:** answers waited for a place more than 5% of the busy time, or code runs more than 20% of it, while the machine had room. Raise the limits a little at a time.
+- **Needs a bigger box:** the machine itself was nearly full (CPU over 85%, or memory over 90%) in more than a tenth of the busy hours. Raising the limits would only slow everything down.
+- **Could use less:** all week nothing came within a third of the limits, and the machine stayed under 50% CPU and 60% memory. About half the machine would do.
+- **Learning:** under two days recorded yet.
+
+Below it, each of the last seven days' busiest moment, against the limits then. Readiness shows the same verdict, and asks for attention when the server needs more or work is waiting. The record is kept a fortnight in `org/capacity.json`.
+
+**The limits.** How many questions and code runs every worker together may have going at once. Each worker's own limits (Slack conversations at once, a shift's items) still apply under these.
+
+- **Answers at once:** a worker answering someone in Slack, the console or Claude. These mostly wait on the model, so memory limits them. Left blank: two per GB after the first 2 GB, between 4 and 64.
+- **Code runs at once:** runs in a checkout of their own, which build and test. CPUs limit them. Left blank: one per CPU.
+
+Work over a limit waits its turn, oldest first; nothing fails. A change applies within seconds, no restart, and is written to the decision log. Where the server's operator set `OVERCLI_ANSWERS_AT_ONCE` or `OVERCLI_CODE_RUNS_AT_ONCE`, that wins, and the page shows the value it set. The [metrics](../README.md#metrics) carry the same numbers for your own dashboards.
+
 ## Setup → Permissions
 
 What workers may do on the server without asking. Pick one level:

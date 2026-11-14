@@ -17,6 +17,7 @@ describe('DEFAULT_SETTINGS', () => {
       sandboxFlowWrites: true,
       defaultShowToolActivity: false,
       autoDowngrade: true,
+      autoNameConversations: true,
       theme: 'system',
       uiScale: 1,
       sidebarWidth: 260,
