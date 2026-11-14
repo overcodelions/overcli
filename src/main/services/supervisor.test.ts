@@ -1730,6 +1730,60 @@ describe('Supervisor stopping and switching', () => {
     void starting;
   });
 
+  it('stops a leftover of itself still on the port once the stop gives up waiting', async () => {
+    // Under `-Dorg.gradle.daemon=true` the app JVM is the daemon's child, so
+    // killing gradlew can leave it serving — and the next start then asked.
+    let held = true;
+    const freed: number[] = [];
+    const { deps, procs } = harness({
+      stopLeftover: async (port: number) => {
+        freed.push(port);
+        held = false;
+        return true;
+      },
+    });
+    const sup = new Supervisor('mine', [spec({ id: 'api', port: 8088 })], [binding('api')], deps);
+    await sup.start('api');
+    deps.probe = { ...deps.probe, tcpOpen: async () => held, sleep: async () => {} };
+
+    const stopping = sup.stop('api');
+    procs[0].emitExit(null);
+    await stopping;
+    expect(freed).toEqual([8088]);
+  });
+
+  it('reads a SIGTERM from outside as stopped, not failed', async () => {
+    // The app quitting or a logout kills the whole stack at once; drawn red,
+    // it read as every service having crashed.
+    const { deps, procs } = harness();
+    const sup = new Supervisor('mine', [spec({ id: 'api' }), spec({ id: 'web' })], [binding('api'), binding('web')], deps);
+    await sup.start('api');
+    await sup.start('web');
+    procs[0].emitExit(143);
+    procs[1].emitExit(1);
+    expect(sup.runtime('api').status).toBe('stopped');
+    expect(sup.runtime('api').exitCode).toBe(143);
+    expect(sup.runtime('web').status).toBe('failed');
+  });
+
+  it('leaves the port alone when the stop lets go of it in time', async () => {
+    const freed: number[] = [];
+    const { deps, procs } = harness({
+      stopLeftover: async (port: number) => {
+        freed.push(port);
+        return true;
+      },
+    });
+    const sup = new Supervisor('mine', [spec({ id: 'api', port: 8088 })], [binding('api')], deps);
+    await sup.start('api');
+    deps.probe = { ...deps.probe, tcpOpen: async () => false, sleep: async () => {} };
+
+    const stopping = sup.stop('api');
+    procs[0].emitExit(null);
+    await stopping;
+    expect(freed).toEqual([]);
+  });
+
   it('mirrors into the new checkout of a stopped service without starting it', async () => {
     const calls: string[] = [];
     const { deps, spawns } = harness({

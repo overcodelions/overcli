@@ -22,7 +22,7 @@ import { friendlyModelLabel, newestInFamily, type FlowModelDefaults } from '../.
 import type { RunChanges } from './runChanges';
 import { ticketFlowId, ticketFlowYaml, trackerOf } from './ticketFollowUp';
 import { flowRunTitle } from '../../shared/flows/schema';
-import type { HireMessage, Worker, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
+import type { HireMessage, Worker, WorkerAudience, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
 import { ANSWERS_AT_ONCE, ANSWERS_AT_ONCE_MAX, WORKER_NOTE_MAX, isCodingWorker, isSlackUserId, validateOrgFields, workerTagline } from '../../shared/flows/worker';
 import { describeTrigger, type ScheduleTrigger } from '../../shared/flows/schedule';
 import type { Orchestration } from '../../shared/flows/orchestration';
@@ -226,6 +226,11 @@ export interface WorkerSummary {
   skipCheckpoints?: boolean;
   /// Works on the team's open pull requests (WorkerCaps.continueOpenPrs).
   continueOpenPrs?: boolean;
+  /// Takes work from anyone who may ask it (WorkerCaps.anyoneMayStart).
+  anyoneMayStart?: boolean;
+  /// Or from these (WorkerCaps.startAudience); and who else approves (approvers).
+  startAudience?: Audience;
+  approvers?: Audience;
   /// Whose (WorkerCaps.prAuthors), and whose review comments (prCommentAuthors).
   prAuthors?: string[];
   prCommentAuthors?: string[];
@@ -1523,6 +1528,9 @@ export class OrgService {
           answersAtOnce: w.caps.answersAtOnce ?? ANSWERS_AT_ONCE,
           ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
           ...(w.caps.continueOpenPrs ? { continueOpenPrs: true } : {}),
+          ...(w.caps.anyoneMayStart ? { anyoneMayStart: true } : {}),
+          ...(w.caps.startAudience ? { startAudience: structuredClone(w.caps.startAudience) as Audience } : {}),
+          ...(w.caps.approvers ? { approvers: structuredClone(w.caps.approvers) as Audience } : {}),
           ...(w.caps.prAuthors?.length ? { prAuthors: [...w.caps.prAuthors] } : {}),
           ...(w.caps.prCommentAuthors?.length ? { prCommentAuthors: [...w.caps.prCommentAuthors] } : {}),
           ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
@@ -1766,7 +1774,29 @@ export class OrgService {
   proposals(caller: OrgCaller): ProposalBatch[] {
     const roster = this.deps.workers.roster();
     const policy = this.policy();
-    return this.proposalBatches().filter((b) => canManage(policy, roster, b.workerId, caller));
+    return this.proposalBatches().filter((b) => canManage(policy, roster, b.workerId, caller) || this.approves(b.workerId, caller));
+  }
+
+  /// One of the people its manager (an admin) lets approve its work (WorkerCaps.approvers).
+  private approves(workerId: UUID, caller: OrgCaller): boolean {
+    const a = this.deps.workers.get(workerId)?.caps.approvers;
+    return !!a && inAudience(this.policy(), caller, a as Audience);
+  }
+
+  /// Who is asked to approve a worker's work in Slack: its manager, and everyone its approvers name.
+  approverSlackIds(workerId: UUID): string[] {
+    const policy = this.policy();
+    const ids = new Set<string>();
+    const manager = this.managerSlackId(workerId);
+    if (manager) ids.add(manager);
+    const a = this.deps.workers.get(workerId)?.caps.approvers;
+    for (const id of a?.people ?? []) ids.add(id);
+    for (const g of a?.groups ?? []) if (g.startsWith('team:')) for (const id of policy.teams[g.slice(5)] ?? []) ids.add(id);
+    for (const r of a?.roles ?? []) {
+      const list = r === 'admin' ? policy.admins : r === 'approver' ? approversFor(policy) : policy.hirers === '*' ? [] : policy.hirers;
+      for (const id of list) ids.add(id);
+    }
+    return [...ids].filter(isSlackUserId);
   }
 
   /// Approve some or all of a proposal, and skip the rest.
@@ -1777,8 +1807,8 @@ export class OrgService {
   ): Promise<Result<{ queued: number; skipped: number }>> {
     const batch = this.proposalBatches().find((b) => b.batchId === batchId);
     if (!batch || !this.deps.batches) return { ok: false, error: 'Nothing from that run is waiting any more.' };
-    if (!canManage(this.policy(), this.deps.workers.roster(), batch.workerId, caller)) {
-      return { ok: false, error: `Only ${batch.workerName}'s manager can decide its work.` };
+    if (!canManage(this.policy(), this.deps.workers.roster(), batch.workerId, caller) && !this.approves(batch.workerId, caller)) {
+      return { ok: false, error: `Only ${batch.workerName}'s manager or its approvers can decide its work.` };
     }
     const ids = new Set(batch.items.map((i) => i.candidateId));
     const skip = (decision.skip ?? []).filter((id) => ids.has(id));
@@ -2055,6 +2085,8 @@ export class OrgService {
     // A worker that only reads answers anyone allowed to ask it, as it would
     // its manager: nothing it can do needs the manager's say.
     const readsOnly = !manages && via !== 'trigger' && !proposal && (this.deps.workers.changesOf?.(w.id) ?? ['unknown']).length === 0;
+    // Or its manager (an admin) lets anyone who may ask it start its work.
+    const openToAll = !manages && !readsOnly && via !== 'trigger' && !proposal && (w.caps.anyoneMayStart === true || (!!w.caps.startAudience && inAudience(this.policy(), caller, w.caps.startAudience as Audience)));
     // Still `untrusted` on the record: the event's details came from outside,
     // so nothing in them is remembered as the manager's word. An autonomous
     // worker's triggers start alone; one on probation or trusted proposes.
@@ -2065,6 +2097,8 @@ export class OrgService {
         ? `${TRIGGER_STARTS}\n`
         : readsOnly
         ? `(Asked by ${caller.name}, who is not your manager. Your work only reads, so answer them as you would your manager.)\n`
+        : openToAll
+        ? `(Asked by ${caller.name}, who is not your manager. Your manager lets anyone who may ask you start work, so do it as you would for your manager.)\n`
         : `(Asked by ${caller.name}, who is not your manager. Treat the request as a proposal: suggest work, do not launch it without approval.)\n`;
     const thread = replyTo && /^(ask|shift|batch|run):[\w-]{1,80}$/.test(replyTo) ? replyTo : undefined;
     const context = thread ? this.replyContext(caller, w, thread) : '';
@@ -2085,7 +2119,7 @@ export class OrgService {
       ...(attachments?.length ? { attachments: attachments.length } : {}),
     };
     this.putAsk(record);
-    const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages, readsOnly || startsAlone));
+    const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages, readsOnly || startsAlone || openToAll));
     return { ok: true, askId: record.id, done, ...(use?.state === 'warn' ? { warning: `You've used ${use.text} on ${w.name} this month. It stops taking work from you at the limit.` } : {}) };
   }
 
@@ -3713,6 +3747,11 @@ export class OrgService {
       skipCheckpoints?: boolean;
       /// Work on the team's open pull requests. An admin's call.
       continueOpenPrs?: boolean;
+      /// Take work from anyone who may ask it. An admin's call.
+      anyoneMayStart?: boolean;
+      /// Take work from these, and who else approves; null for none. An admin's call.
+      startAudience?: Audience | null;
+      approvers?: Audience | null;
       /// Whose pull requests, and whose review comments; names, or [] for the default.
       prAuthors?: string[];
       prCommentAuthors?: string[];
@@ -3793,6 +3832,25 @@ export class OrgService {
       const caps = { ...next.caps };
       if (patch.continueOpenPrs) caps.continueOpenPrs = true;
       else delete caps.continueOpenPrs;
+      next.caps = caps;
+    }
+    if (patch.anyoneMayStart !== undefined && patch.anyoneMayStart !== (w.caps.anyoneMayStart === true)) {
+      // Others then spend its budget and act through it as its manager would: an admin says so.
+      if (!admin) return { ok: false, error: 'Only an admin can let a worker take work from anyone who may ask it.' };
+      const caps = { ...next.caps };
+      if (patch.anyoneMayStart) caps.anyoneMayStart = true;
+      else delete caps.anyoneMayStart;
+      next.caps = caps;
+    }
+    for (const key of ['startAudience', 'approvers'] as const) {
+      const given = patch[key];
+      if (given === undefined) continue;
+      const empty = !given || !((given.people?.length ?? 0) + (given.groups?.length ?? 0) + (given.roles?.length ?? 0));
+      if (JSON.stringify(empty ? null : given) === JSON.stringify(w.caps[key] ?? null)) continue;
+      if (!admin) return { ok: false, error: key === 'approvers' ? 'Only an admin can change who approves a worker’s work.' : 'Only an admin can change who may start a worker’s work.' };
+      const caps = { ...next.caps };
+      if (empty) delete caps[key];
+      else caps[key] = given as WorkerAudience;
       next.caps = caps;
     }
     for (const key of ['prAuthors', 'prCommentAuthors'] as const) {
@@ -6218,6 +6276,9 @@ export class OrgService {
       ...(w.caps.answersAtOnce ? { answersAtOnce: w.caps.answersAtOnce } : {}),
       ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
       ...(w.caps.continueOpenPrs ? { continueOpenPrs: true } : {}),
+      ...(w.caps.anyoneMayStart ? { anyoneMayStart: true } : {}),
+      ...(w.caps.startAudience ? { startAudience: structuredClone(w.caps.startAudience) } : {}),
+      ...(w.caps.approvers ? { approvers: structuredClone(w.caps.approvers) } : {}),
       ...(w.caps.prAuthors?.length ? { prAuthors: [...w.caps.prAuthors] } : {}),
       ...(w.caps.prCommentAuthors?.length ? { prCommentAuthors: [...w.caps.prCommentAuthors] } : {}),
       ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
@@ -6232,7 +6293,7 @@ export class OrgService {
     const WORDS: Record<keyof WorkerConfig, string> = {
       jobDescription: 'its job', tagline: 'its tagline', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
       budgetUSDPerMonth: 'its budget', cadence: 'when it runs', preferredFlowId: 'its usual flow', answersAtOnce: 'answers at once',
-      skipCheckpoints: 'checkpoints', continueOpenPrs: 'the team\u2019s pull requests', prAuthors: 'whose pull requests', prCommentAuthors: 'whose review comments', alwaysAllow: 'what it may always do',
+      skipCheckpoints: 'checkpoints', continueOpenPrs: 'the team\u2019s pull requests', anyoneMayStart: 'who may start its work', startAudience: 'who may start its work', approvers: 'who approves its work', prAuthors: 'whose pull requests', prCommentAuthors: 'whose review comments', alwaysAllow: 'what it may always do',
     };
     const keys = [...new Set([...Object.keys(was), ...Object.keys(now)])] as Array<keyof WorkerConfig>;
     const changed = keys.filter((k) => JSON.stringify(was[k] ?? null) !== JSON.stringify(now[k] ?? null)).map((k) => WORDS[k]);
@@ -6335,6 +6396,9 @@ export class OrgService {
       answersAtOnce: c.answersAtOnce ?? ANSWERS_AT_ONCE,
       skipCheckpoints: c.skipCheckpoints === true,
       continueOpenPrs: c.continueOpenPrs === true,
+      anyoneMayStart: c.anyoneMayStart === true,
+      startAudience: (c.startAudience as Audience | undefined) ?? null,
+      approvers: (c.approvers as Audience | undefined) ?? null,
       prAuthors: c.prAuthors ?? [],
       prCommentAuthors: c.prCommentAuthors ?? [],
       alwaysAllow: c.alwaysAllow ?? [],
@@ -6769,11 +6833,19 @@ export class OrgService {
   }
 
   /// Gives a worker with a tracker its "Ticket actions" flow, after its
-  /// others; true when that changed it.
+  /// others; true when that changed it. Not one whose tracker is read only:
+  /// it couldn't use it, and holding it would make the worker one that
+  /// changes things, so anyone else's ask would wait on its manager.
   private withTicketFlow(w: Worker): boolean {
     const server = trackerOf(w.mcpServers);
     if (!server || !this.deps.saveFlow) return false;
     const id = ticketFlowId(server);
+    if (this.scopeOf(w, server).scope?.mode === 'read') {
+      if (!w.flowIds.includes(id)) return false;
+      w.flowIds = w.flowIds.filter((f) => f !== id);
+      if (w.preferredFlowId === id) delete w.preferredFlowId;
+      return true;
+    }
     if (!this.deps.saveFlow(id, ticketFlowYaml(server)).ok) return false;
     if (w.flowIds.includes(id)) return false;
     w.flowIds = [...w.flowIds, id];

@@ -147,6 +147,10 @@ export interface SupervisorDeps {
   /// ignores it. Only ever used on an adopted process, which this supervisor
   /// has no handle to kill.
   stopHolder?(port: number, serviceId: string): Promise<void>;
+  /// Stop what still holds a port after a stop, but only a leftover copy of
+  /// this service. Under `-Dorg.gradle.daemon=true` the app JVM belongs to the
+  /// shared daemon, so killing `gradlew` can leave it serving. True once free.
+  stopLeftover?(port: number, serviceId: string): Promise<boolean>;
   /// The commit a checkout is on, for recording what a task published from
   /// and for noticing later that it has moved. Optional: without it a task
   /// still records its branch, and only the commit comparison goes quiet.
@@ -760,7 +764,10 @@ export class Supervisor {
     });
     const done = (async () => {
       if (exited) await Promise.race([exited, this.deps.probe.sleep(STOP_WAIT_MS)]);
-      await this.portsReleased(ports);
+      const held = await this.portsReleased(ports);
+      if (this.deps.stopLeftover) {
+        for (const port of held) await this.deps.stopLeftover(port, serviceId).catch(() => false);
+      }
     })();
     this.stopping.set(serviceId, done);
     try {
@@ -773,6 +780,12 @@ export class Supervisor {
     }
   }
 
+  /// A line in this service's output from outside the supervisor — the
+  /// manager saying what it did to the port before a start.
+  note(serviceId: string, line: string): void {
+    this.append(serviceId, line);
+  }
+
   /// Resolves once any stop in flight for this service has finished — its
   /// process gone and its ports free — so a start right after a stop waits
   /// for the port rather than being refused over it.
@@ -783,18 +796,19 @@ export class Supervisor {
   /// Poll until nothing answers on any of these ports, or give up. Counted in
   /// attempts rather than against the clock, so a test's instant sleep cannot
   /// spin forever on a port it reports open.
-  private async portsReleased(ports: readonly number[]): Promise<void> {
+  /// The ports still answering when it gave up — empty when all let go.
+  private async portsReleased(ports: readonly number[]): Promise<number[]> {
+    let open: number[] = [...ports];
     for (let i = 0; i < PORT_RELEASE_MS / PORT_RELEASE_POLL_MS; i++) {
-      let open = false;
-      for (const port of ports) {
-        if (await this.deps.probe.tcpOpen(port, '127.0.0.1').catch(() => false)) {
-          open = true;
-          break;
-        }
+      const still: number[] = [];
+      for (const port of open) {
+        if (await this.deps.probe.tcpOpen(port, '127.0.0.1').catch(() => false)) still.push(port);
       }
-      if (!open) return;
+      open = still;
+      if (open.length === 0) return [];
       await this.deps.probe.sleep(PORT_RELEASE_POLL_MS);
     }
+    return open;
   }
 
   async restart(serviceId: string): Promise<void> {
@@ -1084,8 +1098,12 @@ export class Supervisor {
         });
         return;
       }
+      // 143 and 130 are SIGTERM and SIGINT from outside — the app quitting,
+      // a terminal's Ctrl-C, a logout. Stopped, not broken: drawn red, a
+      // whole stack killed at once read as a stack that had crashed.
+      const signalled = code === 143 || code === 130;
       this.setStatus(spec.id, {
-        status: code === 0 ? 'stopped' : 'failed', exitCode: code, pid: undefined,
+        status: code === 0 || signalled ? 'stopped' : 'failed', exitCode: code, pid: undefined,
         debugKind: undefined, debugPort: undefined,
       });
     });

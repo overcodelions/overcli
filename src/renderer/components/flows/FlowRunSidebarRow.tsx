@@ -361,6 +361,7 @@ export function FlowRunRow({
   const visiblySelected = selected && detailMode === (run.workerId ? 'workers' : 'flows');
   return (
     <div
+      data-flip={run.id}
       className={
         'sidebar-row group w-full rounded text-xs truncate flex items-center gap-1.5 pr-1 ' +
         (visiblySelected
@@ -445,8 +446,8 @@ export function FlowRunRow({
               setRenameValue(run.title ?? '');
             }}
             className={
-              'w-4 h-4 flex items-center justify-center text-[10px] text-ink-faint hover:text-ink rounded transition-opacity ' +
-              (visiblySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100')
+              'w-4 h-4 items-center justify-center text-[10px] text-ink-faint hover:text-ink rounded transition-opacity ' +
+              (visiblySelected ? 'flex opacity-70 hover:opacity-100' : 'hidden group-hover:flex')
             }
             title="Rename this run"
             aria-label="Rename this run"
@@ -459,8 +460,8 @@ export function FlowRunRow({
               setConfirming(true);
             }}
             className={
-              'w-4 h-4 flex items-center justify-center text-[11px] text-ink-faint hover:text-red-400 rounded transition-opacity ' +
-              (visiblySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100')
+              'w-4 h-4 items-center justify-center text-[11px] text-ink-faint hover:text-red-400 rounded transition-opacity ' +
+              (visiblySelected ? 'flex opacity-70 hover:opacity-100' : 'hidden group-hover:flex')
             }
             title="Delete this run"
           >

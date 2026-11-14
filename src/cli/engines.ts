@@ -83,6 +83,8 @@ import { activeWorkerUser } from '../main/org/workerUser';
 import { useRemoteToolVault } from '../main/org/tools';
 import { readClaudeMcpServers, restoreClaudeStdioEnv, sealClaudeStdioEnv, useClaudeEnvVault, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
+import { Pool, configurePoolLimits, limitNow, poolLimits } from '../main/flows/pools';
+import { CapacityRecorder, machineLoad, type CapacityHour } from '../main/org/capacity';
 import { serverShapedFlow } from '../main/org/serverFlow';
 import { ticketFlowId, ticketFlowYaml, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
 import { parseFlowYaml } from '../shared/flows/yaml';
@@ -99,6 +101,8 @@ export interface HeadlessEngines {
   workerEngine: WorkerEngine;
   /// What each run is doing, step by step, for the console.
   runActivity: RunActivity;
+  /// The server's limit on answers at once, when it has one (pools.ts).
+  answerPool: Pool | null;
   /// The emit tee, exposed so `buildDaemonEngines` can hand the scheduler the
   /// SAME one every other engine writes to. Building a second tee would give
   /// the scheduler a channel the permission tap never sees.
@@ -110,6 +114,9 @@ export interface HeadlessEngines {
 /// that watches the clock. Everything a daemon does beyond `run` is here.
 export interface DaemonEngines extends HeadlessEngines {
   scheduler: SchedulerEngine;
+  /// Notes how busy the server is, for Setup → Capacity. Started by `serve`
+  /// with the other clocks, after the state-dir lock.
+  capacity: CapacityRecorder;
   /// Built but not started: `serve` starts it after taking the state-dir
   /// lock, so a second daemon refused at the lock never opens a Slack socket
   /// that would steal the first one's replies.
@@ -162,6 +169,10 @@ export interface EngineOptions {
   /// Let a tool call that only reads through the allow-list (the org server:
   /// see `permissionTap`).
   allowToolReads?: boolean;
+  /// Limits on answers and code runs at once across every worker (pools.ts),
+  /// read each time so a change applies without a restart. Absent: no limit
+  /// beyond each worker's own.
+  pools?: { answers: () => number | null; code: () => number | null };
   /// Every event, after the runtime and worker engine have observed it and
   /// after the permission tap has answered anything it needed to.
   onEvent?: (event: MainToRendererEvent) => void;
@@ -260,12 +271,15 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
       unattendedAllowedTools: options.policy === 'allow-list' ? options.allowTools : [],
     },
   );
+  if (options.pools) orchestrator.setCodeRunCap(options.pools.code);
 
+  const answerPool = options.pools ? new Pool(options.pools.answers) : null;
   workerEngine = new WorkerEngine({
     parker: orchestrator,
     isGitRepo: isGitRepoOrWorkspace,
     // `readsOnlyWorker` below refuses a non-coding worker's writes here.
     readsInPlace: true,
+    ...(answerPool ? { answerPool } : {}),
     emit,
     // Wrapped here rather than relying on the host: this notify goes to the
     // engine DIRECTLY and never passes through `host().notify`, so without
@@ -398,6 +412,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     orchestrator,
     workerEngine,
     runActivity,
+    answerPool,
     emit,
     dispose: () => {
       try {
@@ -429,8 +444,19 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // emit every other engine does. Built below, after the engines it drives.
   let teams: TeamEngine | null = null;
   let slackCommands: SlackCommands | null = null;
+  // How much runs at once across every worker: from the machine, unless the
+  // environment says (deploy/README.md).
+  // How much runs at once across every worker: the environment, else
+  // Setup → Work at once, else what the machine can take (deploy/README.md).
+  const limits = poolLimits(process.env);
+  configurePoolLimits(limits);
+  const pools = options.pools ?? {
+    answers: () => limitNow(limits.answers, loadOrgPolicy().policy.answersAtOnce),
+    code: () => limitNow(limits.code, loadOrgPolicy().policy.codeRunsAtOnce),
+  };
   const engines = buildEngines({
     ...options,
+    pools,
     // A worker asked a question reads its own tools while it works out the
     // answer; nobody is there to approve a lookup.
     allowToolReads: true,
@@ -452,6 +478,24 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     },
   });
   const { flowRuntime, orchestrator, workerEngine, emit } = engines;
+  // After buildEngines: the rule is read from the org's files, which need the host it installs.
+  const load = machineLoad();
+  const capacity = new CapacityRecorder({
+    sample: () => ({
+      answers: { inUse: engines.answerPool?.inUse ?? 0, waiting: engines.answerPool?.waiting ?? 0, cap: engines.answerPool?.cap ?? null },
+      code: { ...orchestrator.codeRunLoad(), waiting: orchestrator.codeRunsWaiting() },
+      ...load(),
+    }),
+    store: jsonOrgStore<{ hours: CapacityHour[] }>('capacity.json', () => ({ hours: [] })),
+  });
+  log('info', 'org.pools', `answers at once: ${pools.answers() ?? 'no limit'}; code runs at once: ${pools.code() ?? 'no limit'}`);
+  // A limit raised on Setup → Work at once lets waiting work in within
+  // seconds, rather than when something next finishes.
+  const poolPoke = setInterval(() => {
+    engines.answerPool?.poke();
+    orchestrator.pokeCodeQueue();
+  }, 10_000);
+  poolPoke.unref?.();
   // The worker behind a conversation: a run's, or its own desk and Slack
   // threads' (where questions are answered).
   function workerFor(conversationId: string): string | undefined {
@@ -590,7 +634,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
   updates.start();
   const { org, commands, access, sso, triggers, connections, processes, testSystems, frontDoor, notifyPerson } = createOrgControl(
-    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, sweepCheckouts: true, health: () => [updates.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
+    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, sweepCheckouts: true, health: () => [updates.health(), capacity.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
   slackCommands = commands;
@@ -857,6 +901,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   return {
     ...engines,
     scheduler,
+    capacity,
     slack,
     org,
     access,
@@ -880,6 +925,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     // independently guarded — disposal runs from a signal handler, and one
     // engine that is already dead must not strand the other two.
     dispose: () => {
+      clearInterval(poolPoke);
+      capacity.stop();
       try {
         slack.stop();
       } catch {

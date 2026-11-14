@@ -22,6 +22,8 @@ export interface MetricsSource {
   runs(): FlowRun[];
   /// Work waiting for each worker to be free. Absent: not reported.
   waiting?(): Map<UUID, number>;
+  /// The server's limits on work at once (pools.ts). Null cap: no limit.
+  pools?(): { answers: { inUse: number; waiting: number; cap: number | null }; code: { running: number; cap: number | null } };
   /// Hires waiting on an approver, asks still being answered, tools failing.
   counts(): { hiresAwaiting: number; asksWorking: number; toolTrouble: ToolTrouble[] };
   version?(): string;
@@ -121,6 +123,17 @@ export class ServerMetrics {
     const waiting = this.src.waiting?.();
     if (waiting) {
       metric('overcli_worker_queue_depth', 'gauge', 'Work waiting for a worker to be free.', roster.map((w) => [labels({ worker: w.name }), waiting.get(w.id) ?? 0]));
+    }
+
+    const pools = this.src.pools?.();
+    if (pools) {
+      metric('overcli_answers_in_progress', 'gauge', 'Answers going now, across every worker.', [['', pools.answers.inUse]]);
+      metric('overcli_answers_waiting', 'gauge', 'Answers waiting for a place on the server.', [['', pools.answers.waiting]]);
+      metric('overcli_code_runs_in_progress', 'gauge', 'Runs going now in a checkout of their own, across every worker.', [['', pools.code.running]]);
+      metric('overcli_pool_limit', 'gauge', 'The server\'s limit on answers and code runs at once (absent: no limit).', [
+        ...(pools.answers.cap !== null ? [[labels({ pool: 'answers' }), pools.answers.cap] as [string, number]] : []),
+        ...(pools.code.cap !== null ? [[labels({ pool: 'code' }), pools.code.cap] as [string, number]] : []),
+      ]);
     }
 
     const spent = this.src.spentThisMonth();

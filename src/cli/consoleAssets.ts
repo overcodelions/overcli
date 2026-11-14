@@ -788,6 +788,12 @@ pre.diff .da { color: var(--ok); } pre.diff .dd { color: var(--bad); } pre.diff 
 .t-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .t-spend { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--faint); }
 .t-spend .meter { width: 160px; flex: none; }
+.cap-days { display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 8px 14px; align-items: center; font-size: 13px; }
+.cap-days .cap-h { color: var(--faint); font-size: 12px; }
+.cap-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cap-cell .meter { flex: 1; min-width: 40px; }
+.cap-cell .n { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 640px) { .cap-days { grid-template-columns: auto 1fr 1fr; } .cap-days .cap-cpu { display: none; } }
 /* Team tasks: a summary card on the team page, a page of its own. */
 .tmgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
 .tmcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -2824,6 +2830,8 @@ export const CONSOLE_JS = String.raw`
     if (parts[0] === 'processedit') state.processId = parts[1] ? decodeURIComponent(parts[1]) : null;
     if (parts[0] === 'teamtask' || parts[0] === 'teamfiles') { state.taskId = decodeURIComponent(parts[1] || ''); if (!state.taskId) state.tab = 'teams'; }
     if (parts[0] === 'setup' && parts[1]) state.setupTab = parts[1];
+    // An old #people link.
+    if (parts[0] === 'people') { state.tab = 'setup'; state.setupTab = 'people'; }
   }
   fromHash();
   window.addEventListener('popstate', function () { fromHash(); render(); });
@@ -3152,6 +3160,8 @@ export const CONSOLE_JS = String.raw`
       action ? h('div', { style: 'margin-top:18px' }, action) : null);
   }
   function go(tab, extra) {
+    // People lives in Setup; every way to it lands there.
+    if (tab === 'people') { tab = 'setup'; extra = Object.assign({}, extra, { setupTab: 'people' }); }
     if (extra && extra.teamId && extra.teamId !== state.teamId) state.teamTab = null;
     if (extra && extra.processId && extra.processId !== state.processId) state.processView = null;
     state.tab = tab; state.hashQuery = null; if (extra) Object.assign(state, extra);
@@ -3389,6 +3399,8 @@ export const CONSOLE_JS = String.raw`
 
   /// Which nav item a page belongs under.
   function navFor(tab) {
+    // Setup → People lights People in the org menu, its shortcut.
+    if (tab === 'setup' && state.setupTab === 'people') return 'people';
     return { process: 'processes', processedit: 'processes', proclib: 'processes', worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', run: 'workers', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
   }
 
@@ -3417,14 +3429,21 @@ export const CONSOLE_JS = String.raw`
       }).catch(function () {});
     }
     return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
-      var t = r[0], tl = r[1];
-      var fixes = tl && tl.ok !== false ? tl.missing.length : 0;
-      state.counts.today = fixes + t.waiting.length + t.hireApprovals.length + (t.toolRequests || []).length + (t.toolTrouble || []).length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
-      document.querySelectorAll('[data-count]').forEach(function (el) {
-        var n = state.counts[el.getAttribute('data-count')];
-        el.textContent = n ? String(n) : ''; el.hidden = !n;
-      });
+      state.counts.today = todayCount(r[0], r[1]);
+      paintCounts();
     }).catch(function () {});
+  }
+  /// What the bell counts: everything in /api/today that waits on you, and
+  /// the tools that need fixing.
+  function todayCount(t, tl) {
+    var fixes = tl && tl.ok !== false ? tl.missing.length : 0;
+    return fixes + t.waiting.length + t.hireApprovals.length + (t.toolRequests || []).length + (t.toolTrouble || []).length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
+  }
+  function paintCounts() {
+    document.querySelectorAll('[data-count]').forEach(function (el) {
+      var n = state.counts[el.getAttribute('data-count')];
+      el.textContent = n ? String(n) : ''; el.hidden = !n;
+    });
   }
 
   /// The chrome every page shares: whose org this is, a way to jump to any
@@ -3453,7 +3472,7 @@ export const CONSOLE_JS = String.raw`
   var FIND_STATUS = { running: ['working', 'Running'], waiting: ['waiting', 'Waiting'], done: ['ok', 'Done'], failed: ['bad', 'Failed'], stopped: ['plain', 'Stopped'] };
   function finder() {
     var mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
-    var find = h('input', { type: 'search', id: 'top-search', placeholder: 'Search workers, teams, processes and work', 'aria-label': 'Search', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'false', 'aria-controls': 'top-search-pop', value: state.findQuery || '' });
+    var find = h('input', { type: 'search', id: 'top-search', placeholder: state.me && state.me.admin ? 'Search workers, work and settings' : 'Search workers, teams, processes and work', 'aria-label': 'Search', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'false', 'aria-controls': 'top-search-pop', value: state.findQuery || '' });
     var pop = h('div', { class: 'find-pop', id: 'top-search-pop', role: 'listbox', hidden: true });
     var rows = [], sel = -1, timer = null, seq = 0, shown = null;
     function close() { pop.hidden = true; find.setAttribute('aria-expanded', 'false'); }
@@ -3484,6 +3503,7 @@ export const CONSOLE_JS = String.raw`
       shown = q; rows = []; sel = -1;
       if (!r || r.ok === false) { pop.replaceChildren(h('p', { class: 'muted find-note', text: (r && r.error) || "Couldn't search just now." })); return; }
       var parts = [].concat(
+        section('Settings', state.me && state.me.admin ? setupMatches(q, SETUP, SETUP_WORDS) : [], function (p) { return row(lead('gear'), p.title, p.sub, null, null, function () { go('setup', { setupTab: p.id }); }); }),
         section('Workers', r.workers, function (w) { return row(avatar(w.id, w.name, 's'), w.name, w.tagline, null, null, function () { openWorker(w.id); }); }),
         section('Teams', r.teams, function (t) { return row(lead('team'), t.name, t.purpose, null, null, function () { go('team', { teamId: t.id }); }); }),
         section('Processes', r.processes, function (p) { return row(lead('arrow'), p.name, p.purpose, null, null, function () { go('process', { processId: p.id }); }); }),
@@ -3865,13 +3885,22 @@ export const CONSOLE_JS = String.raw`
     return card;
   }
 
+  // What a tool's error says, then all of it on request.
+  function troubleText(x, cls, style) {
+    var long = x.gist && x.gist !== x.lastError;
+    return h('div', { class: 'stack', style: 'gap:4px' },
+      h('p', { class: cls, style: 'overflow-wrap:anywhere;margin:0;' + (style || ''), text: x.gist || x.lastError }),
+      long ? h('details', null, h('summary', { class: 'faint', style: 'font-size:12.5px', text: 'Full error' }),
+        h('pre', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin-top:6px;max-height:320px;overflow:auto', text: x.lastError })) : null);
+  }
+
   // A tool failing now, for an admin to fix.
   function troubleCard(x) {
     return h('article', { class: 'panel ask fix' },
       h('span', { class: 'avatar m', style: 'background:var(--bad-soft);color:var(--bad)' }, icon('alert', 18)),
       h('div', { class: 'ask-body' },
-        h('div', { class: 'ask-head' }, h('span', { class: 'tag bad', text: 'Fix' }), h('span', { class: 'ask-name', text: x.tool + (x.kind === 'auth' ? ' can’t sign in' : x.kind === 'gone' ? ' says its API is gone' : ' keeps failing') })),
-        h('p', { class: 'muted', style: 'overflow-wrap:anywhere', text: x.lastError }),
+        h('div', { class: 'ask-head' }, h('span', { class: 'tag bad', text: 'Fix' }), h('span', { class: 'ask-name', text: x.tool + (x.kind === 'auth' ? ' can’t sign in' : x.kind === 'scope' ? ' is missing a permission' : x.kind === 'gone' ? ' says its API is gone' : ' keeps failing') })),
+        troubleText(x, 'muted'),
         h('p', { class: 'faint', text: 'Since ' + ago(x.since) + (x.workers.length ? '. Held up: ' + x.workers.join(', ') : '') + '.' }),
         h('div', { class: 'row' }, h('button', { class: 'btn go', text: 'Open ' + x.tool, onclick: function () { go('setup', { setupTab: 'tools' }); } }))));
   }
@@ -4534,7 +4563,76 @@ export const CONSOLE_JS = String.raw`
       };
       var finished = cameIn.slice().sort(function (a, b) { return b.at - a.at; });
       // The title's count now includes process decisions.
-      nodes[0].querySelector('.page-title').textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
+      var titleEl = nodes[0].querySelector('.page-title');
+      titleEl.textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
+      // Needs you keeps itself current while the page is open: a new ask
+      // slots in where it belongs, a card already shown is never rebuilt (so
+      // a half-typed answer survives), and one you've just decided stays put
+      // with its answer until you leave, rather than vanishing under you.
+      var needLabel = h('span', { class: 'label if-needlabel' });
+      var needList = h('div', { class: 'stack', style: 'gap:12px' });
+      var needSec = h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' }, needLabel, needList);
+      var needStat = ibStat('Needs you', String(needs), needs ? 'Waiting on a decision' : 'All clear', null, needs ? 'need' : '');
+      var needNodes = {};
+      var isDecision = function (x) { return x.kind === 'process' && x.needsYou; };
+      var drawNeeds = function (t, fixes, decisions) {
+        var items = [].concat(
+          fixes.map(function (x) { return ['fix:' + x.name, fixCard, x]; }),
+          (t.toolTrouble || []).map(function (x) { return ['trouble:' + x.tool + ':' + x.kind, troubleCard, x]; }),
+          t.waiting.map(function (x) { return ['wait:' + x.runId + ':' + x.question, waitingCard, x]; }),
+          decisions.map(function (x) { return ['decide:' + x.id, decisionCard, x]; }),
+          t.proposals.map(function (x) { return ['propose:' + x.batchId, proposalCard, x]; }),
+          t.hireApprovals.map(function (x) { return ['hire:' + (x.hireId || x.id), hireApprovalCard, x]; }),
+          (t.toolRequests || []).map(function (x) { return ['tool:' + x.id, toolRequestCard, x]; }),
+          t.teamTasks.filter(function (x) { return x.waitingOnYou; }).map(function (x) { return ['task:' + x.id, teamTaskCard, x]; }));
+        var live = {};
+        var list = items.map(function (x) {
+          live[x[0]] = true;
+          return needNodes[x[0]] || (needNodes[x[0]] = framed(x[1](x[2])));
+        });
+        // Decided cards the server has let go of keep their place.
+        [].forEach.call(needList.children, function (c, i) {
+          if (list.indexOf(c) < 0 && c.classList.contains('done')) list.splice(Math.min(i, list.length), 0, c);
+        });
+        Object.keys(needNodes).forEach(function (k) { if (!live[k] && !needNodes[k].classList.contains('done')) delete needNodes[k]; });
+        setChildren(needList, list);
+        var n = list.filter(function (c) { return !c.classList.contains('done'); }).length;
+        needSec.hidden = !list.length;
+        needLabel.textContent = 'Needs you · ' + n;
+        titleEl.textContent = (WORDS[n] || plural(n, 'thing', 'things')) + (n === 1 || n === 0 ? ' needs you' : ' need you');
+        needStat.querySelector('.ib-v').textContent = String(n);
+        needStat.querySelector('.ib-v').classList.toggle('need', !!n);
+        needStat.querySelector('.ib-n').textContent = n ? 'Waiting on a decision' : 'All clear';
+        return n;
+      };
+      drawNeeds(t, fixes, decisions);
+      // Every 15 s while the tab is shown (a minute while it's hidden), at
+      // once when the bar sees a run start or stop waiting, and shortly
+      // after you act on a card. Stops when you leave the page.
+      var needTimer = null;
+      var pollNeeds = function (wait) {
+        clearTimeout(needTimer);
+        needTimer = setTimeout(function () {
+          if (!needSec.isConnected) return;
+          Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/inflight').catch(function () { return { ok: false }; })]).then(function (y) {
+            if (!needSec.isConnected) return;
+            if (y[0] && y[0].ok !== false && Array.isArray(y[0].waiting)) {
+              drawNeeds(y[0], y[1] && y[1].ok !== false ? y[1].missing : [], y[2] && y[2].ok !== false ? (y[2].items || []).filter(isDecision) : []);
+              state.counts.today = todayCount(y[0], y[1]);
+              paintCounts();
+            }
+            pollNeeds(document.hidden ? 60000 : 15000);
+          }, function () { pollNeeds(30000); });
+        }, wait);
+      };
+      pollNeeds(15000);
+      needList.addEventListener('click', function (e) { if (e.target.closest('button')) pollNeeds(2000); });
+      var seenWaiting = null;
+      onNow(needSec, function (items) {
+        var sig = items.filter(function (x) { return x.kind === 'waiting'; }).map(function (x) { return x.id; }).sort().join('|');
+        if (seenWaiting !== null && sig !== seenWaiting) pollNeeds(300);
+        seenWaiting = sig;
+      });
       // Updates about the same thing as one row, unless asked for every update.
       var groups = workGroups(finished);
       var flat;
@@ -4594,7 +4692,7 @@ export const CONSOLE_JS = String.raw`
         ibStat('Delivered', String(groups.length), plural(finished.length, 'update', 'updates') + ' since yesterday', ibSpark(perDay, 'Delivered each day, last 7 days: ' + perDay.join(', '))),
         ibStat('In flight', String(moving.length), upcoming.length ? 'Next: ' + upcoming[0].name + ' ' + when(upcoming[0].nextShiftAt) : 'Nothing scheduled'),
         ibStat('Median time to done', median == null ? '—' : median < 60000 ? '<1 min' : took(median), spans.length ? 'Across ' + plural(spans.length, 'piece', 'pieces') + ' of work' : 'Nothing finished yet'),
-        ibStat('Needs you', String(needs), needs ? 'Waiting on a decision' : 'All clear', null, needs ? 'need' : ''),
+        needStat,
         ibStat('Spend this month', money(t.spend.spentUSD), allowance ? 'of ' + money(allowance) + ' allowed' : 'Heading for ' + money(t.spend.projectedUSD),
           allowance ? h('span', { class: 'ib-meter', role: 'img', 'aria-label': Math.round(spendPct) + '% of the allowance' }, h('i', { class: spendPct >= 90 ? 'high' : null, style: 'width:' + spendPct.toFixed(1) + '%' })) : null));
       var mainCol = [];
@@ -4603,10 +4701,8 @@ export const CONSOLE_JS = String.raw`
       mainCol.push(
         // Needs you shows only when something does: the title already says
         // when nothing does. A crew of nobody gets the way to hire one.
-        needs ? h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' },
-          h('span', { class: 'label if-needlabel', text: 'Needs you · ' + needs }),
-          h('div', { class: 'stack', style: 'gap:12px' }, [fixes.map(fixCard), (t.toolTrouble || []).map(troubleCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), (t.toolRequests || []).map(toolRequestCard), mineTasks.map(teamTaskCard)].map(function (cards) { return cards.map(framed); })))
-          : !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
+        needSec,
+        !needs && !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
               h('p', { text: 'Hire a worker and what it needs from you lands here.' }),
               state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null) : null,
         flightSec,
@@ -6383,8 +6479,39 @@ export const CONSOLE_JS = String.raw`
           kind: w.audience || w.visibility === 'team' ? 'picked' : w.visibility === 'org' ? 'everyone' : 'manager',
           audience: w.audience,
           managerGroupsOf: !w.audience && w.visibility === 'team' ? w.managerSlackUserId : null,
-          onChange: function () { later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
+          onChange: function () { drawOthers(); later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
         });
+        // Then what happens when they do: whose asks start straight away, and
+        // who approves the rest. An admin's; one card with who may ask.
+        var starts = audiencePicker({
+          label: 'Starts work for', readOnly: !state.me.admin,
+          kind: w.anyoneMayStart ? 'everyone' : w.startAudience ? 'picked' : 'manager', audience: w.startAudience,
+          ownLabel: 'Only its manager', everyoneLabel: 'Anyone who can ask it', ownNote: 'Its manager, and ',
+          onChange: function () { drawOthers(); later('starts', function () { var s = starts.value(); return { anyoneMayStart: s.kind === 'everyone', startAudience: s.kind === 'picked' ? s.audience : null }; }); },
+        });
+        var approvesPick = audiencePicker({
+          label: 'Approves the rest', readOnly: !state.me.admin, noEveryone: true,
+          kind: w.approvers ? 'picked' : 'manager', audience: w.approvers,
+          ownLabel: 'Its manager', ownHint: 'Its manager decides, and admins.', ownNote: 'Its manager, and ',
+          onChange: function () { drawOthers(); later('approves', function () { var a = approvesPick.value(); return { approvers: a.kind === 'picked' ? a.audience : null }; }); },
+        });
+        // What the three add up to, in a sentence or two, as they're picked.
+        var othersNote = h('p', { class: 'faint', style: 'font-size:13px;margin-top:8px' });
+        var drawOthers = function () {
+          if (!starts || !approvesPick) return;
+          var a = whoAsks.value(), s = starts.value(), p = approvesPick.value();
+          var reads = !!d.changes && !d.changes.length;
+          var who = a.kind === 'manager' ? 'Only its manager can ask it.' : a.kind === 'everyone' ? 'Anyone in the org can ask it.' : 'The people picked can ask it.';
+          var why = d.changes && d.changes.length ? ', because ' + d.changes.slice(0, 3).join('; ') + (d.changes.length > 3 ? '; and more' : '') : '';
+          var go = reads ? 'It only reads, so anyone who can ask it gets answers straight away.'
+            : s.kind === 'everyone' ? 'What anyone who can ask it asks for starts straight away, as its manager’s would.'
+            : s.kind === 'picked' ? 'What the people picked ask for starts straight away; anyone else’s waits for an OK' + why + '.'
+            : 'What anyone else asks for waits for an OK' + why + '.';
+          var ok = reads || s.kind === 'everyone' ? '' : p.kind === 'picked' ? ' Its manager or anyone picked under “Approves the rest” gives it, and each is asked in Slack.' : ' Its manager gives it.';
+          othersNote.className = reads ? 'msg ok' : 'faint';
+          othersNote.textContent = who + ' ' + go + ok;
+        };
+        drawOthers();
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(Math.round(w.budgetUSDPerMonth * 100) / 100), 'aria-label': 'Monthly budget' });
         var nameBox = h('input', { type: 'text', value: w.name, maxlength: '40', 'aria-label': 'Name', style: 'max-width:280px' });
         var tagline = h('input', { type: 'text', value: w.tagline || '', maxlength: '160', placeholder: 'What it does, in a line', 'aria-label': 'Tagline', style: 'max-width:480px' });
@@ -6431,7 +6558,7 @@ export const CONSOLE_JS = String.raw`
           return settingRow(title, sub, body, { note: note });
         };
         var saveNow = function (key, patch) {
-          var note = notes[key];
+          var note = notes[key] || (key === 'starts' || key === 'approves' ? notes.who : null);
           if (note) { note.className = 'faint'; note.textContent = 'Saving…'; }
           return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch }).then(function (x) {
             if (!note) return x;
@@ -6495,10 +6622,11 @@ export const CONSOLE_JS = String.raw`
           group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
             h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
               h('label', { class: 'field' }, 'Reports to (another worker)', reports))], 'boss'),
-          group('Who can ask it', 'Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
-            d.changes ? (d.changes.length
-              ? h('p', { class: 'faint', style: 'font-size:13px;margin-top:8px', text: 'When someone other than its manager asks, work it proposes waits for its manager’s OK, because ' + d.changes.slice(0, 3).join('; ') + (d.changes.length > 3 ? '; and more' : '') + '. A worker that only reads answers anyone it lets ask, with no OK.' })
-              : h('p', { class: 'msg ok', style: 'font-size:13px;margin-top:8px', text: 'It only reads, so anyone who can ask it gets answers straight away, with no OK from its manager.' })) : null], 'who'),
+          group('Who can ask it', 'Who may ask it, whose asks it starts on straight away, and who approves the rest. Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
+            h('b', { style: 'font-size:13px;margin-top:10px', text: 'Starts work for' }), starts.node,
+            h('b', { style: 'font-size:13px;margin-top:10px', text: 'Approves the rest' }), approvesPick.node,
+            !state.me.admin ? h('p', { class: 'faint', style: 'font-size:12.5px', text: 'Only an admin changes whose asks start straight away and who approves.' }) : null,
+            othersNote], 'who'),
           group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
             where ? h('div', { style: 'max-width:480px' }, where)
               : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })], 'where'),
@@ -6656,6 +6784,10 @@ export const CONSOLE_JS = String.raw`
             if (x.ok === false) { prs.checked = !prs.checked; prsOut.appendChild(msg(x)); } else { w.continueOpenPrs = prs.checked; prsOut.appendChild(msg(x, 'Saved. It applies from its next run.')); }
           });
         };
+        // Changed on General, beside who may ask it; said here so Access tells the whole story.
+        var othersLine = (w.anyoneMayStart ? 'Starts work for anyone who can ask it.' : w.startAudience ? 'Starts work for the people picked, and its manager.' : 'Starts work only for its manager.') +
+          ' ' + (w.anyoneMayStart ? '' : w.approvers ? 'Its manager and the people picked approve the rest.' : 'Its manager approves the rest.');
+        var toWho = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Change under Who can ask it →', onclick: function () { var el = document.getElementById('ws-general'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
         var toolsList = h('div');
         var drawTools = function () {
           fill(toolsList, (w.tools || []).length ? h('div', { class: 'stack access-tools', style: 'gap:0' }, w.tools.map(function (t) {
@@ -6685,6 +6817,8 @@ export const CONSOLE_JS = String.raw`
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
             })()),
           trustCard,
+          section('Work from others', 'When someone other than its manager asks. Set on General, with who may ask it.',
+            h('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, h('span', { style: 'font-size:13px', text: othersLine }), toWho)),
           section('Team pull requests', 'Whether it may add its fixes to pull requests other people opened, when its work names one. Only a branch with an open pull request; never forced, and a conflict it leaves unresolved is never pushed.',
             [prs ? h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, prs, h('span', { text: 'Push fixes to the team’s open pull requests' })), prsOut)
               : h('p', { class: 'faint', style: 'font-size:13px', text: w.continueOpenPrs ? 'It pushes fixes to the team’s open pull requests. An admin set this.' : 'It only adds to pull requests it opened. Only an admin can change that.' }),
@@ -12637,6 +12771,25 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Keep for (days, 7 or more)', keep)),
         function () { return { retentionDays: numOrNull(keep) }; });
 
+      // Work at once: answers and code runs every worker together may have going.
+      var W = R.workAtOnce;
+      var atOnceField = function (label, rule, limit, envName) {
+        var input = h('input', { type: 'number', min: '1', max: '256', step: '1', value: rule == null ? '' : String(rule), placeholder: limit ? String(limit.machine) + ' (what this machine can take)' : '' });
+        var set = limit && limit.env !== undefined;
+        if (set) input.disabled = true;
+        return { input: input, node: h('div', { class: 'stack', style: 'gap:6px' }, h('label', { class: 'field' }, label, input),
+          set ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: (limit.env === null ? 'No limit' : String(limit.env)) + ', set by ' + envName + ' on the server, which wins over this.' }) : null) };
+      };
+      var answersAt = atOnceField('Answers at once', R.answersAtOnce, W && W.answers, 'OVERCLI_ANSWERS_AT_ONCE');
+      var codeAt = atOnceField('Code runs at once', R.codeRunsAtOnce, W && W.code, 'OVERCLI_CODE_RUNS_AT_ONCE');
+      var capacity = ruleSection('Work at once', 'How many questions and code runs every worker together may have going at once. Work over a limit waits its turn. Each worker’s own limits still apply under these.',
+        h('div', { class: 'stack', style: 'gap:14px' },
+          h('div', { class: 'grid2' }, answersAt.node, codeAt.node),
+          h('p', { class: 'faint', style: 'font-size:13px', text: W
+            ? 'Answers mostly wait on the model, so memory limits them: two per GB after the first 2 GB. Code runs build and test in a checkout of their own, so CPUs limit them: one per CPU. Raise them if the box stays comfortable; left blank, the machine decides. Watch overcli_answers_waiting in the metrics to see work waiting.'
+            : 'These apply on an org server only.' })),
+        function () { return { answersAtOnce: numOrNull(answersAt.input), codeRunsAtOnce: numOrNull(codeAt.input) }; });
+
       // Teams.
       var teamRows = h('div', { class: 'listed' });
       var addTeam = function (tname, members) {
@@ -12944,7 +13097,7 @@ export const CONSOLE_JS = String.raw`
         });
 
       var signin = ssoSection(R)[0], servers = fleetSection(R)[0];
-      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, signin: signin, servers: servers, redaction: redaction, models: models, permissions: permissions };
+      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, capacity: capacity, signin: signin, servers: servers, redaction: redaction, models: models, permissions: permissions };
       if (typeof only === 'string' && parts[only]) {
         var sec = parts[only];
         [].slice.call(sec.children, 0, sec._sub ? 2 : 1).forEach(function (el) { el.remove(); });
@@ -12952,7 +13105,7 @@ export const CONSOLE_JS = String.raw`
         return [head(sec._title, sec._sub)].concat(only === 'teams' ? [rosterPanel(people, R.teams)] : []).concat([sec]).concat(only === 'spending' ? [budgetsByManager()] : []);
       }
       return [head('Rules', 'What people may do with the workers. Changes apply at once, and each is written to the decision log.', null),
-        identity, hiring, spending, teams, roles, records, permissions, redaction, models, signin, servers];
+        identity, hiring, spending, capacity, teams, roles, records, permissions, redaction, models, signin, servers];
     });
   }
 
@@ -15920,6 +16073,7 @@ export const CONSOLE_JS = String.raw`
     { group: null, pages: [['ready', 'Readiness', 'What this server needs so workers can do their jobs.']] },
     { group: 'Organization', pages: [
       ['general', 'General', 'Its name, the address people use, and the time zone schedules run in.'],
+      ['people', 'People', 'Who can use the workers, their roles, invites and who is asking to join.'],
       ['teams', 'Groups', 'Groups of people. A worker set to "my team may ask it" is open to everyone who shares a team with its manager.'],
       ['signin', 'Sign-in', 'Let people sign in with the company account (Okta, Entra ID, Google — anything that speaks OpenID Connect).'],
       ['records', 'Records', 'How long the decision log, finished runs and each run’s step-by-step activity are kept. Older ones are deleted each night. Left blank, records stay forever and run activity a week.']] },
@@ -15928,6 +16082,7 @@ export const CONSOLE_JS = String.raw`
       ['roles', 'Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.'],
       ['handbook', 'Handbook', 'What every worker reads after its job: names, project keys, who owns what, house style.'],
       ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.'],
+      ['capacity', 'Capacity', 'Whether this server is the right size, and how many questions and code runs every worker together may have going at once.'],
       ['permissions', 'Permissions', 'What workers may do on this server without asking: read only, edit files, run listed commands, or everything.'],
       ['redaction', 'Secrets in answers', 'Passwords, AWS keys, tokens and stored secrets kept out of what workers say to people.'],
       ['models', 'Model ids', 'The id each model goes by on Bedrock or Vertex.']] },
@@ -15944,8 +16099,52 @@ export const CONSOLE_JS = String.raw`
   ];
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
-  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, capacity: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', capacity: 'setup--capacity', people: 'people', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  /// Words people search for that a Setup page's own title and blurb don't
+  /// say, so the finder takes "concurrency" to Capacity.
+  var SETUP_WORDS = {
+    ready: 'health status checklist setup problems missing',
+    general: 'org name url address domain timezone time zone',
+    teams: 'groups people members departments',
+    signin: 'sso okta entra google oidc openid login single sign-on',
+    records: 'retention history audit log delete keep days',
+    hiring: 'hire approve approval allowance web pages fetch browsing urls',
+    roles: 'roles catalog templates jobs starter',
+    handbook: 'context instructions knowledge style guide prompt',
+    spending: 'budget cost money spend dollars usd cap alert limit',
+    people: 'users members invite invitations roles admins approvers hirers access join offboard sign out',
+    capacity: 'work at once concurrency concurrent parallel parallelism simultaneous limit limits throttle queue slots load cpu memory capacity performance answers code runs',
+    permissions: 'access tools shell commands allow list allowlist sandbox',
+    redaction: 'redact scrub mask secrets passwords keys tokens',
+    models: 'bedrock vertex model ids provider aws gcp',
+    tools: 'mcp servers integrations connectors',
+    secrets: 'keys tokens credentials env environment api key',
+    toolchains: 'java node python go jdk runtime build sdk',
+    repos: 'git github gitlab bitbucket repositories workspaces branches',
+    databases: 'overdb sql postgres mysql data',
+    apis: 'overapi http rest endpoints',
+    systems: 'qa test browser apps environments staging',
+    offers: 'desktop app publish import',
+    servers: 'fleet other servers departments'
+  };
+  /// The Setup pages a search names: every word somewhere in the page's
+  /// title, blurb, group or extra words. Best first: a title hit.
+  function setupMatches(q, setup, words) {
+    var terms = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return [];
+    var out = [];
+    setup.forEach(function (g) {
+      g.pages.forEach(function (p) {
+        var title = p[1].toLowerCase();
+        var hay = [title, p[2], g.group || '', words[p[0]] || ''].join(' ').toLowerCase();
+        if (!terms.every(function (t) { return hay.indexOf(t) >= 0; })) return;
+        out.push({ id: p[0], title: p[1], sub: (g.group ? g.group + ' · ' : '') + p[2], score: terms.some(function (t) { return title.indexOf(t) >= 0; }) ? 0 : 1 });
+      });
+    });
+    return out.sort(function (a, b) { return a.score - b.score; }).slice(0, 5);
+  }
+  // end of setupMatches
   function viewSetup() {
     if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
     var tab = state.setupTab || 'ready', page = null, group = null;
@@ -15962,6 +16161,8 @@ export const CONSOLE_JS = String.raw`
       var opts = g.pages.map(function (p) { return h('option', { value: p[0], text: p[1], selected: p[0] === tab }); });
       return g.group ? h('optgroup', { label: g.group }, opts) : opts;
     }));
+    // People asking to join, as on the org menu's People.
+    if (state.counts && state.counts.people) setupNavNote('people', String(state.counts.people), 'need');
     // What still needs doing, as a light beside its page.
     Promise.all([api('GET', '/api/admin/health').catch(function () { return { ok: false }; }), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
       var mark = function (id, cls, why) { var b = buttons[id]; if (b && !b.querySelector('.light, .rd-navm')) b.appendChild(h('span', { class: 'light ' + cls, title: why, 'aria-label': why })); };
@@ -15979,10 +16180,52 @@ export const CONSOLE_JS = String.raw`
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), null);
     setChrome([['Setup', function () { go('setup', { setupTab: 'ready' }); }]].concat(group ? [[group]] : [], [[page[1]]]));
-    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'people' ? viewPeople() : tab === 'capacity' ? viewCapacity() : tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
-      return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
+      // People keeps its own heading, which carries Invite people.
+      return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, tab === 'people' ? null : headNode, tab === 'ready' || tab === 'people' ? nodes : nodes.slice(1)))];
     });
+  }
+
+  /// Setup → Capacity: what the last week says about the server's size, each
+  /// day's busiest against the limits, then the limits themselves.
+  function viewCapacity() {
+    return Promise.all([api('GET', '/api/admin/capacity').catch(function () { return { ok: false }; }), viewRules('capacity')]).then(function (r) {
+      var rules = r[1];
+      return [rules[0], capacityPanel(r[0]), h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Limits' }))].concat(rules.slice(1));
+    });
+  }
+
+  var CAPACITY_TONE = { more: ['bad', 'Needs more'], raise: ['waiting', 'Work is waiting'], learning: ['plain', 'Learning'], right: ['ok', 'About right'], less: ['ok', 'Could use less'] };
+  function capacityPanel(c) {
+    if (!c || c.ok === false) return h('section', { class: 'panel pad' }, msg(c && c.error ? c : { ok: false, error: 'Couldn’t read how busy the server has been.' }));
+    var a = c.assessment, tone = CAPACITY_TONE[a.verdict] || CAPACITY_TONE.right;
+    // Each day's busiest, from the hours.
+    var byDay = {};
+    (c.hours || []).forEach(function (x) {
+      var d = new Date(x.at), k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+      var b = byDay[k] || (byDay[k] = { at: x.at, answers: 0, code: 0, cpu: 0, waited: 0 });
+      b.answers = Math.max(b.answers, x.answersPeak); b.code = Math.max(b.code, x.codePeak); b.cpu = Math.max(b.cpu, x.cpuPeak);
+      b.answersCap = x.answersCap; b.codeCap = x.codeCap; b.waited += x.answersWaitN + x.codeWaitN;
+    });
+    var days = Object.keys(byDay).map(function (k) { return byDay[k]; }).sort(function (x, y) { return y.at - x.at; }).slice(0, 7);
+    var cell = function (n, cap) {
+      var pct = cap ? Math.min(100, (n / cap) * 100) : 0;
+      return h('span', { class: 'cap-cell' }, h('div', { class: 'meter' + (cap && n >= cap ? ' over' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })),
+        h('span', { class: 'n', text: cap ? n + ' of ' + cap : n + ' · no limit' }));
+    };
+    var grid = days.length ? h('div', { class: 'cap-days' },
+      [h('span', { class: 'cap-h', text: 'Day' }), h('span', { class: 'cap-h', text: 'Answers at once' }), h('span', { class: 'cap-h', text: 'Code runs at once' }), h('span', { class: 'cap-h cap-cpu', text: 'CPU' })].concat(
+        days.map(function (d) {
+          return [h('span', null, new Date(d.at).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), d.waited ? h('span', { class: 'badge waiting', style: 'margin-left:8px', title: 'Something waited for a place this day', text: 'waited' }) : null),
+            cell(d.answers, d.answersCap), cell(d.code, d.codeCap), h('span', { class: 'n cap-cpu faint', text: Math.round(d.cpu * 100) + '%' })];
+        }).reduce(function (x, y) { return x.concat(y); }, [])))
+      : h('p', { class: 'faint', text: 'Nothing recorded yet. It notes how busy the server is once a minute.' });
+    return h('section', { class: 'panel pad stack' },
+      h('div', { class: 'row', style: 'gap:10px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'badge ' + tone[0], text: tone[1] }), h('h2', { class: 'section-title', style: 'margin:0', text: a.title })),
+      h('p', { class: 'hint', style: 'font-size:13px', text: a.detail }),
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Each day’s busiest moment, against the limits then. Judged on the last week of busy hours.' }),
+      grid);
   }
 
   /// The handbook every worker reads after its job: names, project keys, who
@@ -17377,13 +17620,15 @@ export const CONSOLE_JS = String.raw`
       if (os && !os.exists) orgBox.appendChild(orgSetupForm(os));
       if (hl.ok === false) return msg(hl);
       var item = function (name) { return hl.items.filter(function (i) { return i.name === name; })[0]; };
-      var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in');
+      var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in'), capacity = item('Capacity');
       var missing = tl.ok === false ? [] : tl.missing;
       var toolCount = tl.ok === false || !tl.tools ? null : tl.tools.length;
       var people = ppl.ok === false ? [] : ppl.people;
       var asking = req.ok === false ? 0 : req.requests.length;
       var spaces = places.filter(function (p) { return p.kind === 'workspace'; }).length;
-      var repos = places.length - spaces;
+      // The server's own Workers folder is somewhere to work, but not a repo.
+      var repos = places.filter(function (p) { return p.kind !== 'workspace' && !p.everyday; }).length;
+      var hasFolder = places.some(function (p) { return p.everyday; });
       var orgOk = !!(os && os.exists && os.name && !os.slackMismatch && !(os.slackConnectedTo && !os.slackTeamId));
       var unpinned = !!(os && os.exists && os.slackConnectedTo && !os.slackTeamId);
       var toggleOrg = function () {
@@ -17408,7 +17653,7 @@ export const CONSOLE_JS = String.raw`
         { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? trim(slack.detail) : '', problem: slack ? slack.detail : 'Not connected.',
           action: ['How to connect it', function () { go('connect', { connectTab: 'slack' }); }],
           link: ['Open', function () { go('connect', { connectTab: 'slack' }); }] },
-        { ok: places.length > 0, title: 'A place to work', detail: [repos ? plural(repos, 'repo', 'repos') : null, spaces ? plural(spaces, 'workspace', 'workspaces') : null].filter(Boolean).join(' · '),
+        { ok: places.length > 0, title: 'A place to work', detail: repos || spaces ? [repos ? plural(repos, 'repo', 'repos') : null, spaces ? plural(spaces, 'workspace', 'workspaces') : null].filter(Boolean).join(' · ') : hasFolder ? 'The Workers folder only. Connect a repo for code work.' : '',
           problem: 'No repo or folder yet. Connect a repo on the Repos tab, or an operator adds a folder with: overcli projects add <folder>',
           action: ['Connect a repo', function () { state.setupTab = 'repos'; render(); }],
           link: ['View all', function () { state.setupTab = 'repos'; render(); }] },
@@ -17421,7 +17666,11 @@ export const CONSOLE_JS = String.raw`
           problem: plural(people.length, 'person', 'people') + ' in' + (asking ? ', ' + asking + ' asking to join.' : '. Invite the people who will manage workers.'),
           action: asking ? ['Let them in', function () { go('people'); }] : ['Invite people', function () { go('people'); }],
           link: ['People', function () { go('people'); }] }
-      ];
+      ].concat(capacity ? [
+        // Learning (no verdict yet) counts as fine; only "needs more" or "work is waiting" asks for attention.
+        { ok: capacity.ok !== false, title: 'Capacity', detail: trim(capacity.detail.split('. ')[0]), problem: capacity.detail,
+          action: ['Open Capacity', function () { state.setupTab = 'capacity'; render(); }],
+          link: ['Capacity', function () { state.setupTab = 'capacity'; render(); }] }] : []);
       var optional = [
         { ok: !!(sso && sso.ok), title: 'Company sign-in', detail: sso && sso.ok ? trim(sso.detail) : sso ? sso.detail : 'People sign in through Slack links until you set it up.',
           action: ['Set up sign-in', function () { state.setupTab = 'signin'; render(); }] }
@@ -17431,7 +17680,7 @@ export const CONSOLE_JS = String.raw`
       var optOff = optional.filter(function (c) { return !c.ok; }).length;
       var done = ready.length, total = checks.length;
       setupNavNote('ready', done + '/' + total, done === total ? '' : 'need');
-      if (places.length) setupNavNote('repos', String(places.length));
+      if (repos + spaces) setupNavNote('repos', String(repos + spaces));
 
       var checkedAt = h('span', { class: 'faint rd-checked' + (rechecked ? ' rechecked' : '') }, rechecked ? icon('check', 14) : null, rechecked ? 'Checked just now' : 'Checked at ' + clock(Date.now()));
       var again = h('button', { class: 'btn small', text: 'Check again', onclick: function (e) {
@@ -17777,7 +18026,7 @@ export const CONSOLE_JS = String.raw`
     var ROLES = [['admin', 'Admins'], ['approver', 'Hire approvers'], ['hirer', 'People who can hire']];
     var changed = function () { if (opts.onChange) opts.onChange(); };
     var seg = h('div', { class: 'seg', role: 'group', 'aria-label': opts.label || 'Who can use it' });
-    var choices = [['manager', opts.ownLabel || 'Only its manager'], ['everyone', opts.everyoneLabel || 'Everyone in the org'], ['picked', 'Picked people, groups or roles']];
+    var choices = [['manager', opts.ownLabel || 'Only its manager'], ['everyone', opts.everyoneLabel || 'Everyone in the org'], ['picked', 'Picked people, groups or roles']].filter(function (c) { return !(opts.noEveryone && c[0] === 'everyone'); });
     var buttons = choices.map(function (c) {
       return h('button', { type: 'button', text: c[1], 'aria-pressed': kind === c[0] ? 'true' : 'false', disabled: !!opts.readOnly, onclick: function () { kind = c[0]; draw(); changed(); } });
     });
@@ -18682,8 +18931,8 @@ export const CONSOLE_JS = String.raw`
     if (!x) return null;
     var out = h('div', { 'aria-live': 'polite' });
     return h('section', { class: 'panel pad stack', style: 'gap:6px;border-color:var(--bad-line);background:var(--bad-soft)' },
-      h('b', { style: 'font-size:13.5px', text: x.kind === 'auth' ? 'Its calls are being refused: the key has likely expired or lost access.' : x.kind === 'gone' ? 'It says what it calls is retired or gone.' : 'Its last ' + x.count + ' calls failed.' }),
-      h('div', { class: 'quote', style: 'font-size:12.5px;overflow-wrap:anywhere', text: x.lastError }),
+      h('b', { style: 'font-size:13.5px', text: x.kind === 'auth' ? 'Its calls are being refused: the key has likely expired or lost access.' : x.kind === 'scope' ? 'It signs in, but its key lacks a permission some calls need' + (x.missing && x.missing.length ? ': ' + x.missing.join(', ') : '') + '. Other calls still work.' : x.kind === 'gone' ? 'It says what it calls is retired or gone.' : 'Its last ' + x.count + ' calls failed.' }),
+      troubleText(x, 'quote', 'font-size:12.5px'),
       h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Since ' + ago(x.since) + (x.workers.length ? '. Held up: ' + x.workers.join(', ') : '') + '. It clears itself the next time a call works.' }),
       canEdit ? h('div', { class: 'row', style: 'gap:8px' }, h('button', { class: 'btn small', text: 'Mark fixed', onclick: function (e) {
         var restore = busy(e.target, 'Saving…');
@@ -18893,7 +19142,7 @@ export const CONSOLE_JS = String.raw`
       if (r.ok === false) return [msg(r)];
       var onThisMac = function (t) { return /(^|\s)\/(Users|home)\//.test(t.target); };
       var stateOf = function (t) {
-        if (t.trouble) return { tone: 'bad', text: t.trouble.kind === 'auth' ? 'Can’t sign in since ' + ago(t.trouble.since) : t.trouble.kind === 'gone' ? 'Its API looks retired' : 'Failing since ' + ago(t.trouble.since) };
+        if (t.trouble) return { tone: 'bad', text: t.trouble.kind === 'auth' ? 'Can’t sign in since ' + ago(t.trouble.since) : t.trouble.kind === 'scope' ? 'Missing a permission since ' + ago(t.trouble.since) : t.trouble.kind === 'gone' ? 'Its API looks retired' : 'Failing since ' + ago(t.trouble.since) };
         if (t.signIn && t.signIn.ended) return { tone: 'need', text: 'Sign in again' };
         if (t.login && t.login.state === 'rejected') return { tone: 'bad', text: 'Login rejected' };
         if (t.status === 'connected') return { tone: 'ok', text: (onThisMac(t) ? 'Connects · Mac only' : 'Connects') + (t.login && t.login.state === 'ok' && t.login.as ? ' as ' + t.login.as : '') };

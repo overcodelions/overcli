@@ -67,6 +67,7 @@ import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectM
 import { inspectFolder } from './childRepos';
 import { isDocumentLikePath } from '../shared/everydayProjects';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
+import { suggestConversationTitle } from './conversationTitle';
 import {
   checkpointProject,
   checkpointStatusPorcelain,
@@ -920,6 +921,7 @@ export function registerIpc(): void {
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
   ipcMain.handle('store:patchConversation', (_e, { id, patch }) => Store.patchConversation(id, patch));
+  ipcMain.handle('conversation:suggestTitle', (_e, args) => suggestConversationTitle(drafterDeps(), args));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     const wasSlack = slackEnabled();

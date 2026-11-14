@@ -127,6 +127,11 @@ export interface OrgPolicy {
   prSavedMinHours: number;
   /// Keep the decision log and finished runs this many days. Absent: forever.
   retentionDays?: number;
+  /// How many answers, and how many runs in a checkout of their own, every
+  /// worker together may have going at once (flows/pools.ts). Absent: what
+  /// the machine can take. The server's environment, when set, wins.
+  answersAtOnce?: number;
+  codeRunsAtOnce?: number;
   /// Sign in with the company's identity provider (OpenID Connect).
   sso?: OrgSso;
   /// Who is who by work email, for SSO: email → Slack member id. People not
@@ -294,6 +299,15 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
     if (typeof v === 'number' && Number.isInteger(v) && v >= 7) retentionDays = v;
     else warnings.push('retentionDays must be a whole number of days, 7 or more.');
   }
+  const atOnce = (key: 'answersAtOnce' | 'codeRunsAtOnce'): number | undefined => {
+    const v = r[key];
+    if (v === undefined) return undefined;
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 256) return v;
+    warnings.push(`${key} must be a whole number from 1 to 256.`);
+    return undefined;
+  };
+  const answersAtOnce = atOnce('answersAtOnce');
+  const codeRunsAtOnce = atOnce('codeRunsAtOnce');
   let sso: OrgSso | undefined;
   if (r.sso !== undefined) {
     const o = (r.sso ?? {}) as Record<string, unknown>;
@@ -398,6 +412,8 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       prSavedMultiplier,
       prSavedMinHours,
       ...(retentionDays ? { retentionDays } : {}),
+      ...(answersAtOnce ? { answersAtOnce } : {}),
+      ...(codeRunsAtOnce ? { codeRunsAtOnce } : {}),
       ...(sso ? { sso } : {}),
       people,
       fleet,

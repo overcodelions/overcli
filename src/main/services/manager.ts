@@ -128,6 +128,9 @@ const MACHINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /// alternate typed text, reference, typed text.
 const ENV_REFERENCE = /(\$\{[A-Za-z_][A-Za-z0-9_]*\})/;
 
+/// How long a start waits for a taken port to free itself before asking.
+const PORT_GRACE_MS = 8_000;
+
 export class ServicesManager {
   /// Main checkout per checkout — see `localConfigScan`.
   private readonly primaries = new Map<string, Promise<string | null>>();
@@ -382,6 +385,17 @@ export class ServicesManager {
           (c) => c.port === port,
         );
         if (!taken || ours) continue;
+        // A leftover of this very service — its launcher gone, its JVM still
+        // shutting down or orphaned under a Gradle daemon — is the last run,
+        // not somebody's work. Asking about it on every restart was a banner
+        // with one sensible answer, so it is given without asking.
+        if (await this.stopLeftover(workspaceId, serviceId, port)) continue;
+        // Anything else gets a grace period before the banner: what holds a
+        // port a moment after a stop is usually on its way out, and a banner
+        // that appeared and then vanished on its own read as a failure.
+        if (await this.portFrees(port, PORT_GRACE_MS)) continue;
+        // Its launcher may have exited while we waited, making it a leftover.
+        if (await this.stopLeftover(workspaceId, serviceId, port)) continue;
         // Name it. "Another program" is true and useless; `node (pid 96355)`
         // is something a person can decide about — and it is very often a
         // service overcli itself started before the app was killed.
@@ -410,6 +424,33 @@ export class ServicesManager {
     ensureServiceConfigDir(this.dataDir, workspaceId, serviceId);
     await this.excludeProjectedPaths(workspaceId, serviceId);
     return supervisor.start(serviceId, { foreign: this.foreignClaims(workspaceId), offset: opts.offset });
+  }
+
+  /// Whether a port closes within `ms`.
+  private async portFrees(port: number, ms: number): Promise<boolean> {
+    for (let waited = 0; waited < ms; waited += 250) {
+      await nodeProbes.sleep(250);
+      if (!(await nodeProbes.tcpOpen(port, '127.0.0.1'))) return true;
+    }
+    return false;
+  }
+
+  /// Stop what holds a port when, and only when, every holder is a leftover
+  /// copy of this service. Anything else — a terminal run, another program —
+  /// is left for the banner to ask about. True once the port is free.
+  private async stopLeftover(workspaceId: string, serviceId: string, port: number): Promise<boolean> {
+    const owners = await portOwners(port, this.ownerContext(workspaceId, serviceId));
+    if (holderKind(owners) !== 'stale') return false;
+    this.supervisor(workspaceId).note(
+      serviceId,
+      `── :${port} still held by the last run (${describeOwners(owners)}); stopping it ──`,
+    );
+    await stopPids(owners.map((o) => o.pid), 2_000, { tree: true });
+    for (let i = 0; i < 30; i++) {
+      if (!(await nodeProbes.tcpOpen(port, '127.0.0.1'))) return true;
+      await nodeProbes.sleep(100);
+    }
+    return false;
   }
 
   async stop(workspaceId: string, serviceId: string): Promise<void> {
@@ -1832,6 +1873,7 @@ export class ServicesManager {
       stopHolder: async (port, serviceId) => {
         await freePort(port, { context: this.ownerContext(workspaceId, serviceId) });
       },
+      stopLeftover: (port, serviceId) => this.stopLeftover(workspaceId, serviceId, port),
       logSink: createLogSink(
         (serviceId) => serviceLogFile(this.dataDir, workspaceId, serviceId),
         undefined,

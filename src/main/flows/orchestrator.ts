@@ -20,6 +20,7 @@ import { readsOnlyWithin, writesOnlyIn } from '../permissionPolicy';
 import { workerFilesDir } from './workerFiles';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { hasEverydayMarker } from '../everydayProject';
 
 import type {
   AppSettings,
@@ -74,6 +75,8 @@ export interface FlowLauncher {
     parentOrchestrationId?: UUID;
     orchestrationItemTitle?: string;
     continues?: string;
+    /// Fixing the continued branch's red build: merge its default branch in, even cleanly.
+    mergeWhenBehind?: boolean;
     scheduleId?: UUID;
     scheduleName?: string;
     /// Chain provenance for a run fired by an `onFlowComplete` schedule. The
@@ -115,6 +118,11 @@ export interface BatchLauncher extends FlowLauncher {
 /// the ask itself. Asks are written to stand alone, and producers like to
 /// say "use the ticket in the branch name" or "do not commit" — obeyed here,
 /// either one strands the work off the branch the batch is reviewed on.
+/// A batch item's key among the code runs (`codeItems`). Ids hold no newline.
+function codeKey(orchestrationId: UUID, candidateId: string): string {
+  return `${orchestrationId}\n${candidateId}`;
+}
+
 export function sharedBranchInstruction(branch: string): string {
   return [
     '',
@@ -270,6 +278,13 @@ export class OrchestratorImpl {
   /// When the worker crew went away, if it is away. Set by the worker engine
   /// once it exists — see `setCrewAwaySince`.
   private crewAwaySince: () => number | undefined = () => undefined;
+  /// The server's limit on code runs at once, across every batch (pools.ts).
+  /// Read each time, so a changed limit applies at once (see `pokeCodeQueue`).
+  /// Null: only each batch's own `maxConcurrent`.
+  private codeRunCap: () => number | null = () => null;
+  /// Items launched as code runs, by `codeKey`, while they may still run:
+  /// counted against `codeRunCap` while `running`, forgotten once over.
+  private codeItems = new Set<string>();
 
   constructor(
     private runner: RunnerManager,
@@ -886,6 +901,7 @@ export class OrchestratorImpl {
       await reclaimSharedBranch(o.adoptWorktrees);
     }
     let launchedAny = false;
+    let freedCode = false;
     // Loop because a slot may free up (a synchronous startRun failure)
     // while we're still filling — re-evaluate until no queued item can go.
     // eslint-disable-next-line no-constant-condition
@@ -894,6 +910,13 @@ export class OrchestratorImpl {
       if (running >= o.maxConcurrent) break;
       const next = o.items.find((i) => i.status === 'queued');
       if (!next) break;
+      // A code run waits for a place on the server. Checked and taken before
+      // any await, so two pumps can't both take the last one; `kickCodeQueue`
+      // pumps this batch again when one frees.
+      const code = this.isCodeRun(o);
+      const cap = this.codeRunCap();
+      if (code && cap !== null && this.codeRunning() >= cap) break;
+      if (code) this.codeItems.add(codeKey(o.id, next.candidate.id));
       // Optimistically mark running so we don't double-launch it on the
       // next loop iteration before startRun resolves.
       next.status = 'running';
@@ -920,6 +943,7 @@ export class OrchestratorImpl {
               i.note = forked.error;
               i.finishedAt = Date.now();
             }
+            freedCode ||= code;
             continue;
           }
           o.adoptWorktrees = forked.worktrees;
@@ -963,6 +987,8 @@ export class OrchestratorImpl {
           orchestrationItemTitle: next.candidate.title,
           // Its push adds to that branch, and to no other (BranchLander).
           ...(continued ? { continues: continued } : {}),
+          // Its build failed: the host built it merged with its target, so the run starts from that too.
+          ...(continued && failure ? { mergeWhenBehind: true } : {}),
           // Stamp the worker on child runs of a worker's batch — the run
           // summary's `workerId` is what the monthly budget rollup groups by,
           // and nothing can reconstruct the tag after launch.
@@ -1017,10 +1043,84 @@ export class OrchestratorImpl {
         next.status = 'failed';
         next.note = res.error;
         next.finishedAt = Date.now();
+        freedCode ||= code;
       }
     }
     if (launchedAny) this.persistAndEmit(o);
     this.maybeComplete(o);
+    // A code run that never started gave its place back: another batch may be waiting for it.
+    if (freedCode) this.kickCodeQueue();
+  }
+
+  /// The server's limit on code runs at once (pools.ts), a number or read
+  /// each time. Null: no limit.
+  setCodeRunCap(cap: number | null | (() => number | null)): void {
+    this.codeRunCap = typeof cap === 'function' ? cap : () => cap;
+    this.kickCodeQueue();
+  }
+
+  /// The limit may have been raised: start what now fits. Does nothing
+  /// while the server is at its limit, so it is cheap to call on a timer.
+  pokeCodeQueue(): void {
+    const cap = this.codeRunCap();
+    if (cap !== null && this.codeRunning() >= cap) return;
+    this.kickCodeQueue();
+  }
+
+  /// Code runs going now, and the limit on them. For logs and metrics.
+  codeRunLoad(): { running: number; cap: number | null } {
+    return { running: this.codeRunning(), cap: this.codeRunCap() };
+  }
+
+  /// Code runs queued behind the server's limit: the queued items of batches
+  /// that would launch them now if there were room. For Setup → Capacity.
+  codeRunsWaiting(): number {
+    const cap = this.codeRunCap();
+    if (cap === null || this.codeRunning() < cap) return 0;
+    const awaySince = this.crewAwaySince();
+    let n = 0;
+    for (const o of this.batches.values()) {
+      if (o.pausedAt || (o.origin?.kind === 'worker' && awaySince !== undefined && o.createdAt < awaySince)) continue;
+      const queued = o.items.filter((i) => i.status === 'queued').length;
+      if (!queued || !this.isCodeRun(o)) continue;
+      n += Math.min(queued, Math.max(0, o.maxConcurrent - o.items.filter((i) => i.status === 'running').length));
+    }
+    return n;
+  }
+
+  /// Whether this batch's next run works in a checkout of its own: what the
+  /// server limits. A run in place (one at a time per batch already) or in
+  /// an everyday project's scratch folder (runtime.ts) builds nothing.
+  private isCodeRun(o: Orchestration): boolean {
+    const worker = o.origin?.kind === 'worker' ? o.origin : undefined;
+    // The same decision `pump` makes at launch (see `runInNow`).
+    const movedToWorktree = o.runIn === 'cwd' && !!worker && this.runInNow?.(worker.workerId, o.projectPath) === 'worktree';
+    if (o.runIn === 'cwd' && !movedToWorktree) return false;
+    return !(worker && hasEverydayMarker(o.projectPath));
+  }
+
+  /// Code runs going now, forgetting those that are over. A paused one keeps
+  /// its key (it may go on) but doesn't count: it isn't doing anything.
+  private codeRunning(): number {
+    let n = 0;
+    for (const key of this.codeItems) {
+      const cut = key.indexOf('\n');
+      const item = this.batches.get(key.slice(0, cut))?.items.find((i) => i.candidate.id === key.slice(cut + 1));
+      if (item?.status === 'running') n++;
+      else if (item?.status !== 'paused') this.codeItems.delete(key);
+    }
+    return n;
+  }
+
+  /// A place for a code run may have freed: pump every batch with work
+  /// queued, oldest first. Each takes places in that order, since a pump
+  /// checks and takes one before its first await.
+  private kickCodeQueue(): void {
+    if (this.codeRunCap() === null) return;
+    const waiting = [...this.batches.values()]
+      .filter((o) => o.items.some((i) => i.status === 'queued'))
+      .sort((a, b) => a.createdAt - b.createdAt);
+    for (const o of waiting) void this.pump(o.id);
   }
 
   /// Called by the runtime (via the registered observer) on EVERY run
@@ -1050,6 +1150,7 @@ export class OrchestratorImpl {
       // it as running via the status.
       this.persistAndEmit(o);
       void this.pump(orchId);
+      this.kickCodeQueue();
       return;
     }
 
@@ -1079,8 +1180,10 @@ export class OrchestratorImpl {
       // a slow or failing git call can't hold up the batch or lose the
       // result. It lands as a second persist+emit when it resolves.
       void this.captureLandingCommit(o.id, item.candidate.id, run);
-      // A slot freed up (if it was running) — fill it.
+      // A slot freed up (if it was running) — fill it, and any place on the
+      // server it held.
       void this.pump(orchId);
+      this.kickCodeQueue();
     }
   }
 
@@ -1134,6 +1237,8 @@ export class OrchestratorImpl {
     }
     this.persistAndEmit(o);
     this.maybeComplete(o);
+    // Its code runs gave their places back.
+    this.kickCodeQueue();
     return { ok: true };
   }
 

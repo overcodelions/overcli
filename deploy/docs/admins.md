@@ -231,11 +231,15 @@ Baked-in toolchains (`--build-arg JDKS=…` or `EXTRA_APT_PACKAGES`, see the [de
 
 ## Starter roles
 
-Three ready-made roles, so a new org can hire without writing a job first:
+Ready-made roles, so a new org can hire without writing a job first. Each is written for any org: what's particular to yours (your apps, your tracker, your house style) goes in Setup, in the repo's own notes, or in a line added at hire.
 
 - **Developer:** takes a ticket, changes the code, runs the tests and opens a pull request, then fixes CI failures on it. Needs a repo on Setup → Repos & workspaces.
 - **QA:** opens a ticket's feature environment signed in, through the `test-systems` tool, walks the journeys the ticket affects and reports each problem with steps and screenshots. Needs an app on Setup → Apps to test.
 - **Analyst:** answers questions from your databases through the `overdb` tool, read-only, and shows the query behind every number. Needs a database on Setup → Databases.
+- **PR Fixer:** keeps the team's open pull requests mergeable: fixes red builds, resolves conflicts and, for the people you choose, small review comments, each on the pull request's own branch. The server watches the pull requests and hands it the ones that need it (see [The team's pull requests](managers.md#the-teams-pull-requests)). Hiring from it switches on **Team pull requests** for the new worker. Needs a repo or workspace on Setup → Repos & workspaces, and your git host's tool (Bitbucket or GitHub) on Setup → Tools.
+- **Test Automation:** turns tickets that are ready for automation into end-to-end tests in the test repo's own framework and style, one pull request per ticket saying which acceptance criteria each test covers. Needs a test repo on Setup → Repos & workspaces, and an app on Setup → Apps to test.
+
+A catalog role can also say its hires work on the team's open pull requests (`teamPullRequests` in `org.json`, set on the PR Fixer). Only an admin adds a role, so only an admin grants that.
 
 They appear on the Hire page until they're in the catalog. **Add to the catalog** (admins) makes one the org's own role, and **Setup → Role catalog** lists them under **Starter roles**, where **Add** does the same and shows the role to change. From then on it's an ordinary catalog role: edit its job, tools and budget like any other, and hires from it follow the same allowances and approvals.
 
@@ -317,6 +321,27 @@ The org's rules, kept in `org.json` on the volume (or set by Claude with `set_or
   - **Any page, without asking.**
 - **Your own sites (always open):** sites workers may always open, such as `acme.atlassian.net, wiki.acme.com`. Subdomains count. List a private address here if workers should read it.
 - **Company sign-in:** OpenID Connect (Okta, Entra ID, Google Workspace). Enter the issuer and client ID here; a confidential client's secret goes on Setup → Secrets as `OVERCLI_SSO_CLIENT_SECRET`. "Everyone signs in this way" turns invite links into role grants.
+
+## Setup → Capacity
+
+Whether this server is the right size, and how much it may do at once.
+
+**The verdict.** Once a minute the server notes how many answers and code runs are going and waiting, and how busy the machine is (CPU and memory, against the container's own limits where it has them). From the last week of busy hours it says one of:
+
+- **About right:** work rarely waited, and the machine had room.
+- **Work is waiting:** answers waited for a place more than 5% of the busy time, or code runs more than 20% of it, while the machine had room. Raise the limits a little at a time.
+- **Needs a bigger box:** the machine itself was nearly full (CPU over 85%, or memory over 90%) in more than a tenth of the busy hours. Raising the limits would only slow everything down.
+- **Could use less:** all week nothing came within a third of the limits, and the machine stayed under 50% CPU and 60% memory. About half the machine would do.
+- **Learning:** under two days recorded yet.
+
+Below it, each of the last seven days' busiest moment, against the limits then. Readiness shows the same verdict, and asks for attention when the server needs more or work is waiting. The record is kept a fortnight in `org/capacity.json`.
+
+**The limits.** How many questions and code runs every worker together may have going at once. Each worker's own limits (Slack conversations at once, a shift's items) still apply under these.
+
+- **Answers at once:** a worker answering someone in Slack, the console or Claude. These mostly wait on the model, so memory limits them. Left blank: two per GB after the first 2 GB, between 4 and 64.
+- **Code runs at once:** runs in a checkout of their own, which build and test. CPUs limit them. Left blank: one per CPU.
+
+Work over a limit waits its turn, oldest first; nothing fails. A change applies within seconds, no restart, and is written to the decision log. Where the server's operator set `OVERCLI_ANSWERS_AT_ONCE` or `OVERCLI_CODE_RUNS_AT_ONCE`, that wins, and the page shows the value it set. The [metrics](../README.md#metrics) carry the same numbers for your own dashboards.
 
 ## Setup → Permissions
 

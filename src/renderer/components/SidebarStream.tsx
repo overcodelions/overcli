@@ -13,7 +13,7 @@
 // subtitle the Working-on section uses. A day spent switching repos produces
 // many labels, which is true, and worth being able to see.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../flowsStore';
 import { useStore } from '../store';
@@ -23,6 +23,7 @@ import { useWorkersStore } from '../workersStore';
 import { buildStream, groupIntoLanes, ownerDestination, type Lane } from '../sidebarStream';
 import { partitionSleeping } from '../sidebarSleep';
 import type { StreamEntry } from './sidebarItems';
+import { useFlip } from './useFlip';
 import { ConversationRow } from './ConversationRow';
 import { MomentumMeter, SleepRollup } from './SidebarAtoms';
 import { FlowRunRow } from './flows/FlowRunSidebarRow';
@@ -187,6 +188,10 @@ function StreamLane({
       : lane.ownerKind === 'unknown'
         ? `Browse the files in ${lane.ownerName}`
         : `Open ${lane.ownerName}`;
+  // A lane re-sorts when something in it is acted on; slide, don't jump.
+  const laneRef = useRef<HTMLDivElement>(null);
+  useFlip(laneRef);
+
   return (
     <div className="mt-1.5">
       <div
@@ -212,6 +217,7 @@ function StreamLane({
         </span>
       </div>
       <div
+        ref={laneRef}
         className={
           'ml-3 border-l pl-1 ' + (here ? 'border-accent/45' : 'border-card')
         }

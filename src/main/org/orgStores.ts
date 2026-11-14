@@ -505,6 +505,9 @@ export interface WorkerConfig {
   answersAtOnce?: number;
   skipCheckpoints?: boolean;
   continueOpenPrs?: boolean;
+  anyoneMayStart?: boolean;
+  startAudience?: unknown;
+  approvers?: unknown;
   prAuthors?: string[];
   prCommentAuthors?: string[];
   alwaysAllow?: string[];

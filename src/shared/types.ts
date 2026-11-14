@@ -423,6 +423,18 @@ export interface StreamEvent {
 export interface Conversation {
   id: UUID;
   name: string;
+  /// Who set `name`. `'auto'` names are re-titled from the conversation as
+  /// it goes (see src/shared/conversationTitle.ts); `'user'` names are never
+  /// touched. Absent on chats from before auto-naming, which are left as
+  /// they are — there's no telling whether their name was typed.
+  nameSource?: 'auto' | 'user';
+  /// The turn count when the name was last auto-titled (or the model said
+  /// to keep it), so re-titling stays rare.
+  autoNamedAtTurn?: number;
+  /// When the last auto-title changed the name, and what it was before —
+  /// the sidebar's hint: a brief fade on the row and "was …" in its tooltip.
+  autoNamedAt?: number;
+  previousName?: string;
   sessionId?: string;
   createdAt: number;
   lastActiveAt?: number;
@@ -1399,6 +1411,10 @@ export interface AppSettings {
   /// send respawns and `--resume`s the stored sessionId, so reaping is
   /// invisible apart from a slightly slower first turn. 0 disables it.
   idleSessionTimeoutMinutes?: number;
+  /// Name conversations from what they turn out to be about (a fast model
+  /// turn after replies, ticket keys up front). Default on; a name you type
+  /// is never changed either way.
+  autoNameConversations?: boolean;
   /// Newest version whose release notes the user has been shown. Drives the
   /// "What's new" panel — see src/main/whatsNew.ts. Absent means the baseline
   /// hasn't been seeded yet (a fresh install, or an install that predates the
@@ -1478,6 +1494,12 @@ export interface IPCInvokeMap {
   /// the conversation isn't on disk yet, so the caller can fall back to a
   /// full save.
   'store:patchConversation': (args: { id: UUID; patch: Partial<Conversation> }) => boolean;
+  /// A short title for a conversation from an excerpt of it, or `keep` when
+  /// the current name still fits. See src/main/conversationTitle.ts.
+  'conversation:suggestTitle': (args: {
+    current: string | null;
+    excerpt: string;
+  }) => { ok: true; title: string } | { ok: true; keep: true } | { ok: false; error: string };
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
@@ -4531,6 +4553,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   installedRegistryFlows: [],
   updateChannel: 'stable',
   idleSessionTimeoutMinutes: 30,
+  autoNameConversations: true,
 };
 
 /// An org server the desktop app started on this Mac ("Try it on this Mac").
