@@ -15,7 +15,7 @@ ARG OVERDB_REF=master
 # reach it: --build-arg DEBIAN_MIRROR=mirrors.edge.kernel.org. Security
 # updates then come straight from security.debian.org, which few mirrors carry.
 ARG DEBIAN_MIRROR=
-FROM ghcr.io/astral-sh/uv:0.8.0@sha256:5778d479c0fd7995fedd44614570f38a9d849256851f2786c451c220d7bd8ccd AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 # ---- overdb: just its main-process code, compiled; no Electron, no UI -----
 FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS overdb-clone
