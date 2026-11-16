@@ -2308,7 +2308,9 @@ function Detail() {
   const binding = stack.bindings.find((b) => b.serviceId === spec.id);
   const runtime = stack.runtimes.find((r) => r.serviceId === spec.id);
   const headerDrift = taskDrift(runtime, binding);
-  const pendingLease = useServicesStore((s) => s.pendingLease[stack.workspaceId]);
+  // Read from the map selected above: a hook here would sit after the early
+  // return and change the hook count when a service gets picked.
+  const pendingLease = pending[stack.workspaceId];
 
   return (
     <div className="flex min-w-0 flex-1 flex-col border-l border-card">
