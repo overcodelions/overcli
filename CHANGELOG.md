@@ -40,7 +40,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ### Security
 - **A worker on the team's pull requests can't push onto a shared line.** `[continue-branch]` refuses the default branch, `main`, `master`, `develop`, `release/*`, `hotfix/*` and similar, and any branch an open pull request merges into.
-- **The pull-request replies step can only read and post comments.** It no longer gets the whole git-host tool, so it can't approve, merge or decline, and pull-request titles, comments and the ask reach it marked as untrusted text.
+- **The pull-request replies step can only read and post comments.** It no longer gets the whole git-host tool, so it can't approve, merge or decline, and pull-request titles, comments and the ask reach it marked as untrusted text. With Bitbucket's generic `bb_post` call, each call is checked: it's let through only to a pull request's comments, and anything else waits for a person.
 - **A repo's config can't redirect the server's push.** `remote.*.url` and `remote.*.pushurl` are checked like the other steering keys.
 - **The test-systems browser stays off private addresses.** It refuses loopback, private, link-local and metadata addresses, and anything not http(s), except the apps to test's own environments, and checks again wherever a page ends up.
 - **Untrusted text can't close its own wrapper** with spaces, look-alike brackets, full-width letters or invisible characters, and a handed-back answer is wrapped again after it's unescaped.

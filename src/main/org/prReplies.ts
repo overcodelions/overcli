@@ -55,7 +55,7 @@ function nameWords(tool: string): string[] {
 /// one where only the reads were ever used, the step would otherwise wait for
 /// a person to post a reply.
 const KNOWN_REPLY_TOOLS: Array<[RegExp, string[]]> = [
-  [/bitbucket/i, ['getPullRequest', 'getPullRequestComments', 'addPullRequestComment']],
+  [/bitbucket/i, ['getPullRequest', 'getPullRequestComments', 'addPullRequestComment', 'bb_get', 'bb_post']],
   [/github/i, ['get_pull_request', 'get_pull_request_comments', 'add_issue_comment', 'add_reply_to_pull_request_comment']],
 ];
 
@@ -66,10 +66,36 @@ export function replyTools(server: string, known: readonly string[]): string[] {
     .filter((t) => parseMcpToolName(t)?.server === key)
     .filter((t) => {
       if (isReadOnlyMcpTool(t)) return true;
+      // The host's generic POST: listed, and held to a comment path call by
+      // call (repliesCallAllowed). Its PUT, PATCH and DELETE never are.
+      if (GENERIC_POST.test(parseMcpToolName(t)!.tool)) return true;
       const w = nameWords(parseMcpToolName(t)!.tool);
       return w.some((x) => COMMENT_WORDS.has(x)) && w.some((x) => POST_WORDS.has(x)) && !w.some((x) => BEYOND_COMMENTS.has(x));
     })
     .sort();
+}
+
+/// A host tool that sends any POST to its API (Bitbucket's `bb_post`).
+const GENERIC_POST = /^bb_post$/;
+/// Where a reply goes: a pull request's comments, and nowhere else. Approve,
+/// merge, decline and request-changes are POSTs too, to other paths.
+const COMMENTS_PATH = /^\/(?:2\.0\/)?repositories\/[^/?#\s]+\/[^/?#\s]+\/pullrequests\/\d+\/comments\/?$/;
+
+/// The runtime's call guard (setCallGuard) for the replies step: a generic
+/// POST is let through ahead only to a pull request's comments. `false`
+/// sends it to a person; any other call, or any other step, is left to the
+/// step's grant.
+export function repliesCallAllowed(call: { stepId: string; tool: string; input: string }): boolean | undefined {
+  if (call.stepId !== REPLIES_STEP) return undefined;
+  const parsed = parseMcpToolName(call.tool);
+  if (!parsed || !GENERIC_POST.test(parsed.tool)) return undefined;
+  let path: unknown;
+  try {
+    path = (JSON.parse(call.input || '{}') as { path?: unknown }).path;
+  } catch {
+    return false;
+  }
+  return typeof path === 'string' && !path.includes('..') && COMMENTS_PATH.test(path);
 }
 
 function seenTools(): string[] {

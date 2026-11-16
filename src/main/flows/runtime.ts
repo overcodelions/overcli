@@ -915,7 +915,11 @@ export class FlowRuntimeImpl {
             // A step the grant names may use the tools it lists, by name or
             // by server (`mcp__tracker`): the ticket follow-up's tracker,
             // nothing else.
-            const named = !!current && stepGrantAllows(run, current, ev.kind.info.toolName);
+            // A call guard (setCallGuard) may narrow one by what it is
+            // given: a host's generic POST, granted to post a comment, that
+            // aims at an approve or merge path is not let through ahead.
+            const guarded = !!current && this.callGuard?.({ stepId: current.id, tool: ev.kind.info.toolName, input: ev.kind.info.toolInput }) === false;
+            const named = !!current && !guarded && stepGrantAllows(run, current, ev.kind.info.toolName);
             // One of its role's tools: its job, so no step has to list it,
             // once a person approved the run or its manager always allows it.
             const server = parseMcpToolName(ev.kind.info.toolName)?.server;
@@ -951,6 +955,8 @@ export class FlowRuntimeImpl {
                   ? 'Refused by policy, not by a person: that shell command is not one this work may run without approval. This is not a file-permission or access problem. Commands that only read inside your folders still run: git log, git show, git blame, git grep, rg, grep, ls, cat, with cd into a folder first if you like. A loop, a variable, $(…), or anything that writes is refused. Run what you need as plain reads like those, and say in your reply if something still could not be read.'
                   : isNotify
                     ? refusalForModel('Sending a message is an outside action, and this run started on its own without its manager allowing that. Say in your reply who should be told, and what.')
+                  : guarded
+                    ? refusalForModel(`${tool} is given to this step only to post a comment on a pull request, and this call does something else. Say in your reply what you meant to do; a person can do it.`)
                   : ofRole
                     ? refusalForModel(`${tool} is one of this worker's role tools, but this run started on its own and its manager hasn't allowed its role's tools in runs like that. Say what you were about to do; its manager can approve the work, or turn on "Always allow its role's tools".`)
                       : refusalForModel(`${tool} is not among the tools this work was given (the worker's flow does not list it).`),
@@ -963,7 +969,9 @@ export class FlowRuntimeImpl {
             ev.kind.info.decidedBy = 'policy';
             ev.kind.info.decisionNote = allow
               ? approvedStep ? 'Allowed: you approved this step.' : notifyOk && !read ? 'Allowed: a message through the server, in a run that may send one.' : roleCleared && !read ? 'Allowed: a tool of its role, in a run that may use it.' : 'Allowed: a tool call that only reads.'
-              : `Denied automatically: this worker has no grant for external actions, and the step does not list ${tool} in its tools.`;
+              : guarded
+                ? `Denied automatically: this step may use ${tool} only to post a pull request comment.`
+                : `Denied automatically: this worker has no grant for external actions, and the step does not list ${tool} in its tools.`;
             if (!allow && !(run.refusedTools ?? []).includes(tool)) run.refusedTools = [...(run.refusedTools ?? []), tool];
             this.checkpoint(run);
           }
@@ -4895,6 +4903,15 @@ export class FlowRuntimeImpl {
   /// toolScope.ts for the two places they are enforced.
   setToolScopes(fn: (workerId: UUID) => ToolScopes | undefined): void {
     this.toolScopesFor = fn;
+  }
+
+  private callGuard: ((call: { stepId: string; tool: string; input: string }) => boolean | undefined) | null = null;
+
+  /// A check on one call's input, for a step a grant names: `false` keeps
+  /// the grant from letting it through ahead (it is refused like any call
+  /// the step doesn't list), anything else leaves the grant to decide.
+  setCallGuard(fn: (call: { stepId: string; tool: string; input: string }) => boolean | undefined): void {
+    this.callGuard = fn;
   }
 
   /// The worker behind a conversation and its tool scopes, for the tool
