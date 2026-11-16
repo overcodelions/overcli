@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-15
+
 ### Upgrading
 - **The server now limits how much runs at once.** Answers are capped by memory (two per GiB above 2 GiB, between 4 and 64) and code runs in their own checkout at one per CPU, on top of each worker's own limits. Work over a limit waits its turn, oldest first, and nothing fails. Change them on Setup → Capacity, or fix one from the environment with `OVERCLI_ANSWERS_AT_ONCE` / `OVERCLI_CODE_RUNS_AT_ONCE` (`0` for no limit). A busy server that ran everything at once before may now queue work.
 - **`/api/directory` is open to anyone signed in,** so the console can show people as names. Only admins see email addresses in it.
@@ -46,6 +48,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **A repo's config can't redirect the server's push.** `remote.*.url` and `remote.*.pushurl` are checked like the other steering keys, and a remote is trusted only at that repo's own recorded address, not another connected repo's.
 - **The test-systems browser stays off private addresses.** Every request it makes, frames and page fetches included, goes through a proxy in the server that resolves the name itself, refuses loopback, private, link-local and metadata addresses, and connects to the address it checked, so DNS rebinding can't get past it. An app to test's own hosts and environments may be private; link-local never is.
 - **Untrusted text can't close its own wrapper** with spaces, look-alike brackets, full-width letters or invisible characters, and a handed-back answer is wrapped again after it's unescaped.
+- **`hono` 4.13.18,** patching five moderate advisories: middleware skipped under `mount()` and for some route sets, a `csrf()` gap, form validation skipped for multipart requests, and an escaping gap in the `css` helper.
 - **`/api/directory` shows email addresses to admins only,** including people known only by an email, whose name and id are masked for everyone else.
 - **Playwright MCP is installed from a lockfile in the image,** so nothing under it is resolved from the registry at run time.
 
@@ -1374,7 +1377,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/overcodelions/overcli/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/overcodelions/overcli/compare/v0.24.5...v0.25.0
 [0.24.5]: https://github.com/overcodelions/overcli/compare/v0.24.4...v0.24.5
 [0.24.4]: https://github.com/overcodelions/overcli/compare/v0.24.3...v0.24.4
