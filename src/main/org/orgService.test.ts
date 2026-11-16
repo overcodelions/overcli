@@ -184,6 +184,15 @@ describe('OrgService visibility', () => {
     expect(svc.listWorkers(pat).find((w) => w.id === 'analyst')).toMatchObject({ manager: 'Pat', managerInherited: true, youManage: true });
   });
 
+  it('marks the caller’s own workers apart from those only shared with them, and an admin’s reach is not ownership', () => {
+    const { svc } = harness({ roster });
+    const yours = (c: typeof pat) => Object.fromEntries(svc.listWorkers(c).map((w) => [w.id, w.yours]));
+    expect(yours(pat)).toEqual({ analyst: true, chief: true, open: false });
+    const boss = { name: 'Admin', slackUserId: PAT, admin: true };
+    expect(yours(boss)).toMatchObject({ chief: true, analyst: true, open: false, hidden: false });
+    expect(svc.listWorkers(boss).find((w) => w.id === 'hidden')).toMatchObject({ youManage: true, yours: false });
+  });
+
   it('does not resolve a hidden worker by name', () => {
     const { svc } = harness({ roster });
     expect(svc.getWorker(pat, 'Hidden').ok).toBe(false);

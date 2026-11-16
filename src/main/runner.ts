@@ -132,6 +132,7 @@ import { credentialDenyRules } from './org/credentialGuard';
 import { bindToolGateway, boundGatewayTools, builtinGatewayTools } from './org/toolGateway';
 import { overdbToolsForRun } from './org/overdbBinding';
 import { type RunLaunch, bindRunTools, closeRunToolRelay, releaseRunTools, runToolRelayEnv } from './org/runToolRelay';
+import { orgChatRelayServers, orgChatTools } from './org/orgChatTools';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -794,6 +795,17 @@ function relayToolHome(): string {
   return dir;
 }
 
+/// The MCP servers a Gemini chat's ACP session is opened with: overgo through
+/// the run tool relay when the chat gets it, in ACP's stdio shape.
+export function geminiMcpServers(args: Pick<SendArgs, 'conversationId'> & Partial<Pick<SendArgs, 'interactive' | 'flowStep'>>): Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }> {
+  return Object.entries(orgChatRelayServers(args)).map(([name, s]) => ({
+    name,
+    command: s.command,
+    args: s.args,
+    env: Object.entries(s.env).map(([k, value]) => ({ name: k, value })),
+  }));
+}
+
 /// A run's own tools, each gateway one carrying a key bound to the run
 /// (toolGateway.ts), so the gateway knows whose call it is. A run on the
 /// whole config gets just its gateway tools here, on top of that config.
@@ -801,7 +813,7 @@ function relayToolHome(): string {
 /// carry a credential as a relay descriptor (runToolRelay.ts), so the temp
 /// config the CLI reads never holds a tool's env, args or headers.
 export function selectedClaudeMcpConfig(
-  args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'> & Partial<Pick<SendArgs, 'sandboxFsWrites' | 'permissionMode' | 'allowedDirs'>>,
+  args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'> & Partial<Pick<SendArgs, 'sandboxFsWrites' | 'permissionMode' | 'allowedDirs' | 'interactive' | 'flowStep'>>,
   profileDir?: () => string,
 ): string {
   if (args.backend !== 'claude') return '';
@@ -828,6 +840,9 @@ export function selectedClaudeMcpConfig(
     ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId),
     ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), args.conversationId),
     ...builtinGatewayTools(args.conversationId),
+    // overgo, for a chat with "Let my chats reach overgo" on: its token stays
+    // in the relay, never in the config the CLI reads (orgChatTools.ts).
+    ...orgChatTools(args),
   };
   return Object.keys(bound).length ? JSON.stringify({ mcpServers: bindRunTools(bound, args.conversationId, relayLaunchFor(args, profileDir)) }) : '';
 }
@@ -2260,6 +2275,7 @@ export class RunnerManager {
         ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId),
         ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), convId),
         ...builtinGatewayTools(convId),
+        ...orgChatTools(args),
       }, convId, relayLaunchFor(args)) as ClaudeSdkStartOptions['mcpServers'],
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
@@ -2853,6 +2869,8 @@ export class RunnerManager {
         active.proc.kill('SIGTERM');
       } catch {}
     }
+    // A Codex or Gemini chat's relay key (overgo) goes with the chat.
+    if (active.backend !== 'claude' && !opts.respawning) releaseRunTools(conversationId);
     if (shouldReleaseClaudeBroker({ backend: active.backend, respawning: opts.respawning ?? false })) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
@@ -3787,9 +3805,9 @@ export class RunnerManager {
         ? await session.client.request('session/resume', {
             sessionId: args.sessionId,
             cwd: args.cwd,
-            mcpServers: [],
+            mcpServers: geminiMcpServers(args),
           })
-        : await session.client.request('session/new', { cwd: args.cwd, mcpServers: [] });
+        : await session.client.request('session/new', { cwd: args.cwd, mcpServers: geminiMcpServers(args) });
 
       session.initialized = true;
       session.sessionId = resumed ? args.sessionId : opened.sessionId;
@@ -4974,6 +4992,9 @@ export class RunnerManager {
         // edits whose path resolved through a symlink.
         writableRoots: resolveSymlinkWritableRoots(args.cwd),
         networkAccess: this.networkFor(args),
+        // overgo, for a chat with "Let my chats reach overgo" on: the relay
+        // helper only; the org token stays in this process (orgChatTools.ts).
+        mcpServers: orgChatRelayServers(args),
       });
       // Update on any threadId we don't already have. The fresh-conv
       // case (no prior sessionId) is the original trigger; the

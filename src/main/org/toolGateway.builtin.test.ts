@@ -103,3 +103,30 @@ describe('the gateway’s built-in notify', () => {
     expect(builtinGatewayTools('not-a-worker-run')).toEqual({});
   });
 });
+
+describe('the gateway’s built-in ask_desktop', () => {
+  it('is offered beside notify, hands the task over for the run, and keeps to the worker’s scope', async () => {
+    const handed: Array<{ conversationId: string; task: string; kind?: string }> = [];
+    const calls: Array<{ call: string; allowed: boolean }> = [];
+    const gw = await openToolGateway({
+      dir: () => tmpDir(),
+      callerFor: (id) => ({ 'run-1': { workerName: 'Robin' }, 'run-2': { workerName: 'Sky', scopes: { overgo: { mode: 'only', calls: ['notify'] } } } } as Record<string, GatewayCaller>)[id],
+      onCall: (c) => calls.push(c),
+      notify: async () => ({ ok: true, sentTo: 'your manager' }),
+      handOff: (req) => (handed.push(req), req.task.includes('nope') ? { ok: false, error: 'Robin isn’t allowed to hand work to a desktop.' } : { ok: true, message: 'Handed to Pat’s overcli.' }),
+    }, configFile({}));
+    cleanup.push(() => gw.stop());
+    const url = `${gw.base()}overgo`;
+    const key = `Bearer ${gw.keyFor('run-1')}`;
+    expect((await post(url, key, rpc(1, 'tools/list'))).json.result.tools.map((t: { name: string }) => t.name)).toEqual(['notify', 'ask_desktop']);
+    const ok = await post(url, key, rpc(2, 'tools/call', { name: 'ask_desktop', arguments: { task: 'Check the acme partner portal shows the new tier', kind: 'browser' } }));
+    expect(ok.json.result).toEqual({ content: [{ type: 'text', text: 'Handed to Pat’s overcli.' }] });
+    expect(handed[0]).toEqual({ conversationId: 'run-1', task: 'Check the acme partner portal shows the new tier', kind: 'browser' });
+    const refused = await post(url, key, rpc(3, 'tools/call', { name: 'ask_desktop', arguments: { task: 'nope' } }));
+    expect(refused.json.result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('isn’t allowed') }] });
+    const scoped = await post(url, `Bearer ${gw.keyFor('run-2')}`, rpc(4, 'tools/call', { name: 'ask_desktop', arguments: { task: 'Check the portal' } }));
+    expect(scoped.json.result.isError).toBe(true);
+    expect(handed).toHaveLength(2);
+    expect(calls.map((c) => `${c.call}:${c.allowed}`)).toEqual(['ask_desktop:true', 'ask_desktop:false', 'ask_desktop:false']);
+  });
+});

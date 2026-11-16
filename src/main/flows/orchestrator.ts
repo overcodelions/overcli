@@ -53,6 +53,7 @@ import {
   resolveProducerModel,
 } from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
+import { BUILD_FAILED_HEADING } from './mergeOnConflict';
 import type { RunnerManager } from '../runner';
 import {
   deleteOrchestration,
@@ -977,7 +978,7 @@ export class OrchestratorImpl {
             o.runIn === 'shared' && adoptWorktrees
               ? next.candidate.prompt + sharedBranchInstruction(adoptWorktrees.branch)
               : continued
-                ? `${next.candidate.prompt}\n\nThis follows up ${continued}, already pushed with its pull request open: your checkout starts from it, so its commits are here. Build on them; the server adds what you change to that branch.${failure ? `\n\nWHY ITS LATEST BUILD FAILED (read by the server from the build itself)\n${failure}` : ''}`
+                ? `${next.candidate.prompt}\n\nThis follows up ${continued}, already pushed with its pull request open: your checkout starts from it, so its commits are here. Build on them; the server adds what you change to that branch.${failure ? `\n\n${BUILD_FAILED_HEADING} (read by the server from the build itself)\n${failure}` : ''}`
                 : next.candidate.prompt,
           runIn,
           baseBranch,

@@ -1,5 +1,8 @@
+import http from 'node:http';
+import { once } from 'node:events';
+import type net from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { dialable, normalizeOrgUrl, processPublishPayload, unreachable } from './orgClient';
+import { dialable, normalizeOrgUrl, orgCall, processPublishPayload, unreachable } from './orgClient';
 import type { ProcessDef } from '../../shared/org/process';
 
 describe('normalizeOrgUrl', () => {
@@ -71,5 +74,27 @@ describe('processPublishPayload', () => {
     expect(processPublishPayload(def, [])).toMatchObject({ ok: false, error: expect.stringContaining('Prototype') });
     const onlyYou = { ...def, stages: [{ id: 'ok', name: 'Validate', kind: 'people' as const, approvers: [{ name: 'You' }] }] };
     expect(processPublishPayload(onlyYou, teams)).toMatchObject({ ok: false, error: expect.stringContaining('Validate') });
+  });
+});
+
+describe('orgCall', () => {
+  it('refuses a redirect, so the token never follows one, and says so', async () => {
+    const reached: string[] = [];
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/whoami') return res.writeHead(302, { Location: '/elsewhere' }).end();
+      reached.push(String(req.headers.authorization ?? ''));
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const base = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+    try {
+      const res = await orgCall(base, 'ocli_secret', 'GET', '/api/whoami');
+      expect(res).toMatchObject({ ok: false, error: expect.stringContaining('redirect') });
+      expect(reached).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
   });
 });

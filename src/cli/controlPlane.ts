@@ -1238,6 +1238,12 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       },
     },
     { method: 'GET', path: /^\/api\/today$/, handle: (c) => org.today(c) },
+    // Tasks workers handed to the caller's desktop (desktopTasks.ts): the
+    // overcli app lists them, and claims, declines or finishes each.
+    { method: 'GET', path: /^\/api\/desktop\/tasks$/, handle: (c) => org.desktopTasks(c) },
+    { method: 'POST', path: /^\/api\/desktop\/tasks\/([^/]+)\/claim$/, handle: (c, _b, [id]) => org.claimDesktopTask(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/desktop\/tasks\/([^/]+)\/decline$/, handle: (c, b, [id]) => org.declineDesktopTask(c, decodeURIComponent(id), str(b.why)) },
+    { method: 'POST', path: /^\/api\/desktop\/tasks\/([^/]+)\/result$/, handle: (c, b, [id]) => org.finishDesktopTask(c, decodeURIComponent(id), str(b.result)) },
     { method: 'GET', path: /^\/api\/proposals$/, handle: (c) => org.proposals(c) },
     {
       method: 'POST',
@@ -2069,14 +2075,17 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
         if (caller && isAdmin(loadOrgPolicy().policy, caller)) deps.access?.noteOrigin(originOf(req));
         if (path === '/mcp') {
           if (!caller) {
-            return send(res, 401, { jsonrpc: '2.0', error: { code: -32001, message: 'A bearer token from `overcli tokens create` is required.' }, id: null }, {
+            return send(res, 401, { jsonrpc: '2.0', error: { code: -32001, message: 'Not signed in to overgo: the sign-in is missing, expired or was revoked. In the overcli app, sign in again under Settings → Your org; anywhere else, use a token from `overcli tokens create`.' }, id: null }, {
               'WWW-Authenticate': 'Bearer',
             });
           }
           if (req.method !== 'POST') {
             return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }, { Allow: 'POST' });
           }
-          return await handleMcp(req, res, deps.org, caller, deps.access);
+          // A chat in the overcli app says so (its relay adds the header), so
+          // the decision log shows where a change came from.
+          const fromChat = String(req.headers['x-overcli-client'] ?? '') === 'desktop-chat';
+          return await handleMcp(req, res, deps.org, fromChat ? { ...caller, via: 'overcli chat' } : caller, deps.access);
         }
 
         if (path.startsWith('/api/')) {
@@ -2088,7 +2097,8 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           if (!route) return send(res, 404, { ok: false, error: 'No such route.' });
           // "View as": an admin seeing the console as one person sees it, to
           // check what they can see. Read only: nothing is done in their name.
-          let as = caller;
+          // The overcli app's Org tab says so: its changes are logged as from it.
+          let as = String(req.headers['x-overcli-client'] ?? '') === 'desktop-app' ? { ...caller, via: 'overcli app' } : caller;
           const viewAs = String(req.headers['x-overgo-view-as'] ?? '').trim();
           if (viewAs) {
             const policy = loadOrgPolicy().policy;

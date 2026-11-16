@@ -284,6 +284,8 @@ export interface AuditEntry {
   slackUserId?: string;
   /// One plain sentence: "Approved Max posting in #product."
   what: string;
+  /// Where it was done from, when not the console or Slack: 'overcli chat'.
+  via?: string;
 }
 
 export interface AuditStore {
@@ -681,6 +683,9 @@ export interface AskRecord {
   handedBack?: boolean;
   /// The Slack thread it was asked in (see `OrgService.startAsk`).
   conversation?: string;
+  /// For an ask a Slack message set off (a trigger): who wrote the message,
+  /// and where. `text` is then what they wrote; `by` is the trigger's name.
+  from?: { slackUserId?: string; where?: string };
   /// Asked by someone who doesn't manage the worker, or by a trigger: its errands run untrusted.
   untrusted?: boolean;
 }

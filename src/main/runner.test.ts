@@ -67,6 +67,7 @@ import {
   resolveMcpScope,
   claudeMcpLaunchFingerprint,
   selectedClaudeMcpConfig,
+  geminiMcpServers,
   toolCarriesCredentials,
   relayedTools,
   relayLaunchFor,
@@ -80,6 +81,7 @@ import {
 } from './runner';
 import type { Backend, StreamEvent } from '../shared/types';
 import { closeRunToolRelay, runToolLaunch } from './org/runToolRelay';
+import { setOrgChatSource } from './org/orgChatTools';
 import { setActiveWorkerUser } from './org/workerUser';
 import { clearHost, hasHost, host, setHost } from './host';
 import { nodeHost } from './hostNode';
@@ -1152,6 +1154,34 @@ describe('selectedClaudeMcpConfig', () => {
     } finally {
       mcpMocks.installed = {};
       mcpMocks.sealed = [];
+    }
+  });
+
+  it('gives a chat overgo through the relay, with the org token nowhere in the config the CLI reads', () => {
+    setOrgChatSource(() => ({ tool: 'overgo', url: 'https://overgo.acme.example', token: 'ocli_acme-org-token' }));
+    try {
+      const chat = JSON.parse(selectedClaudeMcpConfig({ ...args, conversationId: 'conv-chat', interactive: true })).mcpServers;
+      expect(Object.keys(chat)).toEqual(['overgo']);
+      expect(chat.overgo.command).toBe(process.execPath);
+      expect(chat.overgo.args.slice(2)).toEqual(['conv-chat', 'overgo']);
+      expect(JSON.stringify(chat)).not.toContain('ocli_acme-org-token');
+      expect(JSON.stringify(chat)).not.toContain('overgo.acme.example');
+      // Flow steps and sends nobody typed get none of it.
+      expect(selectedClaudeMcpConfig({ ...args, conversationId: 'conv-step', interactive: true, flowStep: true })).toBe('');
+      expect(selectedClaudeMcpConfig({ ...args, conversationId: 'conv-hidden' })).toBe('');
+      // A Gemini chat gets it in ACP's stdio shape, the relay key in its env.
+      const [gem] = geminiMcpServers({ conversationId: 'conv-gemini', interactive: true });
+      expect(gem.name).toBe('overgo');
+      expect(gem.args.slice(2)).toEqual(['conv-gemini', 'overgo']);
+      expect(gem.env.map((e) => e.name)).toContain('OVERCLI_TOOL_RELAY_TOKEN');
+      expect(JSON.stringify(gem)).not.toContain('ocli_acme-org-token');
+      expect(geminiMcpServers({ conversationId: 'conv-gemini-step', interactive: true, flowStep: true })).toEqual([]);
+      // Switch off or signed out: the source says nothing, and so does the config.
+      setOrgChatSource(() => null);
+      expect(selectedClaudeMcpConfig({ ...args, conversationId: 'conv-off', interactive: true })).toBe('');
+      expect(geminiMcpServers({ conversationId: 'conv-gemini-off', interactive: true })).toEqual([]);
+    } finally {
+      setOrgChatSource(null);
     }
   });
 

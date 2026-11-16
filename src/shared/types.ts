@@ -1169,6 +1169,39 @@ export interface InstalledRegistryFlow {
 
 export type SidebarLayout = 'stream' | 'projects';
 
+/// One org server this app signs in to. Its token is in the keychain, never here.
+export interface OrgServerEntry {
+  /// `primary` for the first (it keeps the original keychain key), else made
+  /// from the address.
+  id: string;
+  /// Normalized address (https, or http to this machine).
+  url: string;
+  /// The org's name, as the server last said.
+  name?: string;
+  /// Who this app is signed in as there.
+  who?: string;
+  /// "Let my chats reach <org>, as me".
+  inChats?: boolean;
+  /// What those chats may do: only read, or read and ask before each change
+  /// (a dialog in the app). Absent: 'ask'.
+  chatAccess?: 'read' | 'ask';
+  /// "Take work from my org workers": tasks workers hand to this person's
+  /// desktop (ask_desktop) show here, each waiting for an Allow.
+  takesWork?: boolean;
+}
+
+/// An org server as Settings and the Org tab show it.
+export interface OrgServerStatus extends OrgServerEntry {
+  isDefault: boolean;
+  tokenConfigured: boolean;
+  /// Its token comes from $OVERCLI_ORG_TOKEN (the default server only).
+  fromEnv: boolean;
+  me?: { org: string; name: string; canHire: boolean; admin?: boolean };
+  error?: string;
+  /// The MCP server name chats see it as: `overgo`, or `overgo-<org>` with several.
+  chatTool: string;
+}
+
 export interface AppSettings {
   backendPaths: Partial<Record<Backend, string>>;
   backendDefaultModels: Partial<Record<Backend, string>>;
@@ -1279,6 +1312,17 @@ export interface AppSettings {
   /// publishing workers you build here to the org. The token lives in
   /// `host().secrets`, never here.
   orgServerUrl?: string;
+  /// Before several org servers: the one server's chat switch. Read once to
+  /// make `orgServers`; the switch is per server now.
+  orgInChats?: boolean;
+  /// The org servers this app is signed in to (or was), each with its own
+  /// token in the keychain (org/orgServers.ts). Main owns the list: a
+  /// settings save from the renderer keeps main's copy. Unset: made from
+  /// `orgServerUrl` the first time it's read.
+  orgServers?: OrgServerEntry[];
+  /// Which one publishing, the overdb and overapi inboxes and `orgServerUrl`
+  /// use when nothing names another. Unset or gone: the first.
+  orgDefaultServerId?: string;
   /// Hard USD ceiling for a SINGLE flow run. When a run's accumulated spend
   /// (`FlowRun.costUSD`) crosses this, the runtime aborts it mid-execution
   /// and fires a notification naming the flow, the cost and the ceiling.
@@ -1545,7 +1589,26 @@ export interface IPCInvokeMap {
   /// Check the bot token against Slack without starting anything.
   'slack:test': () => { ok: boolean; team?: string; error?: string };
   /// Your org server: whether a token is stored, and who it says you are.
-  'org:status': (args?: { url?: string }) => { tokenConfigured: boolean; fromEnv: boolean; who?: { org: string; name: string; canHire: boolean }; error?: string };
+  'org:status': (args?: { url?: string; serverId?: string }) => { tokenConfigured: boolean; fromEnv: boolean; who?: { org: string; name: string; canHire: boolean; admin?: boolean }; error?: string };
+  /// The Org tab's call to one org server's console API, through main (which
+  /// adds the token). Only paths on org/orgTabRoutes.ts's list go.
+  'org:call': (args: { serverId: string; method: 'GET' | 'POST'; path: string; body?: unknown }) => { ok: true; data: any } | { ok: false; error: string; status?: number; signIn?: true };
+  /// Every org server, each with who you are there (asked of each server now).
+  'org:servers': () => OrgServerStatus[];
+  /// Sign out of one server (its entry stays, to sign in again), or remove it.
+  'org:removeServer': (args: { serverId: string }) => { ok: boolean };
+  'org:setDefaultServer': (args: { serverId: string }) => { ok: boolean };
+  /// That server's "Let my chats reach …, as me".
+  'org:setInChats': (args: { serverId: string; on: boolean }) => { ok: boolean };
+  'org:setChatAccess': (args: { serverId: string; access: 'read' | 'ask' }) => { ok: boolean };
+  'org:setTakesWork': (args: { serverId: string; on: boolean }) => { ok: boolean };
+  'org:answerChange': (args: { id: string; allow: boolean }) => { ok: boolean };
+  /// A worker's picture from a picture service the server uses, as a data:
+  /// URL the window may show (its CSP takes no remote images). Null: not one
+  /// of those services, or it couldn't be fetched.
+  'org:picture': (url: string) => string | null;
+  /// Add a server with a pasted token instead of signing in.
+  'org:addWithToken': (args: { url: string; token: string }) => { ok: true; serverId: string } | { ok: false; error: string };
   'org:setToken': (token: string | null) => { ok: boolean; error?: string };
   /// Sign this app in to an org: an invite link signs in at once; a server
   /// address starts pairing — the browser opens on the org's page to confirm
@@ -1555,15 +1618,15 @@ export interface IPCInvokeMap {
     | { ok: true; signedIn: false; userCode: string; verifyUrl: string }
     | { ok: false; error: string };
   'org:cancelSignIn': () => { ok: true };
-  'org:signOut': () => { ok: boolean };
+  'org:signOut': (args?: { serverId?: string }) => { ok: boolean };
   /// Publish one of your workers to the org server, under the org's rules.
   /// `signIn` on a failure that signing in fixes, so the card links to it.
-  'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org' }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org'; serverId?: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// A team, its members published first (or reused), onto the org.
-  'org:publishTeam': (args: { id: UUID }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  'org:publishTeam': (args: { id: UUID; serverId?: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// A local process onto the org. Its teams have to be published first:
   /// the server finds each by the id it had here.
-  'org:publishProcess': (args: { id: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  'org:publishProcess': (args: { id: string; serverId?: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// What "Publish my setup" would send: tools (key names only), workspaces
   /// and projects. Nothing secret crosses to the renderer.
   'org:setupPreview': () =>
@@ -4182,6 +4245,13 @@ export interface SlackStatus {
 export type MainToRendererEvent =
   | { type: 'slackStatus'; status: SlackStatus }
   /// How a pairing sign-in to the org server ended.
+  /// The org servers changed in main (signed in, out, removed, switched):
+  /// the renderer's copy of these settings follows.
+  | { type: 'orgServers'; servers: OrgServerEntry[]; defaultId?: string; orgServerUrl?: string }
+  /// A chat wants to change something on an org server: ask the person
+  /// (OrgChangeDialog), answering with org:answerChange. `done`: it was
+  /// settled another way (timed out); close it.
+  | { type: 'orgChangeRequest'; id: string; chat?: string; org?: string; name?: string; args?: unknown; done?: boolean }
   /// `orgServerUrl` on success: main saved it, the renderer's copy follows.
   | { type: 'orgSignIn'; outcome: 'signedIn' | 'denied' | 'expired' | 'failed'; org?: string; name?: string; error?: string; orgServerUrl?: string }
   | { type: 'terminalData'; id: string; data: string }

@@ -45,6 +45,7 @@ export function roleRunNote(roleTools: readonly string[]): string {
   }
   lines.push(
     `TELLING PEOPLE. To tell someone your work is done or needs them, use the ${SERVER_TOOL} tool's notify call if you have it. Never reach Slack or another service from the shell, and never look for a token: you won't have one.`,
+    `YOUR MANAGER'S COMPUTER. If the ${SERVER_TOOL} tool offers ask_desktop, a step that needs their own browser and sign-ins, design work, or files on their machine can be handed to them with it. They decide, and what they send back comes to you as a reply. Use it only when nothing here can do the work.`,
   );
   return `${lines.join('\n\n')}\n\n`;
 }

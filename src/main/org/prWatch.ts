@@ -102,6 +102,51 @@ interface RepoSeen {
   prs: Record<string, Seen>;
 }
 
+/// What the watcher holds for these repos' pull requests, read from its
+/// state with no host calls: for "why hasn't it picked up #1234?".
+export interface PrWatchPr {
+  repo: string;
+  id: string;
+  build?: BuildState;
+  conflicted?: boolean;
+  comments?: number;
+  /// Gathered and not handed over yet: handed over once it settles (QUIET_MS).
+  waiting?: { conflict?: true; failed?: true; comments?: number };
+  /// Times its worker was handed review comments on it, of MAX_COMMENT_ROUNDS.
+  commentRounds: number;
+  /// Wakes for it in the last day, of MAX_WAKES_PER_DAY.
+  wakesToday: number;
+  lastWokenAt?: number;
+  lastActiveAt?: number;
+  /// Missing from the host's list since then: closed, merged, or a short page.
+  goneAt?: number;
+}
+
+export function prWatchSummary(state: PrWatchState, repos: readonly string[], now: number): { tracked: number; pullRequests: PrWatchPr[] } {
+  const pullRequests: PrWatchPr[] = [];
+  for (const repo of repos) {
+    for (const [id, seen] of Object.entries(state.repos[repo]?.prs ?? {})) {
+      const woken = (seen.woken ?? []).filter((t) => now - t < DAY_MS);
+      const waiting = seen.pending && Object.keys(seen.pending).length ? seen.pending : undefined;
+      pullRequests.push({
+        repo,
+        id,
+        ...(seen.build ? { build: seen.build } : {}),
+        ...(seen.conflicted !== undefined ? { conflicted: seen.conflicted } : {}),
+        ...(seen.comments !== undefined ? { comments: seen.comments } : {}),
+        ...(waiting ? { waiting } : {}),
+        commentRounds: seen.commentRounds ?? 0,
+        wakesToday: woken.length,
+        ...(seen.woken?.length ? { lastWokenAt: Math.max(...seen.woken) } : {}),
+        ...(seen.activeAt ? { lastActiveAt: seen.activeAt } : {}),
+        ...(seen.goneAt ? { goneAt: seen.goneAt } : {}),
+      });
+    }
+  }
+  pullRequests.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+  return { tracked: pullRequests.filter((p) => !p.goneAt).length, pullRequests };
+}
+
 /// A worker that looks after pull requests, and whose.
 export interface PrWatcherOf {
   workerId: string;

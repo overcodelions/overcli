@@ -569,6 +569,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   let gateway: ToolGateway | null = null;
   // The org's Slack sender for the gateway's notify, set once the org is up.
   let notifyFromRun: NotifyPerson | null = null;
+  let handOffFromRun: ((req: { conversationId: string; task: string; kind?: string }) => { ok: true; message: string } | { ok: false; error: string }) | null = null;
   // Whose run the overdb tool is serving, for its query log (overdbBinding.ts).
   useOverdbWorkerLookup((id) => flowRuntime.workerForConversation(id)?.workerName);
   // Where test-systems keeps a run's screenshots: with the run, not in its repo.
@@ -613,6 +614,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         onCall: (c) => log(c.allowed ? 'info' : 'warn', 'org.tools', `${c.who} ${c.allowed ? 'called' : 'was refused'} ${c.tool}.${c.call}`),
         log: (message) => log('warn', 'org.tools', message),
         notify: (req) => (notifyFromRun ? notifyFromRun(req) : Promise.resolve({ ok: false as const, error: 'Slack isn’t set up on this server, so nothing was sent.' })),
+        handOff: (req) => (handOffFromRun ? handOffFromRun(req) : { ok: false as const, error: 'The server is still starting. Try again in a minute.' }),
       },
       toolFile,
     ).then(
@@ -642,6 +644,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   );
   slackCommands = commands;
   notifyFromRun = notifyPerson;
+  handOffFromRun = (req) => org.handOffToDesktop(req);
 
   // A finished repo or workspace run's change, committed and pushed by the
   // server (landBranches.ts).

@@ -37,6 +37,8 @@ function heartbeatBackendOf(
 }
 
 import { useStore } from "../../store";
+import { useOrgServerPick } from "./OrgServerPick";
+import { OrgPane } from "./org/OrgPane";
 import { isEverydayProject } from "@shared/everydayProjects";
 import { useFlowsStore } from "../../flowsStore";
 import { BrowserSetupHint } from "../BrowserSetupHint";
@@ -284,6 +286,9 @@ export function WorkersPane() {
   if (hiring) return <HireWorker defaultProjectPath={defaultProjectPath} />;
 
   if (view === "processes") return processesLab ? <ProcessesPane /> : <ProcessesLabOff />;
+
+  // The Org tab: the org servers' workers, not this app's.
+  if (view === "orgServers") return <OrgPane />;
 
   if (view === "team")
     return (
@@ -2017,6 +2022,7 @@ function ShareCard({ worker }: { worker: Worker }) {
   const orgAlpha = useStore((s) => s.settings.orgAlpha ?? false);
   const openSheet = useStore((s) => s.openSheet);
   const [publishing, setPublishing] = useState(false);
+  const { serverId: orgServerId, picker: orgPicker } = useOrgServerPick();
   const [published, setPublished] = useState<{ ok: boolean; text: string; signIn?: boolean } | null>(null);
 
   // Re-read whenever the card is open and the worker changes: the YAML is a
@@ -2090,7 +2096,7 @@ function ShareCard({ worker }: { worker: Worker }) {
               setPublishing(true);
               setPublished(null);
               void window.overcli
-                .invoke("org:publishWorker", { id: worker.id })
+                .invoke("org:publishWorker", { id: worker.id, serverId: orgServerId })
                 .then((res) =>
                   setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error, signIn: res.signIn }),
                 )
@@ -2101,6 +2107,7 @@ function ShareCard({ worker }: { worker: Worker }) {
             {publishing ? "Publishing…" : "Publish to your org (alpha)"}
           </button>
         )}
+        {orgAlpha && orgPicker}
       </div>
       {!orgAlpha && (
         <OrgNudge id="share-worker">

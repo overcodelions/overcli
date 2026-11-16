@@ -13,7 +13,7 @@ import { z } from 'zod';
 
 import type { OrgService } from '../main/org/orgService';
 import type { AccessService } from '../main/org/accessService';
-import type { OrgCaller } from '../shared/org/policy';
+import { parseAudience, type Audience, type OrgCaller } from '../shared/org/policy';
 
 function json(value: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -32,6 +32,29 @@ function out<T extends R>(res: T): CallToolResult {
 }
 
 const VISIBILITY = z.enum(['private', 'team', 'org']);
+
+/// Who, picked: people by Slack member id (find_people turns a name into one),
+/// the org's groups as `team:<name>`, and roles. null clears it.
+const AUDIENCE = z
+  .object({
+    people: z.array(z.string()).optional().describe('Slack member ids, e.g. U0123ABCD. Use find_people to look them up.'),
+    groups: z.array(z.string()).optional().describe('The org\'s groups, as team:<name>.'),
+    roles: z.array(z.enum(['admin', 'approver', 'hirer'])).optional().describe('admin: admins; approver: hire approvers; hirer: people who can hire.'),
+  })
+  .nullable()
+  .optional();
+
+const SCOPE = z
+  .object({ mode: z.enum(['read', 'only']), calls: z.array(z.string()).optional().describe('For only: the tool calls it may make.') })
+  .nullable()
+  .describe('read: only its read calls; only: just these calls; null: the whole tool again.');
+
+/// A tool's audience argument, checked as the console's update route checks it.
+function audienceOf(raw: unknown): { ok: true; audience: Audience | null | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, audience: raw };
+  const a = parseAudience(raw);
+  return a.ok ? { ok: true, audience: a.audience } : a;
+}
 
 /// How long ask_worker waits before handing back an id to check later.
 const ASK_WAIT_MS = 50_000;
@@ -342,8 +365,13 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     'update_worker',
     {
       description:
-        "Change a worker you manage: its manager (hand it to someone else), who it reports to, who may ask it things, or its " +
-        'monthly budget. Pass null to clear manager or reportsTo.',
+        "Change a worker you manage. Pass only what changes. manager: hand it to someone else (null clears). reportsTo: the worker it reports to (null clears). " +
+        'visibility or audience: who may ask it things (audience picks people, groups and roles; null goes back to visibility). budgetUSDPerMonth. ' +
+        'jobDescription: its job, in full. tagline: the line under its name. toolScopes: how much of each tool it may use. ' +
+        'Admins only: anyoneMayStart (it starts work for anyone who may ask it), startAudience (it starts work for these), approvers (who else approves its work), ' +
+        'continueOpenPrs (it looks after the team\'s open pull requests), prAuthors (whose pull requests; [] for everyone\'s), ' +
+        'prCommentAuthors (whose review comments it answers; [] for none), skipCheckpoints (runs skip its flows\' checkpoints). ' +
+        'People are named by Slack member id: look them up with find_people first. Confirm the change with the person.',
       inputSchema: {
         worker: z.string(),
         manager: z
@@ -352,10 +380,101 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
           .optional(),
         reportsTo: z.string().nullable().optional(),
         visibility: VISIBILITY.optional(),
+        audience: AUDIENCE.describe('Who may ask it things. null: its visibility decides again.'),
         budgetUSDPerMonth: z.number().positive().optional(),
+        jobDescription: z.string().min(1).max(20_000).optional(),
+        tagline: z.string().max(200).optional().describe('Empty clears it.'),
+        toolScopes: z.record(z.string(), SCOPE).optional().describe('By tool (MCP server) name.'),
+        anyoneMayStart: z.boolean().optional(),
+        startAudience: AUDIENCE,
+        approvers: AUDIENCE,
+        continueOpenPrs: z.boolean().optional(),
+        prAuthors: z.array(z.string()).optional(),
+        prCommentAuthors: z.array(z.string()).optional(),
+        skipCheckpoints: z.boolean().optional(),
       },
     },
-    async ({ worker, ...patch }) => out(org.update(caller, worker, patch)),
+    async ({ worker, audience, startAudience, approvers, ...rest }) => {
+      const patch: Parameters<OrgService['update']>[2] = { ...rest };
+      for (const [key, raw] of [['audience', audience], ['startAudience', startAudience], ['approvers', approvers]] as const) {
+        const a = audienceOf(raw);
+        if (!a.ok) return failure(a.error);
+        if (a.audience !== undefined) (patch as Record<string, unknown>)[key] = a.audience;
+      }
+      const changed = Object.keys(patch);
+      if (!changed.length) return failure('Nothing to change: pass at least one setting.');
+      const res = org.update(caller, worker, patch);
+      if (!res.ok) return out(res);
+      return json({ changed, worker });
+    },
+  );
+
+  tool(
+    'find_people',
+    {
+      description:
+        "Look people and groups up by name, handle or email, to name them in a worker's audience, startAudience or approvers: " +
+        'returns each person\'s Slack member id and the groups they are in, and matching groups as team:<name>.',
+      inputSchema: { query: z.string().min(1).describe('A name, handle, email or group name, e.g. "Emmanuel" or "design".') },
+    },
+    async ({ query }) => out(org.findPeople(caller, query)),
+  );
+
+  tool(
+    'list_runs',
+    {
+      description:
+        "Recent runs of the workers you can see, newest first: id, title, state and cost. To find the run to read with get_run. " +
+        'state: running, paused, done, failed or stopped.',
+      inputSchema: {
+        worker: z.string().optional().describe('Worker name or id.'),
+        since: z.string().optional().describe('ISO date or time, e.g. 2026-11-01.'),
+        state: z.enum(['running', 'paused', 'done', 'failed', 'stopped']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async ({ worker, since, state, limit }) => {
+      const at = since ? Date.parse(since) : NaN;
+      if (since && !Number.isFinite(at)) return failure('since should be a date, like 2026-11-01.');
+      return out(org.recentRuns(caller, { ...(worker ? { worker } : {}), ...(since ? { since: at } : {}), ...(state ? { state } : {}), ...(limit ? { limit } : {}) }));
+    },
+  );
+
+  tool(
+    'get_run',
+    {
+      description:
+        'Why a run did what it did: its worker, flow and state (and why it is paused), each step with how long it took, the text of what it wrote ' +
+        '(plan, pull request, what was pushed, review, CI, replies to review comments, ticket update; each clipped to a few thousand characters, marked when clipped), ' +
+        'and, for a run that added to a pushed branch, whether it was told of conflicts, a merged default branch or why the build failed. ' +
+        'Pass runId (from list_runs, list_waiting or list_work), or a worker and words from the run\'s title for its newest such run.',
+      inputSchema: {
+        runId: z.string().optional(),
+        worker: z.string().optional(),
+        title: z.string().optional().describe('Words from its title, with worker.'),
+      },
+    },
+    async ({ runId, worker, title }) => {
+      if (runId) return out(org.runReport(caller, runId));
+      if (!worker) return failure('Pass a runId, or a worker and words from the run\'s title.');
+      const found = org.recentRuns(caller, { worker, limit: 100 });
+      if (!found.ok) return out(found);
+      const words = (title ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+      const hit = found.runs.find((r) => words.every((w) => r.title.toLowerCase().includes(w)));
+      return hit ? out(org.runReport(caller, hit.runId)) : failure(`No recent run of that worker's matches "${title ?? ''}".`);
+    },
+  );
+
+  tool(
+    'pr_watch',
+    {
+      description:
+        "What the pull request watcher holds for a worker's repos: whether the worker looks after open pull requests and whose, how many it tracks, " +
+        'and per pull request its build, conflict, comment count, what is gathered and waiting to be handed over (it waits until a pull request has been quiet for ten minutes), ' +
+        'and its wakes today against the daily limit. For "why hasn\'t it picked up that pull request?". Read from the server\'s record; the code host is not asked.',
+      inputSchema: { worker: z.string().describe('Worker name or id.') },
+    },
+    async ({ worker }) => out(org.prWatch(caller, worker)),
   );
 
   tool(
@@ -593,6 +712,80 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     },
   );
 
+  // ---- tuning a worker, from a chat: the same tools the console's Tuning
+  // page uses. Reads go through; every change asks the person first in an
+  // overcli chat (the relay's guard), as any change does.
+  tool(
+    'worker_tuning',
+    {
+      description:
+        "How a worker's recent work is going: each recent run graded good, rough or failed (with why), the verdict before and after its last change, " +
+        'what people said about it, refused steps, slow steps, and overgo’s reviews with their suggestions. Start here when improving a worker.',
+      inputSchema: { worker: z.string() },
+    },
+    async ({ worker }) => out(org.workerTuning(caller, worker)),
+  );
+
+  tool(
+    'worker_flows',
+    {
+      description: "How a worker works: each of its flows (the usual one marked), step by step, and which other workers share it. The flowId is what draft_flow_change takes.",
+      inputSchema: { worker: z.string() },
+    },
+    async ({ worker }) => out(org.workerFlows(caller, worker)),
+  );
+
+  tool(
+    'add_worker_note',
+    {
+      description: "Add a note a worker reads before every run: a fact it should always know, or a lesson from a run that went wrong. One clear sentence or two.",
+      inputSchema: { worker: z.string(), note: z.string().min(1).max(1000) },
+    },
+    async ({ worker, note }) => {
+      const res = org.addWorkerNote(caller, worker, note);
+      return res.ok ? json({ added: note, worker }) : out(res);
+    },
+  );
+
+  tool(
+    'draft_flow_change',
+    {
+      description:
+        "Have overgo write a change to one of a worker's flows from plain words (e.g. \"run the tests before you push\"). Returns the new flow and what changed; nothing is saved. " +
+        'Pass yaml from an earlier draft to change that draft again. Then try_flow_change on a past run, or save_flow_change. ' +
+        'To have it post results to Slack, just say so ("post the top 10 to channel C…"): it adds a step that uses the server\'s notify call.',
+      inputSchema: { worker: z.string(), flowId: z.string(), ask: z.string().min(1).max(2000), yaml: z.string().optional() },
+    },
+    async ({ worker, flowId, ask, yaml }) => out(await org.suggestFlow(caller, worker, flowId, ask, yaml)),
+  );
+
+  tool(
+    'save_flow_change',
+    {
+      description: "Save a drafted flow change, from draft_flow_change, so the worker works that way from its next run. everyone: change it for the other workers that share it too.",
+      inputSchema: { worker: z.string(), flowId: z.string(), yaml: z.string().min(1), everyone: z.boolean().optional() },
+    },
+    async ({ worker, flowId, yaml, everyone }) => out(org.saveFlowEdit(caller, worker, flowId, yaml, everyone === true)),
+  );
+
+  tool(
+    'try_flow_change',
+    {
+      description: "Try a drafted flow change on one of the worker's past runs, to compare before and after without saving it. Returns an id: check it with flow_trial.",
+      inputSchema: { worker: z.string(), flowId: z.string(), runId: z.string(), yaml: z.string().optional() },
+    },
+    async ({ worker, flowId, runId, yaml }) => out(await org.tryFlowChange(caller, worker, { flowId, runId, ...(yaml ? { yaml } : {}) })),
+  );
+
+  tool(
+    'flow_trial',
+    {
+      description: 'How a try_flow_change run went, against the run it was tried on: outcome, minutes, errors, refused steps, and its output.',
+      inputSchema: { worker: z.string(), trialId: z.string(), beforeRunId: z.string().optional() },
+    },
+    async ({ worker, trialId, beforeRunId }) => out(org.trialResult(caller, worker, trialId, beforeRunId)),
+  );
+
   if (access) {
     tool(
       'org_rules',
@@ -641,8 +834,9 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
 }
 
 const READ_ONLY = new Set([
+  'worker_tuning', 'worker_flows', 'draft_flow_change', 'flow_trial',
   'whoami', 'list_workers', 'get_worker', 'org_chart', 'list_waiting', 'list_hires', 'today', 'list_work',
-  'list_roles', 'list_teams', 'list_team_tasks', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'list_tools', 'list_triggers', 'library', 'list_repos', 'list_secrets',
+  'list_roles', 'list_teams', 'list_team_tasks', 'find_people', 'list_runs', 'get_run', 'pr_watch', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'list_tools', 'list_triggers', 'library', 'list_repos', 'list_secrets',
 ]);
 
 function annotationsFor(name: string): Record<string, boolean> {

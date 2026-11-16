@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import { useStore } from "../../../store";
+import { useOrgServerPick } from "../OrgServerPick";
 import { useTeamsStore } from "../../../teamsStore";
 import { useWorkersStore } from "../../../workersStore";
 import { relativeTime } from "../workerDeskSelectors";
@@ -1707,6 +1708,7 @@ function ProcessBoard({ id, onEdit }: { id: string; onEdit: () => void }) {
   const [filter, setFilter] = useState<BoardFilter>("all");
   const [flowOpen, setFlowOpen] = useState(readFlowOpen);
   const [publishing, setPublishing] = useState(false);
+  const { serverId: orgServerId, picker: orgPicker } = useOrgServerPick();
   const [published, setPublished] = useState<{ ok: boolean; text: string; signIn?: boolean } | null>(null);
 
   const load = useCallback(() => {
@@ -1835,7 +1837,7 @@ function ProcessBoard({ id, onEdit }: { id: string; onEdit: () => void }) {
                     setPublishing(true);
                     setPublished(null);
                     void window.overcli
-                      .invoke("org:publishProcess", { id: process.id })
+                      .invoke("org:publishProcess", { id: process.id, serverId: orgServerId })
                       .then((res) => setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error, signIn: res.signIn }))
                       .finally(() => setPublishing(false));
                   }}
@@ -1843,6 +1845,7 @@ function ProcessBoard({ id, onEdit }: { id: string; onEdit: () => void }) {
                   {publishing ? "Publishing…" : "Publish to my org"}
                 </button>
               )}
+              {orgAlpha && orgPicker}
               {busy && (
                 <button className={primaryBtn + " flex items-center gap-1.5"} disabled={!first} onClick={() => setAdding(true)}>
                   <Glyph name="plus" size={13} />

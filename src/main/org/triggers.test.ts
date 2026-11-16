@@ -1045,3 +1045,11 @@ describe('following a tracked ticket', () => {
     expect(h.triggers()[0].watch?.tracked).toEqual(['ACME-1']);
   });
 });
+
+describe('slackSaid', () => {
+  it('gives a Slack message’s words, author and channel, and nothing for other events', async () => {
+    const { slackSaid } = await import('./triggers');
+    expect(slackSaid({ name: 'Product Q&A' }, { data: { channel: 'C0ACME', ts: '1.2', text: ' is the new tier live? ', user: 'U0ACMEJO' } })).toEqual({ said: 'is the new tier live?', slackUserId: 'U0ACMEJO', where: 'Product Q&A' });
+    expect(slackSaid({ name: 'Bugs' }, { data: { key: 'ACME-1', summary: 'Login broken' } })).toBeUndefined();
+  });
+});

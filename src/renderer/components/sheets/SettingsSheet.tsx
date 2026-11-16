@@ -9,6 +9,7 @@ import {
   BackendHealth,
   SlackStatus,
   IPCInvokeMap,
+  OrgServerStatus,
 } from '@shared/types';
 import {
   PREMIUM_MODELS,
@@ -90,7 +91,7 @@ export function SettingsSheet({ initialSection }: { initialSection?: string } = 
           <NavItem label="Services" active={section === 'services'} onClick={() => setSection('services')} />
           <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Auto-tidy" active={section === 'autoTidy'} onClick={() => setSection('autoTidy')} />
-          <NavItem label="Your org" active={section === 'org'} onClick={() => setSection('org')} />
+          <NavItem label="overgo" active={section === 'org'} onClick={() => setSection('org')} />
           <NavItem label="Labs" active={section === 'labs'} onClick={() => setSection('labs')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
@@ -859,108 +860,228 @@ function SlackField({
   );
 }
 
-/// Your org's overcli server. Signing in pairs this app with it: an invite
-/// link signs in at once; a server address opens the org's page in the
-/// browser to confirm a code. Either way the token goes to the keychain and
-/// nobody copies it. Pasting a token stays, folded away, for scripts.
-function OrgServerField({
-  local,
-  patch,
-}: {
-  local: AppSettings;
-  patch: (p: Partial<AppSettings>) => void;
-}) {
-  const [address, setAddress] = useState(local.orgServerUrl ?? '');
-  const [status, setStatus] = useState<ReturnType<IPCInvokeMap['org:status']> | null>(null);
-  const [pairing, setPairing] = useState<{ userCode: string; verifyUrl: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState('');
+/// The org servers this app signs in to: one row each (who you are there,
+/// default, its chat switch, sign out or in, remove), and the sign-in form
+/// to add another. Main owns the list (org/orgServers.ts); this asks it.
+function OrgServersField({ local }: { local: AppSettings }) {
+  const [servers, setServers] = useState<OrgServerStatus[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [prefill, setPrefill] = useState<string | null>(null);
   const refresh = () => {
-    void window.overcli.invoke('org:status').then(setStatus);
+    void window.overcli.invoke('org:servers').then(setServers, () => setServers([]));
   };
   useEffect(() => {
     refresh();
     return window.overcli.onMainEvent((event) => {
-      if (event.type !== 'orgSignIn') return;
-      setPairing(null);
-      setBusy(false);
-      if (event.outcome === 'signedIn') refresh();
-      else
-        setError(
-          event.outcome === 'denied'
-            ? 'The sign-in was refused in the browser.'
-            : event.outcome === 'expired'
-              ? 'The code expired before it was confirmed. Try again.'
-              : event.error ?? 'Sign-in failed.',
-        );
+      if (event.type === 'orgSignIn' && event.outcome === 'signedIn') {
+        setAdding(false);
+        setPrefill(null);
+        refresh();
+      }
     });
   }, []);
+
+  if (!servers) return <Row label="Your orgs">Checking your org servers…</Row>;
+  const many = servers.length > 1;
+  const showForm = !servers.length || adding || prefill !== null;
+  return (
+    <>
+      {servers.map((s) => (
+        <OrgServerRow
+          key={s.id}
+          server={s}
+          many={many}
+          onChanged={refresh}
+          onSignIn={() => {
+            setPrefill(s.url);
+            setAdding(true);
+          }}
+        />
+      ))}
+      {showForm ? (
+        <OrgSignInForm
+          key={prefill ?? 'new'}
+          initial={prefill ?? (servers.length ? '' : local.orgServerUrl ?? '')}
+          label={prefill ? 'Sign in again' : servers.length ? 'Add an org server' : 'Your org'}
+          onDone={() => {
+            setAdding(false);
+            setPrefill(null);
+            refresh();
+          }}
+          onCancel={
+            servers.length
+              ? () => {
+                  setAdding(false);
+                  setPrefill(null);
+                }
+              : undefined
+          }
+        />
+      ) : (
+        <Row label="">
+          <button onClick={() => setAdding(true)} className="text-xs text-accent hover:underline">
+            + Add another org server
+          </button>
+        </Row>
+      )}
+    </>
+  );
+}
+
+function OrgServerRow({ server: s, many, onChanged, onSignIn }: { server: OrgServerStatus; many: boolean; onChanged: () => void; onSignIn: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const act = (p: Promise<unknown>) => {
+    setBusy(true);
+    void p.finally(() => {
+      setBusy(false);
+      onChanged();
+    });
+  };
+  const title = s.name ?? s.url;
+  const signedIn = s.tokenConfigured && !!s.me;
+  return (
+    <Row label={many ? title : 'Your org'} help={many ? undefined : 'Workers you build here can join the org from their Share card: Publish to your org.'}>
+      <div className="flex items-center gap-3">
+        <div className="min-w-0">
+          <div className="text-sm text-ink flex items-center gap-2">
+            {title}
+            {many && s.isDefault && <span className="text-[10px] px-1.5 rounded bg-card-strong text-ink-muted" title="Publishing goes here unless you pick another">Default</span>}
+          </div>
+          <div className="text-[11px] text-ink-muted">
+            {signedIn
+              ? `Signed in as ${s.me!.name}${s.me!.canHire ? '. You can publish workers.' : '. You cannot hire yet; ask an admin.'}`
+              : s.tokenConfigured
+                ? s.error ?? 'Can’t reach it right now.'
+                : 'Signed out.'}
+          </div>
+        </div>
+        <div className="ml-auto flex gap-1.5 flex-shrink-0">
+          {many && !s.isDefault && (
+            <button disabled={busy} onClick={() => act(window.overcli.invoke('org:setDefaultServer', { serverId: s.id }))} className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card disabled:opacity-40">
+              Make default
+            </button>
+          )}
+          {s.tokenConfigured ? (
+            <button disabled={busy || s.fromEnv} onClick={() => act(window.overcli.invoke('org:signOut', { serverId: s.id }))} className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card disabled:opacity-40">
+              Sign out
+            </button>
+          ) : (
+            <button disabled={busy} onClick={onSignIn} className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card disabled:opacity-40">
+              Sign in
+            </button>
+          )}
+          <button
+            disabled={busy || s.fromEnv}
+            title="Sign out and take it off this list"
+            onClick={() => {
+              if (window.confirm(`Remove ${title} from this app? You can add it again later.`)) act(window.overcli.invoke('org:removeServer', { serverId: s.id }));
+            }}
+            className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card disabled:opacity-40"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+      <div className="text-[10px] text-ink-faint font-mono">{s.url}</div>
+      {signedIn && (
+        <div className="mt-3">
+          <Toggle
+            label={`Let my chats reach ${many ? title : 'overgo'}, as me`}
+            value={!!s.inChats}
+            onChange={(v) => act(window.overcli.invoke('org:setInChats', { serverId: s.id, on: v }))}
+            help={
+              'Chats can see what’s waiting on you and your workers, with the same rights you have on the console. Every change they want to make (approve, answer, change a worker) waits for you to press Allow.' +
+              (s.me!.admin ? ' You’re an admin, so that includes admin changes.' : '') +
+              ' Claude, Codex and Gemini chats. New chats get it; chats already open keep what they started with.' +
+              (many ? ` Chats see it as ${s.chatTool}.` : '')
+            }
+          />
+          <div className="mt-3">
+            <Toggle
+              label={`Take work from my ${many ? title : 'org'} workers`}
+              value={!!s.takesWork}
+              onChange={(v) => act(window.overcli.invoke('org:setTakesWork', { serverId: s.id, on: v }))}
+              help="A worker you manage may hand you a task its server can’t do: something in your logged-in browser, a design, files on this Mac. You get a notification, and it waits in Workers → Org for you to allow it. Nothing runs without you, and you check what goes back. Each worker also needs “Can hand work to my desktop” on in its settings."
+            />
+          </div>
+          {s.inChats && (
+            <label className="ml-10 mt-2 flex items-center gap-2 text-[11px] text-ink-muted">
+              Chats may
+              <select
+                value={s.chatAccess ?? 'ask'}
+                disabled={busy}
+                onChange={(e) => act(window.overcli.invoke('org:setChatAccess', { serverId: s.id, access: e.target.value === 'read' ? 'read' : 'ask' }))}
+                className="field px-1.5 py-0.5 text-[11px]"
+              >
+                <option value="ask">read, and ask me before each change</option>
+                <option value="read">only read</option>
+              </select>
+            </label>
+          )}
+        </div>
+      )}
+    </Row>
+  );
+}
+
+/// Sign in to an org server: an invite link signs in at once; an address
+/// opens the org's page in the browser to confirm a code. Either way the
+/// token goes to the keychain and nobody copies it. Pasting a token stays,
+/// folded away, for scripts.
+function OrgSignInForm({ initial, label, onDone, onCancel }: { initial: string; label: string; onDone: () => void; onCancel?: () => void }) {
+  const [address, setAddress] = useState(initial);
+  const [pairing, setPairing] = useState<{ userCode: string; verifyUrl: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [token, setToken] = useState('');
+  useEffect(
+    () =>
+      window.overcli.onMainEvent((event) => {
+        if (event.type !== 'orgSignIn') return;
+        setPairing(null);
+        setBusy(false);
+        if (event.outcome === 'signedIn') onDone();
+        else
+          setError(
+            event.outcome === 'denied'
+              ? 'The sign-in was refused in the browser.'
+              : event.outcome === 'expired'
+                ? 'The code expired before it was confirmed. Try again.'
+                : event.error ?? 'Sign-in failed.',
+          );
+      }),
+    [],
+  );
 
   const signIn = () => {
     const url = address.trim();
     if (!url) return;
     setBusy(true);
     setError(null);
-    void window.overcli.invoke('org:signIn', { url }).then((res) => {
-      if (!res.ok) {
+    void window.overcli.invoke('org:signIn', { url }).then(
+      (res) => {
+        if (!res.ok) {
+          setBusy(false);
+          setError(res.error);
+          return;
+        }
+        if (res.signedIn) {
+          setBusy(false);
+          onDone();
+        } else {
+          setPairing({ userCode: res.userCode, verifyUrl: res.verifyUrl });
+        }
+      },
+      (err: unknown) => {
         setBusy(false);
-        setError(res.error);
-        return;
-      }
-      try {
-        patch({ orgServerUrl: new URL(url).origin });
-      } catch {
-        // validated in main
-      }
-      if (res.signedIn) {
-        setBusy(false);
-        refresh();
-      } else {
-        setPairing({ userCode: res.userCode, verifyUrl: res.verifyUrl });
-      }
-    }, (err: unknown) => {
-      setBusy(false);
-      setError(String(err));
-    });
-  };
-
-  const who = status?.who;
-  if (who && !pairing) {
-    return (
-      <Row label="Your org" help="Workers you build here can join the org from their Share card: Publish to your org.">
-        <div className="flex items-center gap-3">
-          <div className="min-w-0">
-            <div className="text-sm text-ink">{who.org}</div>
-            <div className="text-[11px] text-ink-muted">
-              Signed in as {who.name}
-              {who.canHire ? '. You can publish workers.' : '. You cannot hire yet; ask an admin.'}
-            </div>
-          </div>
-          <button
-            disabled={status?.fromEnv === true}
-            onClick={() => {
-              void window.overcli.invoke('org:signOut').then(() => {
-                setStatus(null);
-                refresh();
-              });
-            }}
-            className="ml-auto text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40"
-          >
-            Sign out
-          </button>
-        </div>
-        <div className="text-[10px] text-ink-faint font-mono">{local.orgServerUrl}</div>
-      </Row>
+        setError(String(err));
+      },
     );
-  }
+  };
 
   return (
     <>
-      <Row
-        label="Your org"
-        help="Paste the invite link you were sent, or your org’s address. With an address, your browser opens to confirm it’s you; the app signs in when you do."
-      >
+      <Row label={label} help="Paste the invite link you were sent, or your org’s address. With an address, your browser opens to confirm it’s you; the app signs in when you do.">
         {pairing ? (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-3">
@@ -999,13 +1120,14 @@ function OrgServerField({
               }}
               className="field flex-1 px-2 py-1 text-xs font-mono"
             />
-            <button
-              disabled={busy || !address.trim()}
-              onClick={signIn}
-              className="text-xs px-3 py-1 rounded bg-accent text-white flex-shrink-0 disabled:opacity-40"
-            >
+            <button disabled={busy || !address.trim()} onClick={signIn} className="text-xs px-3 py-1 rounded bg-accent text-white flex-shrink-0 disabled:opacity-40">
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
+            {onCancel && (
+              <button onClick={onCancel} className="text-xs text-ink-muted hover:text-ink flex-shrink-0">
+                Cancel
+              </button>
+            )}
           </div>
         )}
         {error && (
@@ -1013,37 +1135,31 @@ function OrgServerField({
             {error}
           </div>
         )}
-        {status?.error && !pairing && <div className="text-[10px] text-red-300">{status.error}</div>}
       </Row>
       <details className="text-[11px] text-ink-faint">
         <summary className="cursor-pointer">Use a token instead</summary>
         <div className="mt-2 flex gap-2">
           <input
             type="password"
-            placeholder={status?.fromEnv ? 'set by $OVERCLI_ORG_TOKEN' : status?.tokenConfigured ? 'configured — type to replace' : 'ocli_…'}
+            placeholder="ocli_… (with the server’s address above)"
             value={token}
-            disabled={status?.fromEnv === true}
             onChange={(e) => setToken(e.target.value)}
             onBlur={() => {
               if (!token.trim()) return;
-              if (address.trim()) {
-                try {
-                  patch({ orgServerUrl: new URL(address.trim()).origin });
-                } catch {
-                  setError('That address is not a URL.');
-                  return;
-                }
+              if (!address.trim()) {
+                setError('Put the org server’s address above first.');
+                return;
               }
-              void window.overcli.invoke('org:setToken', token.trim()).then((res) => {
+              void window.overcli.invoke('org:addWithToken', { url: address.trim(), token: token.trim() }).then((res) => {
                 if (!res.ok) {
-                  setError(res.error ?? 'Could not save the token.');
+                  setError(res.error);
                   return;
                 }
                 setToken('');
-                void window.overcli.invoke('org:status', address.trim() ? { url: address.trim() } : undefined).then(setStatus);
+                onDone();
               });
             }}
-            className="field flex-1 px-2 py-1 text-xs font-mono disabled:opacity-40"
+            className="field flex-1 px-2 py-1 text-xs font-mono"
           />
         </div>
       </details>
@@ -1426,10 +1542,10 @@ function OrgPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppS
   return (
     <div>
       <Group
-        title="Your org · alpha"
-        description="Your org's overcli server, where shared workers run for the whole team. Publish a worker you built here to it from the worker's Share card."
+        title="overgo · alpha"
+        description="Your org's overcli servers, where shared workers run for the whole team. Sign in to more than one if you work across several. Publish a worker you built here from the worker's Share card."
       >
-        <OrgServerField local={local} patch={patch} />
+        <OrgServersField local={local} />
         <OrgSetupPublish />
         <OrgSetupGuide local={local} patch={patch} />
       </Group>

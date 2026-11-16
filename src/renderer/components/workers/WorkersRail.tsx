@@ -34,6 +34,9 @@ import { useOrchestratorStore } from "../../orchestratorStore";
 import { liveOrchestratorBatches, movingLine, tallyOf } from "../../orchestratorTally";
 import { useRunningMap } from "../../runnersStore";
 import { useTickingNow } from "../../hooks";
+import { isYours, othersLabel, STATE_LABEL, useOrgTab, useOthersOpen, type OrgSelection, type OrgWorker } from "./org/orgTabStore";
+import type { OrgServerStatus } from "@shared/types";
+import { Face as OrgFace } from "./org/OrgPane";
 import { useStore } from "../../store";
 import { labOn } from "@shared/labs";
 import { newWorkerDraft, useWorkersStore } from "../../workersStore";
@@ -327,6 +330,9 @@ export function WorkersRail({
     );
   }
 
+  // The Org tab: the org servers' workers take the rail's place.
+  if (onWorkers && view === "orgServers") return <OrgRail expanded={expanded} toggle={toggle} />;
+
   return (
     <nav
       aria-label="Workers"
@@ -334,6 +340,7 @@ export function WorkersRail({
       className="flex h-full flex-col border-r border-card bg-surface-muted py-2"
     >
       <div className="flex flex-col gap-0.5 px-2">
+        <LocalOrgSwitch expanded={expanded} />
         {orchestratorButton && (
           <>
             <div data-orchestrator-button>{orchestratorButton}</div>
@@ -1102,6 +1109,136 @@ function RailFooter({ expanded, onToggleExpanded }: { expanded: boolean; onToggl
           className={expanded ? "ml-auto" : ""}
         />
       </div>
+    </div>
+  );
+}
+
+/// Local | Org at the top of the rail, once this app is signed in to an org
+/// server: this Mac's workers, or the org's. Nothing shows without one.
+function LocalOrgSwitch({ expanded }: { expanded: boolean }) {
+  const view = useWorkersStore((s) => s.view);
+  const showToday = useWorkersStore((s) => s.showToday);
+  const showOrgServers = useWorkersStore((s) => s.showOrgServers);
+  const waiting = useOrgTab((s) => Object.values(s.waiting).reduce((n, list) => n + list.length, 0));
+  const org = view === "orgServers";
+  const seg = (on: boolean, label: string, short: string, onClick: () => void, badge = 0) => (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      title={label === "overgo" ? "overgo: your org’s workers, on its servers" : "This Mac's workers"}
+      className={"relative flex-1 rounded px-1 py-0.5 text-[11px] " + (on ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink")}
+    >
+      {expanded ? label : short}
+      {badge > 0 && <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-amber-400 px-[3px] text-center text-[9px] font-bold leading-[14px] text-black">{badge}</span>}
+    </button>
+  );
+  return (
+    <div className={"mb-1 flex gap-0.5 rounded-md bg-card p-0.5 " + (expanded ? "" : "flex-col")} role="group" aria-label="Which workers">
+      {seg(!org, "Local", "Me", showToday)}
+      {seg(org, "overgo", "go", showOrgServers, org ? 0 : waiting)}
+    </div>
+  );
+}
+
+/// The rail in the Org tab: each org server's workers, the ones that need you
+/// first. A face opens the worker's page; the heading opens the front page.
+function OrgRail({ expanded, toggle }: { expanded: boolean; toggle: React.ReactNode }) {
+  const { servers, workers, selected, select, waiting } = useOrgTab();
+  const many = servers.length > 1;
+  const proposals = useOrgTab((s) => s.proposals);
+  const desktop = useOrgTab((s) => s.desktop);
+  const total = [waiting, proposals, desktop].reduce((n, m) => n + Object.values(m).reduce((k, list) => k + list.length, 0), 0);
+  return (
+    <nav aria-label="Org workers" className="flex h-full flex-col border-r border-card bg-surface-muted py-2">
+      <div className="flex flex-col gap-0.5 px-2">
+        <LocalOrgSwitch expanded={expanded} />
+        <RailButton
+          label="overgo"
+          detail={total > 0 ? `${total} need${total === 1 ? "s" : ""} you` : undefined}
+          title="Everything waiting on you, and every org worker"
+          expanded={expanded}
+          active={!selected}
+          onClick={() => select(null)}
+          icon={<OrgIcon />}
+          badge={total > 0 ? <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-amber-400 px-[3px] text-center text-[9px] font-bold leading-[14px] text-black">{total}</span> : null}
+        />
+      </div>
+      <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2">
+        {servers.map((s) => (
+          <OrgRailServer key={s.id} server={s} list={workers[s.id] ?? []} many={many} expanded={expanded} selected={selected} select={select} />
+        ))}
+      </div>
+      <div className="px-2">{toggle}</div>
+    </nav>
+  );
+}
+
+/// One org server's workers in the rail: yours first, then those shared with
+/// you (or, for an admin, everyone else's) under their own heading, which
+/// folds away and starts folded when it's long.
+export function OrgRailServer({
+  server: s,
+  list,
+  many,
+  expanded,
+  selected,
+  select,
+}: {
+  server: OrgServerStatus;
+  list: OrgWorker[];
+  many: boolean;
+  expanded: boolean;
+  selected: OrgSelection | null;
+  select: (sel: OrgSelection | null) => void;
+}) {
+  const sorted = [...list].sort((a, b) => Number(b.waiting > 0) - Number(a.waiting > 0) || a.name.localeCompare(b.name));
+  const yours = sorted.filter(isYours);
+  const others = sorted.filter((w) => !isYours(w));
+  const [open, flip] = useOthersOpen(`rail.${s.id}`, others.length, yours.length > 0);
+  const heading = "flex w-full items-center gap-1 px-1 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-ink-faint";
+  const row = (w: OrgWorker) => {
+    const on = selected?.serverId === s.id && selected.workerId === w.id;
+    return (
+      <button
+        key={w.id}
+        type="button"
+        onClick={() => select({ serverId: s.id, workerId: w.id })}
+        title={`${w.name} · ${STATE_LABEL[w.state]}${isYours(w) ? "" : ` · ${othersLabel(others).toLowerCase()}`}${many ? ` · ${s.name ?? s.url}` : ""}`}
+        aria-current={on ? "page" : undefined}
+        className={"flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left " + (on ? "bg-card text-ink" : "text-ink-muted hover:bg-card hover:text-ink")}
+      >
+        <span className="relative h-6 w-6 flex-shrink-0">
+          <OrgFace worker={w} size={24} />
+          {w.waiting > 0 && <span className="absolute -right-1.5 -top-1.5 min-w-[12px] rounded-full bg-amber-400 px-[2px] text-center text-[8px] font-bold leading-[12px] text-black">{w.waiting}</span>}
+        </span>
+        {expanded && <span className="min-w-0 flex-1 truncate text-xs">{w.name}</span>}
+      </button>
+    );
+  };
+  const othersWaiting = others.reduce((n, w) => n + w.waiting, 0);
+  return (
+    <div className="mb-3">
+      {many && expanded && <div className="truncate px-1 pb-1 text-[10px] uppercase tracking-wide text-ink-faint">{s.name ?? s.url}</div>}
+      {many && !expanded && <div className="mx-2 mb-1 h-px bg-card" title={s.name ?? s.url} />}
+      {expanded && yours.length > 0 && others.length > 0 && <div className={heading}>Yours</div>}
+      {yours.map(row)}
+      {others.length > 0 &&
+        (expanded ? (
+          <>
+            <button type="button" onClick={flip} aria-expanded={open} className={heading + " hover:text-ink"}>
+              <span aria-hidden className={"inline-block transition-transform " + (open ? "rotate-90" : "")}>›</span>
+              <span className="truncate">{othersLabel(others)}</span>
+              <span className="ml-auto normal-case tracking-normal">{othersWaiting > 0 && !open ? `${othersWaiting} waiting · ` : ""}{others.length}</span>
+            </button>
+            {open && others.map(row)}
+          </>
+        ) : (
+          <>
+            {yours.length > 0 && <div className="mx-2 my-1 h-px bg-card" title={othersLabel(others)} />}
+            {others.map(row)}
+          </>
+        ))}
     </div>
   );
 }

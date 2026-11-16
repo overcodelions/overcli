@@ -66,6 +66,9 @@ export interface ToolGatewayDeps {
   /// Send a worker's message through the server's Slack (the built-in
   /// `notify`). Absent: the built-in tool isn't offered.
   notify?(req: { conversationId: string; workerName?: string; to: string; message: string }): Promise<{ ok: true; sentTo: string } | { ok: false; error: string }>;
+  /// Hand a task to the worker's manager's desktop (the built-in
+  /// `ask_desktop`). Absent: that call isn't offered.
+  handOff?(req: { conversationId: string; task: string; kind?: string }): { ok: true; message: string } | { ok: false; error: string };
 }
 
 /// The most messages one run may send, and the longest.
@@ -85,6 +88,22 @@ const NOTIFY_TOOL = {
       message: { type: 'string', description: 'What to say. Plain text; Slack formatting and links work.' },
     },
     required: ['to', 'message'],
+  },
+};
+
+const DESKTOP_TOOL = {
+  name: 'ask_desktop',
+  description:
+    'Hand a task to your manager’s own computer, when it needs what this server doesn’t have: their browser with their sign-ins (kind "browser"), design work (kind "design"), or files on their machine. ' +
+    'They see it in their overcli app and decide; if they do it, what they send back comes to you as a reply in this thread. It never runs without them. ' +
+    'Say exactly what to do, where, and what to send back. Only when the work truly needs their computer; your manager must have allowed it.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      task: { type: 'string', description: 'What to do, where (a link), and what to send back.' },
+      kind: { type: 'string', enum: ['browser', 'design', 'other'], description: 'browser: their logged-in browser. design: a mock-up or visual. other: anything else on their machine.' },
+    },
+    required: ['task'],
   },
 };
 
@@ -346,7 +365,7 @@ export class ToolGateway {
 
   /// Whether a run gets the built-in tool: it can send, and the run is a worker's.
   offersBuiltin(conversationId: string): boolean {
-    return !!this.deps.notify && !!this.deps.callerFor?.(conversationId);
+    return (!!this.deps.notify || !!this.deps.handOff) && !!this.deps.callerFor?.(conversationId);
   }
 
   /// The config the CLIs see for a vaulted tool.
@@ -479,12 +498,23 @@ export class ToolGateway {
       return ok({ protocolVersion: typeof asked === 'string' ? asked : '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: SERVER_TOOL, version: '1' } });
     }
     if (msg.method === 'ping') return ok({});
-    if (msg.method === 'tools/list') return ok({ tools: [NOTIFY_TOOL] });
+    if (msg.method === 'tools/list') return ok({ tools: [...(this.deps.notify ? [NOTIFY_TOOL] : []), ...(this.deps.handOff ? [DESKTOP_TOOL] : [])] });
     if (msg.method !== 'tools/call') return reply(200, { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found.' } });
     const call = msg.params?.name;
     const args = (msg.params?.arguments && typeof msg.params.arguments === 'object' ? msg.params.arguments : {}) as Record<string, unknown>;
-    if (call !== 'notify') return said(`No call named ${String(call)} here.`, true);
     const label = caller?.workerName ?? `run ${conversationId.slice(0, 8)}`;
+    if (call === 'ask_desktop' && this.deps.handOff) {
+      const fullDesk = `mcp__${mcpServerKey(SERVER_TOOL)}__ask_desktop`;
+      if (!inToolScope(caller?.scopes, fullDesk)) {
+        this.deps.onCall?.({ tool: SERVER_TOOL, call: 'ask_desktop', who: label, allowed: false });
+        return said(scopeRefusal(caller?.scopes, fullDesk, caller?.workerName ?? 'This worker'), true);
+      }
+      const task = typeof args.task === 'string' ? args.task : '';
+      const handed = this.deps.handOff({ conversationId, task, ...(typeof args.kind === 'string' ? { kind: args.kind } : {}) });
+      this.deps.onCall?.({ tool: SERVER_TOOL, call: 'ask_desktop', who: label, allowed: handed.ok });
+      return handed.ok ? said(handed.message) : said(handed.error, true);
+    }
+    if (call !== 'notify' || !this.deps.notify) return said(`No call named ${String(call)} here.`, true);
     const full = `mcp__${mcpServerKey(SERVER_TOOL)}__notify`;
     if (!inToolScope(caller?.scopes, full)) {
       this.deps.onCall?.({ tool: SERVER_TOOL, call: 'notify', who: label, allowed: false });

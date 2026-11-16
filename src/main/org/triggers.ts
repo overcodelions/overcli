@@ -154,7 +154,9 @@ export interface TriggerDeps {
   handTo?(hand: TriggerHand, event: { title: string; text: string; url?: string; triggerName: string }): { ok: true; label: string } | { ok: false; error: string };
   /// Hand the worker a task; the answer arrives on `done`. `startsOnItsOwn`:
   /// the trigger's manager let what it finds start without an OK.
-  ask(workerId: string, triggerName: string, text: string, startsOnItsOwn: boolean):
+  /// `about`, for a Slack message: what was said, by whom, where; the ask is
+  /// shown by that rather than by the whole brief.
+  ask(workerId: string, triggerName: string, text: string, startsOnItsOwn: boolean, about?: { said: string; slackUserId?: string; where: string }):
     | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number; choices?: string[]; orchestrationId?: string } | { ok: false; error: string }> }
     | { ok: false; error: string };
   toolConfig(name: string): McpServerConfig | null;
@@ -727,7 +729,7 @@ export class TriggerService {
       return null;
     }
     const past = listens(t) ? this.pastAnswers(t.workerId, questionOf(item)) : [];
-    const started = this.deps.ask(t.workerId, t.name, eventPrompt(t, item, past), t.startsOnItsOwn === true);
+    const started = this.deps.ask(t.workerId, t.name, eventPrompt(t, item, past), t.startsOnItsOwn === true, slackSaid(t, item));
     if (!started.ok) return skip(started.error);
     const d: Deliverable = { ...base, askId: started.askId, ...(thread ? { thread } : {}), ...(rehearses(t) ? { asked: eventText(item) } : {}) };
     this.putDeliverable(d);
@@ -1267,6 +1269,14 @@ function revisePrompt(t: WorkerTrigger, d: Deliverable, feedback: string): strin
     'Reply with only the new answer, exactly as it should be posted in the thread: no preamble, no note about what changed.',
     'If they say it should not be answered at all, reply with only PASS.',
   ].join('\n');
+}
+
+/// A Slack message's own words, author and channel, when that's what set the
+/// trigger off: what its ask is shown by. Nothing for other events.
+export function slackSaid(t: { name: string }, item: { data?: unknown }): { said: string; slackUserId?: string; where: string } | undefined {
+  const d = item.data as { channel?: unknown; text?: unknown; user?: unknown } | undefined;
+  if (!d || typeof d.channel !== 'string' || typeof d.text !== 'string' || !d.text.trim()) return undefined;
+  return { said: d.text.trim().slice(0, 4000), ...(typeof d.user === 'string' && d.user ? { slackUserId: d.user } : {}), where: t.name };
 }
 
 function eventPrompt(t: WorkerTrigger, item: WatchItem, past: PastAnswer[] = []): string {

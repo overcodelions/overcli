@@ -62,3 +62,18 @@ describe('buildStartRequest', () => {
     expect(r.params.model).toBeNull();
   });
 });
+
+describe('per-thread MCP servers', () => {
+  const overgo = { command: '/usr/bin/node', args: ['/app/runToolRelayHelper.js', '/tmp/relay.sock', 'conv-1', 'overgo'], env: { OVERCLI_TOOL_RELAY_TOKEN: 'relay-key' } };
+
+  it('adds each by its dotted key on start and resume, keeping the user\'s own mcp_servers table', () => {
+    for (const r of [buildStartRequest({ ...opts, mcpServers: { overgo } }), buildResumeRequest({ ...opts, mcpServers: { overgo } }, 'thr-1')]) {
+      expect(r.params.config).toEqual({ 'mcp_servers.overgo': overgo });
+    }
+  });
+
+  it('sends no config at all without any', () => {
+    expect(buildStartRequest(opts).params).not.toHaveProperty('config');
+    expect(buildStartRequest({ ...opts, mcpServers: {} }).params).not.toHaveProperty('config');
+  });
+});

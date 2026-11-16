@@ -207,7 +207,9 @@ interface WorkersState {
   /// what it came to (report); nothing answered NOW, so the tab opened on
   /// whichever worker happened to be hired first — an accident of sort order
   /// standing in for a front page.
-  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'org' | 'team' | 'processes';
+  /// `org` is the org chart of this app's own workers; `orgServers` is the
+  /// Org tab, the workers on the org servers this app is signed in to.
+  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'org' | 'team' | 'processes' | 'orgServers';
   /// The team whose desk is on screen while `view` is 'team'. Teams live in
   /// teamsStore; the selection lives here because it is a peer of the worker
   /// selection — picking one leaves the other.
@@ -480,6 +482,8 @@ interface WorkersActions {
   showFunds(): void;
   showReport(): void;
   showOrg(): void;
+  /// The Org tab: workers on the org servers (components/workers/org).
+  showOrgServers(): void;
   /// Processes: the list, or one process's board — open on one of its
   /// items if given.
   showProcesses(id?: string | null, itemId?: string | null): void;
@@ -1104,6 +1108,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   showOrg() {
     leavePane(get);
     set({ view: 'org' });
+  },
+
+  showOrgServers() {
+    leavePane(get);
+    set({ view: 'orgServers' });
   },
 
   showProcesses(id, itemId) {

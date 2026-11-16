@@ -44,6 +44,16 @@ export interface CodexAppServerStartOptions {
   /// top of `cwd`. Used for coordinator-style cwd's that are folders
   /// of symlinks pointing at member worktrees outside the cwd subtree.
   writableRoots?: string[];
+  /// MCP servers added for this thread only, on top of the user's config
+  /// (`mcp_servers.<name>` overrides): overgo through the run tool relay.
+  mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+}
+
+/// The thread's config overrides: each added MCP server by its dotted key,
+/// so the user's own `mcp_servers` table is kept rather than replaced.
+function threadConfig(opts: CodexAppServerStartOptions): Record<string, unknown> {
+  const entries = Object.entries(opts.mcpServers ?? {});
+  return entries.length ? { config: Object.fromEntries(entries.map(([name, s]) => [`mcp_servers.${name}`, { command: s.command, args: s.args, env: s.env }])) } : {};
 }
 
 export interface CodexAppServerTurnOptions {
@@ -56,6 +66,8 @@ export interface CodexAppServerTurnOptions {
   writableRoots?: string[];
   /// Network access inside workspace-write. See BackendSendArgs.networkAccess.
   networkAccess?: boolean;
+  /// See CodexAppServerStartOptions.mcpServers. Read when the thread starts.
+  mcpServers?: CodexAppServerStartOptions['mcpServers'];
 }
 
 interface CodexAppServerNotificationEvent {
@@ -385,6 +397,7 @@ export function buildResumeRequest(
       model: opts.model || null,
       approvalPolicy: opts.approval,
       sandbox: opts.sandbox,
+      ...threadConfig(opts),
     },
   };
 }
@@ -401,6 +414,7 @@ export function buildStartRequest(
       approvalPolicy: opts.approval,
       approvalsReviewer: 'user',
       sandbox: opts.sandbox,
+      ...threadConfig(opts),
     },
   };
 }

@@ -390,6 +390,34 @@ describe('control plane HTTP', () => {
     expect(refused.isError).toBe(true);
     await client.close();
   });
+
+  it("marks the console API's caller as the overcli app when the app says so", async () => {
+    const seen: Array<string | undefined> = [];
+    const stub = { listWaiting: (c: OrgCaller) => (seen.push(c.via), []) } as unknown as OrgService;
+    const plane = createControlPlane({ org: stub, log: () => {}, authenticate: (t) => (t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(plane, { host: '127.0.0.1', port: 0 });
+    const at = `http://127.0.0.1:${(plane.address() as AddressInfo).port}/api/waiting`;
+    await fetch(at, { headers: { Authorization: 'Bearer ocli_good', 'X-Overcli-Client': 'desktop-app' } });
+    await fetch(at, { headers: { Authorization: 'Bearer ocli_good' } });
+    plane.close();
+    expect(seen).toEqual(['overcli app', undefined]);
+  });
+
+  it('marks the caller as an overcli chat when its relay says so, and only then', async () => {
+    const seen: Array<string | undefined> = [];
+    const stub = { whoami: (c: OrgCaller) => (seen.push(c.via), { name: c.name }) } as unknown as OrgService;
+    const plane = createControlPlane({ org: stub, log: () => {}, authenticate: (t) => (t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(plane, { host: '127.0.0.1', port: 0 });
+    const url = new URL(`http://127.0.0.1:${(plane.address() as AddressInfo).port}/mcp`);
+    for (const extra of [{ 'X-Overcli-Client': 'desktop-chat' }, { 'X-Overcli-Client': 'something-else' }, {}]) {
+      const client = new Client({ name: 'test', version: '1' });
+      await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: 'Bearer ocli_good', ...extra } } }));
+      await client.callTool({ name: 'whoami', arguments: {} });
+      await client.close();
+    }
+    plane.close();
+    expect(seen).toEqual(['overcli chat', undefined, undefined]);
+  });
 });
 
 describe('--control', () => {
