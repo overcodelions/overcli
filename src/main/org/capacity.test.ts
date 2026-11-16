@@ -99,6 +99,18 @@ describe('reading the machine', () => {
     expect(machineLoad((f) => files[f] ?? null)().mem).toBeCloseTo(0.25);
   });
 
+  it('leaves out the file cache the kernel can take back', () => {
+    const files: Record<string, string> = {
+      '/sys/fs/cgroup/memory.current': '3865470566\n', // 3.6 GiB, mostly cache
+      '/sys/fs/cgroup/memory.max': '4294967296\n',
+      '/sys/fs/cgroup/memory.stat': 'anon 1073741824\nfile 2791728742\nactive_file 0\ninactive_file 2791728742\n',
+    };
+    expect(machineLoad((f) => files[f] ?? null)().mem).toBeCloseTo(0.25);
+    // Never below nothing, whatever the counters say.
+    files['/sys/fs/cgroup/memory.stat'] = 'inactive_file 9999999999\n';
+    expect(machineLoad((f) => files[f] ?? null)().mem).toBe(0);
+  });
+
   it('counts CPU from the container\'s usage against its CPUs', () => {
     let usage = 0;
     const files = (f: string) => (f === '/sys/fs/cgroup/cpu.stat' ? `usage_usec ${usage}\n` : f === '/sys/fs/cgroup/cpu.max' ? '200000 100000\n' : null);

@@ -74,6 +74,16 @@ RUN if [ -f package.json ]; then \
       rm -rf src; \
     fi
 
+# ---- playwright-mcp: the browser tool behind Apps to test, from its lockfile -
+# Vendored so a run never resolves Playwright MCP or anything under it from
+# the registry (src/main/org/testSystemsServer.ts). Bump the version there,
+# in deploy/playwright-mcp/package.json and its lock file together.
+FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS playwright-mcp
+WORKDIR /opt/playwright-mcp
+COPY deploy/playwright-mcp/package.json deploy/playwright-mcp/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && npm cache clean --force
+
 # ---- build: compile the CLI (tsc) with dev dependencies, then drop them ----
 FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS build
 ARG DEBIAN_MIRROR
@@ -132,20 +142,19 @@ RUN apt-get update \
 # uvx fetches a tool and the Python it needs on first use, into the cache
 # under HOME on the volume, so later starts reuse them.
 COPY --from=uv /uv /uvx /usr/local/bin/
-# Apps to test (src/main/org/testSystemsServer.ts) drive Playwright's own
-# Chromium: installed here with the system libraries it needs, at the
-# Playwright version the pinned Playwright MCP uses (PLAYWRIGHT_FOR_MCP there),
-# where the server and workers can read it. About 400 MB; leave it out with
-# --build-arg INSTALL_BROWSER=0.
+# Apps to test (src/main/org/testSystemsServer.ts) run the vendored
+# Playwright MCP, and drive Playwright's own Chromium: installed here by that
+# copy's own Playwright, so the two always match, with the system libraries
+# it needs, where the server and workers can read it. About 400 MB; leave the
+# browser out with --build-arg INSTALL_BROWSER=0.
+COPY --from=playwright-mcp /opt/playwright-mcp /opt/playwright-mcp
 ARG INSTALL_BROWSER=1
-ARG PLAYWRIGHT_VERSION=1.65.0-alpha-2026-10-30
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
       apt-get update \
-      && npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
+      && node /opt/playwright-mcp/node_modules/playwright/cli.js install --with-deps chromium \
       && chmod -R a+rX /opt/ms-playwright \
-      && rm -rf /var/lib/apt/lists/* \
-      && npm cache clean --force; \
+      && rm -rf /var/lib/apt/lists/*; \
     fi
 
 WORKDIR /app

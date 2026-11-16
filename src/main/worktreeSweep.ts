@@ -539,9 +539,11 @@ export function isProtectedBranch(branchName: string | null, baseBranch?: string
   return PROTECTED_BRANCHES.has(branchName);
 }
 
-/// Remove the selected worktrees. Mirrors the single-agent path
-/// (`removeWorktree`): `git worktree remove --force` then a safe branch
-/// delete that only escalates to `-D` for genuinely unmerged branches.
+/// Remove the selected worktrees: `git worktree remove`, then a safe branch
+/// delete that keeps a branch with commits git can't vouch for. The scan
+/// that picked a tree is older than this moment, so git is left to refuse
+/// one that has gained changes since (no --force). Only a tree the scan
+/// already showed with changes, and that was still chosen, is forced.
 /// Each project touched gets a final `git worktree prune` to clear stale
 /// registrations — including entries that were already `prunable` and so
 /// had no directory to remove.
@@ -551,6 +553,9 @@ export async function sweepWorktrees(args: {
     worktreePath: string;
     branchName: string | null;
     baseBranch?: string;
+    /// Uncommitted files the scan saw. Above zero, the person chose the tree
+    /// knowing it had changes, so it's forced; otherwise new ones keep it.
+    dirtyAtScan?: number;
   }>;
 }): Promise<{
   removed: number;
@@ -595,6 +600,7 @@ export async function sweepWorktrees(args: {
         branchName: protectedBranch ? '' : (entry.branchName ?? ''),
         // Clean up's rule: a branch with commits git can't vouch for stays.
         keepUnmerged: true,
+        force: (entry.dirtyAtScan ?? 0) > 0,
       });
       if (!res.ok) {
         failures.push({ worktreePath: entry.worktreePath, error: res.error ?? 'unknown error' });

@@ -385,6 +385,24 @@ describe('processes', () => {
     expect(h.state().items[0].finishedAt).toBeUndefined();
   });
 
+  it('records a reply from someone who can’t give the OK as a note, not a refusal', () => {
+    const h = harness();
+    const lee: OrgCaller = { name: 'Lee', slackUserId: 'U0LEE', admin: false };
+    const pat: OrgCaller = { name: 'Pat', slackUserId: 'U0PAT', admin: false };
+    const made = h.svc.save(lee, { access: { who: 'everyone' }, name: 'One step', stages: [{ id: 'b', name: 'Build It', kind: 'worker', workerId: 'w-ledger' }] });
+    if (!made.ok) throw new Error(made.error);
+    const sub = h.svc.submit(pat, made.process.id, { brief: 'Publish All for plugins', source: 'console' });
+    if (!sub.ok) throw new Error(sub.error);
+    h.tasks.set(h.asked[0].askId, { status: 'waiting', asksApproval: 'Shall I start building?' });
+    h.svc.poll();
+    expect(h.state().items[0]).toMatchObject({ ownerTurn: 'approval' });
+    expect(h.svc.reply(pat, sub.item.id, 'please also cover the EU region')).toMatchObject({ ok: true, said: expect.stringContaining('Noted') });
+    expect(h.state().items[0]).toMatchObject({ status: 'active', stageIndex: 0, ownerTurn: 'approval' });
+    expect(h.state().items[0].history.some((e) => e.kind === 'note' && e.note === 'please also cover the EU region')).toBe(true);
+    // The person who decides still gives the OK by replying.
+    expect(h.svc.reply(lee, sub.item.id, 'go ahead')).toMatchObject({ ok: true, said: expect.stringContaining('Approved') });
+  });
+
   it('sends a finished item back to the stage the reply names, and only for those it concerns', () => {
     const h = harness();
     const made = h.svc.save(owner, { access: { who: 'everyone' },

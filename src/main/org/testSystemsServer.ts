@@ -20,13 +20,18 @@ import { NO_BROWSER, TestSystemsSession, browserMissing, resultValue, type Brows
 import { HEALTH_PATHS, discoverScript, planFromScan, type Discovered, type ScreenScan } from './testSystemsDiscover';
 
 /// The Playwright MCP the tool drives, pinned: the tools it passes through,
-/// and the ones it keeps for signing in, are by name. $OVERCLI_PLAYWRIGHT_MCP
-/// names another package spec.
+/// and the ones it keeps for signing in, are by name. The server image
+/// vendors exactly this version with a lockfile (deploy/playwright-mcp), so
+/// nothing is resolved from the registry when a run starts; elsewhere (the
+/// desktop app, a development checkout) it comes from npx at this exact
+/// version. Change it there too.
 export const PLAYWRIGHT_MCP = '@playwright/mcp@0.0.84';
 
+/// Where the image puts the vendored Playwright MCP (deploy/Dockerfile).
+export const VENDORED_PLAYWRIGHT_MCP = '/opt/playwright-mcp/node_modules/@playwright/mcp/cli.js';
+
 /// The Playwright that Playwright MCP version pins: its Chromium is the one
-/// the Docker image installs (deploy/Dockerfile PLAYWRIGHT_VERSION). Change
-/// the two together.
+/// the Docker image installs, with the vendored copy's own Playwright.
 export const PLAYWRIGHT_FOR_MCP = '1.65.0-alpha-2026-10-30';
 
 /// How Playwright MCP starts: headless Chromium (Playwright's own, not Google
@@ -35,8 +40,6 @@ export const PLAYWRIGHT_FOR_MCP = '1.65.0-alpha-2026-10-30';
 /// Chromium's sandbox needs privileges a container's user lacks on Linux.
 export function playwrightArgs(outputDir: string, platform: NodeJS.Platform = process.platform): string[] {
   return [
-    '-y',
-    process.env.OVERCLI_PLAYWRIGHT_MCP?.trim() || PLAYWRIGHT_MCP,
     '--headless',
     '--browser',
     'chromium',
@@ -48,12 +51,30 @@ export function playwrightArgs(outputDir: string, platform: NodeJS.Platform = pr
   ];
 }
 
-/// Start Playwright MCP, as `playwrightArgs` says.
+/// What starts Playwright MCP: the vendored copy when there is one, run by
+/// this node; otherwise npx at the pinned version. $OVERCLI_PLAYWRIGHT_MCP
+/// may name a local copy's cli.js instead (an absolute path that exists),
+/// for trying another version by hand. It is never a package spec, and the
+/// vendored copy wins over it, so nothing in a server's environment can make
+/// it fetch and run some other package.
+export function playwrightCommand(
+  outputDir: string,
+  opts: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; exists?: (file: string) => boolean; node?: string } = {},
+): { command: string; args: string[] } {
+  const exists = opts.exists ?? ((f: string) => fs.existsSync(f));
+  const node = opts.node ?? process.execPath;
+  const flags = playwrightArgs(outputDir, opts.platform);
+  if (exists(VENDORED_PLAYWRIGHT_MCP)) return { command: node, args: [VENDORED_PLAYWRIGHT_MCP, ...flags] };
+  const local = (opts.env ?? process.env).OVERCLI_PLAYWRIGHT_MCP?.trim();
+  if (local && path.isAbsolute(local) && /\.(?:c|m)?js$/.test(local) && exists(local)) return { command: node, args: [local, ...flags] };
+  return { command: 'npx', args: ['-y', PLAYWRIGHT_MCP, ...flags] };
+}
+
+/// Start Playwright MCP, as `playwrightCommand` says.
 export async function startPlaywright(outputDir: string): Promise<BrowserChild> {
   const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === 'string' && !e[0].startsWith('OVERCLI_TS_')));
   const transport = new StdioClientTransport({
-    command: 'npx',
-    args: playwrightArgs(outputDir),
+    ...playwrightCommand(outputDir),
     env,
     stderr: 'ignore',
   });

@@ -181,20 +181,31 @@ export interface SlackFile {
 
 const MAX_SLACK_ATTACHMENTS = 10;
 const MAX_SLACK_ATTACHMENT_BYTES = 25_000_000;
+/// All of one message's files together. Each is held as base64 until it's
+/// handed on, so without this ten big files would be a third of a gigabyte
+/// at once, per message, and a few threads at a time could exhaust a small
+/// server.
+export const MAX_SLACK_MESSAGE_BYTES = 50_000_000;
 
 /// Files someone shared in Slack, as attachments work can read. `failed`: the
-/// names that didn't come through (too many, too big, no access), to say so
-/// rather than losing them quietly.
+/// names that didn't come through (too many, too big, over what one message
+/// can carry, no access), to say so rather than losing them quietly.
 export async function slackAttachments(
   files: SlackFile[],
   download: (url: string, maxBytes: number) => Promise<Buffer | null>,
 ): Promise<{ attachments: Array<{ id: string; mimeType: string; dataBase64: string; label?: string; size?: number }>; failed: string[] }> {
   const attachments: Array<{ id: string; mimeType: string; dataBase64: string; label?: string; size?: number }> = [];
   const failed: string[] = [];
+  let left = MAX_SLACK_MESSAGE_BYTES;
   for (const f of files) {
-    const bytes = attachments.length < MAX_SLACK_ATTACHMENTS && f.url_private && (f.size ?? 0) <= MAX_SLACK_ATTACHMENT_BYTES ? await download(f.url_private, MAX_SLACK_ATTACHMENT_BYTES).catch(() => null) : null;
-    if (bytes) attachments.push({ id: f.id, mimeType: f.mimetype || 'application/octet-stream', dataBase64: bytes.toString('base64'), label: f.name, size: bytes.length });
-    else failed.push(f.name || 'a file');
+    const cap = Math.min(MAX_SLACK_ATTACHMENT_BYTES, left);
+    const fits = attachments.length < MAX_SLACK_ATTACHMENTS && f.url_private && cap > 0 && (f.size ?? 0) <= cap;
+    const bytes = fits && f.url_private ? await download(f.url_private, cap).catch(() => null) : null;
+    // Slack's size is only what it says; the download's own cap is the check.
+    if (bytes && bytes.length <= cap) {
+      left -= bytes.length;
+      attachments.push({ id: f.id, mimeType: f.mimetype || 'application/octet-stream', dataBase64: bytes.toString('base64'), label: f.name, size: bytes.length });
+    } else failed.push(f.name || 'a file');
   }
   return { attachments, failed };
 }
@@ -230,8 +241,31 @@ export async function downloadFile(botToken: string, url: string, maxBytes: numb
     if (!/^https:\/\/files\.slack\.com\//.test(url)) return { ok: false, error: 'Not a Slack file address.' };
     const res = await fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${botToken}` } });
     if (!res.ok) return { ok: false, error: `Slack file returned HTTP ${res.status}.` };
+    const tooLarge = { ok: false as const, error: 'That file is too large to pass on.' };
+    if (Number(res.headers?.get('content-length')) > maxBytes) {
+      await res.body?.cancel().catch(() => {});
+      return tooLarge;
+    }
+    // Read it in pieces and stop at the cap, so a file bigger than it says
+    // is never held whole.
+    if (res.body) {
+      const reader = res.body.getReader();
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => {});
+          return tooLarge;
+        }
+        chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+      }
+      return { ok: true, data: Buffer.concat(chunks, total) };
+    }
     const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length > maxBytes) return { ok: false, error: 'That file is too large to pass on.' };
+    if (bytes.length > maxBytes) return tooLarge;
     return { ok: true, data: bytes };
   } catch (err) {
     return { ok: false, error: `Slack file: ${String(err)}` };

@@ -121,7 +121,9 @@ export function readTitleReply(reply: string): string | 'keep' | null {
   t = t.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
   t = t.replace(/^(?:title|name)\s*:\s*/i, '').replace(/^["'“‘`*_]+|["'”’`*_.]+$/g, '').trim();
   if (!t) return null;
-  if (/^keep\b/i.test(t)) return 'keep';
+  // The whole reply, not its first word: "Keep-alive timeout in websocket
+  // client" is a title.
+  if (/^keep[.!]?$/i.test(t)) return 'keep';
   if (t.length > TITLE_MAX) {
     const cut = t.slice(0, TITLE_MAX);
     const sp = cut.lastIndexOf(' ');

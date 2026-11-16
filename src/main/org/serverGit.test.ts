@@ -3,14 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { UNREADABLE_CONFIG, gitCommandOf, hardening, scopedEntries, serverGitLaunch, talksToRemote, unsafeRepoConfig, useTrustedGitCredentials, type GitLaunch } from './serverGit';
+import { UNREADABLE_CONFIG, gitCommandOf, hardening, scopedEntries, serverGitLaunch, talksToRemote, unsafeRepoConfig, useTrustedGitCredentials, useTrustedGitRemotes, type GitLaunch } from './serverGit';
 
 const argsOf = (l: GitLaunch | null): string[] => (l && 'args' in l ? l.args : []);
 
 const worker = { uid: 1001, gid: 1001 };
 const roots = ['/data/home', '/data/repos', '/data/projects'];
 
-afterEach(() => useTrustedGitCredentials(() => []));
+afterEach(() => {
+  useTrustedGitCredentials(() => []);
+  useTrustedGitRemotes(() => []);
+});
 
 describe("the server's git while workers run as their own user", () => {
   it('finds the subcommand and its folder past global options', () => {
@@ -97,18 +100,59 @@ describe("the server's git while workers run as their own user", () => {
       const helper = '!f() { test "$1" = get && echo "username=${ACME_USER:-x-token-auth}" && echo "password=$ACME_TOKEN"; }; f';
       git('config', 'credential.https://bitbucket.org.helper', helper);
       const trusted: Array<[string, string]> = [['credential.https://bitbucket.org.helper', helper]];
+      const remotes = ['https://bitbucket.org/acme/web.git'];
       // What every connected https repo looks like: nothing to refuse.
-      expect(unsafeRepoConfig(dir, trusted)).toEqual([]);
+      expect(unsafeRepoConfig(dir, trusted, process.env, remotes)).toEqual([]);
       // The same key with another value is a worker's helper, not the server's.
       git('config', 'credential.https://bitbucket.org.helper', '!cat /data/secrets.key; f');
-      expect(unsafeRepoConfig(dir, trusted)).toEqual(['credential.https://bitbucket.org.helper']);
+      expect(unsafeRepoConfig(dir, trusted, process.env, remotes)).toEqual(['credential.https://bitbucket.org.helper']);
       git('config', 'credential.https://bitbucket.org.helper', helper);
       // A remote helper by vcs is refused too.
       git('config', 'remote.origin.vcs', 'evil');
-      expect(unsafeRepoConfig(dir, trusted)).toEqual(['remote.origin.vcs']);
+      expect(unsafeRepoConfig(dir, trusted, process.env, remotes)).toEqual(['remote.origin.vcs']);
       git('config', '--unset', 'remote.origin.vcs');
       // The caller's own -c (the hardening, the trusted helpers) is not the repo's config.
-      expect(unsafeRepoConfig(dir, trusted, { ...process.env, GIT_CONFIG_PARAMETERS: "'http.proxy'='http://evil.example:1'" })).toEqual([]);
+      expect(unsafeRepoConfig(dir, trusted, { ...process.env, GIT_CONFIG_PARAMETERS: "'http.proxy'='http://evil.example:1'" }, remotes)).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a remote a worker pointed away from the address the server connected", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-steer-remote-'));
+    try {
+      const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' });
+      git('init', '-q');
+      git('remote', 'add', 'origin', 'https://github.com/acme/web.git');
+      const remotes = ['https://github.com/acme/web.git', 'https://github.com/acme/api.git'];
+      expect(unsafeRepoConfig(dir, [], process.env, remotes)).toEqual([]);
+      // The same host, someone else's repo: the server's token would push the org's code there.
+      git('remote', 'set-url', 'origin', 'https://github.com/mallory/web.git');
+      expect(unsafeRepoConfig(dir, [], process.env, remotes)).toEqual(['remote.origin.url']);
+      // Nothing connected at all: every remote is unknown.
+      git('remote', 'set-url', 'origin', 'https://github.com/acme/web.git');
+      expect(unsafeRepoConfig(dir, [], process.env, [])).toEqual(['remote.origin.url']);
+      // A push address the server never writes, at any value.
+      git('remote', 'set-url', '--push', 'origin', 'https://github.com/acme/web.git');
+      expect(unsafeRepoConfig(dir, [], process.env, remotes)).toEqual(['remote.origin.pushurl']);
+      git('config', '--unset', 'remote.origin.pushurl');
+      // Another remote, and an address rewrite.
+      git('remote', 'add', 'mirror', 'git@evil.example:x/y.git');
+      git('config', 'url.https://evil.example/.pushInsteadOf', 'https://github.com/');
+      expect(unsafeRepoConfig(dir, [], process.env, remotes).sort()).toEqual(['remote.mirror.url', 'url.https://evil.example/.pushinsteadof']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('takes the connected addresses from what the server registers', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-steer-reg-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/web.git'], { cwd: dir });
+      expect(unsafeRepoConfig(dir, [])).toEqual(['remote.origin.url']);
+      useTrustedGitRemotes(() => ['https://github.com/acme/web.git']);
+      expect(unsafeRepoConfig(dir, [])).toEqual([]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

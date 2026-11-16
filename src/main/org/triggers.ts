@@ -1219,11 +1219,25 @@ function keepable(item: WatchItem): WatchItem {
   return json.length <= 8000 ? item : { ...item, data: { text: json.slice(0, 8000) } };
 }
 
+/// Invisible characters someone could slip into a tag to hide it from a
+/// plain match while a model still reads it as the tag.
+const TAG_FILLER = '[\\s\\u00ad\\u180e\\u200b-\\u200f\\u2060-\\u2064\\ufeff]*';
+/// `untrusted-data` written any way that still reads as it: either case,
+/// full-width letters, any dash (or none), invisible characters between.
+const TAG_NAME = [...'untrusted-data']
+  .map((c) => (c === '-' ? '[\\s_\\-\\u2010-\\u2015\\u2212\\ufe63\\uff0d]*' : `[${c}${c.toUpperCase()}${String.fromCharCode(c.charCodeAt(0) + 0xfee0)}${String.fromCharCode(c.toUpperCase().charCodeAt(0) + 0xfee0)}]`))
+  .join(TAG_FILLER);
+/// An opening or closing <untrusted-data> tag: `<`, or a look-alike
+/// (full-width, small, angle brackets), then any slash and spacing.
+const UNTRUSTED_TAG = new RegExp(`[<\\uff1c\\ufe64\\u3008\\u27e8\\u2329](?=(?:${TAG_FILLER}[\\/\\uff0f\\u2215\\u2044\\\\])*${TAG_FILLER}${TAG_NAME})`, 'g');
+
 /// Text from outside the org, as it goes inside an <untrusted-data> block:
 /// a tag in it that would close the block early (and so put what follows
-/// outside it, as instructions) is made harmless.
+/// outside it, as instructions) is made harmless, its bracket turned to ‹.
+/// Look-alikes count: `< /untrusted-data>`, `＜／ＵＮＴＲＵＳＴＥＤ-data＞`, one
+/// with invisible characters inside. Safe to apply twice.
 export function untrusted(text: string): string {
-  return text.replace(/<(\/?)(\s*untrusted-data)/gi, '‹$1$2');
+  return text.replace(UNTRUSTED_TAG, '‹');
 }
 
 /// What the event said, as text: a Slack message's words, else its title.

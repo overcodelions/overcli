@@ -2034,6 +2034,7 @@ export interface IPCInvokeMap {
       worktreePath: string;
       branchName: string | null;
       baseBranch?: string;
+      dirtyAtScan?: number;
     }>;
   }) => {
     removed: number;

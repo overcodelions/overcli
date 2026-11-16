@@ -46,7 +46,7 @@ import { callTool, listServerTools } from './mcpDirect';
 import type { TriggerService } from './triggers';
 import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy, orgDir } from './orgStores';
 import { RepoService, credentialHelper, parseRepoUrl, serverGitNote, type RepoState } from './repos';
-import { useTrustedGitCredentials } from './serverGit';
+import { useTrustedGitCredentials, useTrustedGitRemotes } from './serverGit';
 import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
 import { applyRepoGrants } from './repoGrants';
@@ -239,6 +239,9 @@ export function createOrgService(
     }
     return [...out];
   });
+  // And the addresses it cloned from: a repo whose origin a worker pointed
+  // somewhere else doesn't get the server's push.
+  useTrustedGitRemotes(() => repos.list().map((r) => r.url));
   // Java, Node, Python, Go and custom kits on the data volume: on every
   // worker's PATH, the version per repo.
   const toolchains = new ToolchainService({

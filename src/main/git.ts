@@ -1270,7 +1270,7 @@ export function removeWorktree(args: {
   projectPath: string;
   worktreePath: string;
   branchName: string;
-}): { ok: boolean; error?: string; warning?: string } {
+}): { ok: boolean; error?: string; warning?: string; branchKept?: boolean } {
   const res = runGit(['worktree', 'remove', '--force', args.worktreePath], args.projectPath);
   if (res.exitCode !== 0) {
     return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
@@ -1299,8 +1299,11 @@ export function removeWorktree(args: {
             `Recover them with \`git reflog\` / \`git branch <name> <sha>\` if needed.`,
         };
       }
+      // The branch is still there, so say so: callers drop their pointer to
+      // a branch only when it's really gone.
       return {
         ok: true,
+        branchKept: true,
         warning: `Worktree removed, but couldn't delete branch \`${args.branchName}\`: ${stderr}`,
       };
     }
@@ -1329,25 +1332,43 @@ export async function releaseWorktree(
   },
   deps: {
     turnPending: (conversationId: string) => boolean;
+    /// Stops new turns starting on the conversation until the returned
+    /// function is called. Taken in the same tick as the `turnPending` check
+    /// and held across the remove, so a turn can't start in the gap and lose
+    /// its cwd.
+    holdTurns?: (conversationId: string) => () => void;
     migrateSession: (args: { worktreePath: string; projectPath: string; sessionId: string }) => void;
   },
 ): Promise<{ ok: boolean; error?: string; warning?: string ; branchKept?: boolean }> {
-  if (args.unattended && args.conversationId && deps.turnPending(args.conversationId)) {
-    return { ok: false, error: 'kept: its chat is running' };
+  let unhold: (() => void) | undefined;
+  if (args.unattended && args.conversationId) {
+    if (deps.turnPending(args.conversationId)) return { ok: false, error: 'kept: its chat is running' };
+    if (releasing.has(args.worktreePath)) return { ok: false, error: 'kept: it is already being released' };
+    unhold = deps.holdTurns?.(args.conversationId);
   }
-  const res = await removeWorktreeAsync({
-    projectPath: args.projectPath,
-    worktreePath: args.worktreePath,
-    branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
-    ...(args.keepUnmerged ? { keepUnmerged: true } : {}),
-    ...(args.unattended ? { force: false } : {}),
-  });
-  if (!res.ok) return res;
-  if (args.sessionId) {
-    deps.migrateSession({ worktreePath: args.worktreePath, projectPath: args.projectPath, sessionId: args.sessionId });
+  releasing.add(args.worktreePath);
+  try {
+    const res = await removeWorktreeAsync({
+      projectPath: args.projectPath,
+      worktreePath: args.worktreePath,
+      branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
+      ...(args.keepUnmerged ? { keepUnmerged: true } : {}),
+      ...(args.unattended ? { force: false } : {}),
+    });
+    if (!res.ok) return res;
+    if (args.sessionId) {
+      deps.migrateSession({ worktreePath: args.worktreePath, projectPath: args.projectPath, sessionId: args.sessionId });
+    }
+    return res;
+  } finally {
+    releasing.delete(args.worktreePath);
+    unhold?.();
   }
-  return res;
 }
+
+/// Trees a release is removing right now, so a second release of the same
+/// tree (a sweep overlapping auto-tidy) waits its turn rather than racing.
+const releasing = new Set<string>();
 
 /// Async sibling of `removeWorktree`. `removeWorktree` shells out via the
 /// blocking `runGit`/`spawnSync`, which freezes the main-process thread for
@@ -1389,8 +1410,11 @@ export async function removeWorktreeAsync(args: {
             `Recover them with \`git reflog\` / \`git branch <name> <sha>\` if needed.`,
         };
       }
+      // The branch is still there, so say so: callers drop their pointer to
+      // a branch only when it's really gone.
       return {
         ok: true,
+        branchKept: true,
         warning: `Worktree removed, but couldn't delete branch \`${args.branchName}\`: ${stderr}`,
       };
     }

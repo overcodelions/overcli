@@ -231,7 +231,13 @@ export function machineLoad(read: (file: string) => string | null = readQuiet): 
     let mem: number;
     const current = Number(read('/sys/fs/cgroup/memory.current')?.trim());
     const limit = read('/sys/fs/cgroup/memory.max')?.trim();
-    if (Number.isFinite(current) && limit && limit !== 'max' && Number(limit) > 0) mem = current / Number(limit);
+    if (Number.isFinite(current) && limit && limit !== 'max' && Number(limit) > 0) {
+      // memory.current counts the file cache too, which the kernel takes back
+      // under pressure; a git- and build-heavy box would read as full. Leave
+      // out the inactive part of it, as `docker stats` does.
+      const inactive = Number(/^inactive_file\s+(\d+)/m.exec(read('/sys/fs/cgroup/memory.stat') ?? '')?.[1]);
+      mem = Math.max(0, current - (Number.isFinite(inactive) ? inactive : 0)) / Number(limit);
+    }
     else {
       // Free memory leaves out the cache the kernel gives back on demand; what's available counts it.
       const available = Number(/MemAvailable:\s+(\d+) kB/.exec(read('/proc/meminfo') ?? '')?.[1]) * 1024;

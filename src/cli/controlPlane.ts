@@ -54,6 +54,7 @@ import type { ScheduleTrigger } from '../shared/flows/schedule';
 import { DRAWN_GROUPS, PICTURE_TONES, avatarChoices, drawnForSearch, searchPictures } from '../shared/flows/avatars';
 import { FLUENT_EMOJI } from '../shared/flows/fluentEmoji';
 import type { AccessService, PersonRole } from '../main/org/accessService';
+import { withoutEmails } from '../main/org/peopleDirectory';
 import type { SlackPerson } from '../main/slack/slackApi';
 import { slackManifestForConsole } from '../main/slack/slackManifest';
 import type { OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
@@ -1222,16 +1223,18 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
   };
   return [
     // Who is who, for anyone signed in: each person once, by the name they go
-    // by, with the handles, emails and device names they were recorded under,
-    // so a row shows "Sam Rivera" where an ask kept "samr". Also the groups
-    // and roles a picker offers; someone with a Slack id can be picked.
-    // Slack being down just means fewer names.
+    // by, with the handles and device names they were recorded under, so a
+    // row shows "Sam Rivera" where an ask kept "samr". Their work emails
+    // only for an admin: the email ↔ Slack id map is the org's to keep. Also
+    // the groups and roles a picker offers; someone with a Slack id can be
+    // picked. Slack being down just means fewer names.
     {
       method: 'GET',
       path: /^\/api\/directory$/,
-      handle: async () => {
+      handle: async (c) => {
         const slack = slackPeople ? await slackPeople().catch(() => []) : [];
-        return { ok: true, people: org.peopleDirectory(slack.map((p) => ({ id: p.id, name: p.name, handle: p.handle }))), groups: org.directory().groups, roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) };
+        const people = org.peopleDirectory(slack.map((p) => ({ id: p.id, name: p.name, handle: p.handle })));
+        return { ok: true, people: isAdmin(loadOrgPolicy().policy, c) ? people : withoutEmails(people), groups: org.directory().groups, roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) };
       },
     },
     { method: 'GET', path: /^\/api\/today$/, handle: (c) => org.today(c) },

@@ -19,9 +19,16 @@
 //             out) is signed in again here, and the page reopened, so an
 //             unattended run carries on
 //
-// Credentials only ever go to an address `resolveEnvironment` allows.
+// Credentials only ever go to an address `resolveEnvironment` allows. And the
+// browser itself goes nowhere private the worker picks: an address that is,
+// or resolves to, loopback, a private network, link-local (cloud metadata) or
+// the like is refused, before the browser goes and wherever it ends up,
+// unless it is one of the apps' own environments (those may well be on a
+// private network).
 
+import dns from 'node:dns';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -75,6 +82,8 @@ export interface SessionDeps {
   /// The run's evidence folder (OVERCLI_RUN_FILES): screenshots are copied
   /// there, so they show with the run's Files. Absent: kept here only.
   filesDir?: string;
+  /// Every address a host name resolves to. Default: the system resolver.
+  lookup?(host: string): Promise<string[]>;
 }
 
 /// A screenshot's file name from whatever the worker asked for: no folder,
@@ -166,6 +175,60 @@ const OWN_TOOLS: ToolInfo[] = [
 
 const text = (t: string, isError = false): ToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) });
 
+/// Addresses the browser never goes to unless they are an app's own: the
+/// unspecified, loopback, private (RFC 1918, CGNAT), link-local (where cloud
+/// metadata answers), benchmarking, multicast and reserved ranges, and their
+/// IPv6 kin (unique-local, link-local, multicast).
+const BLOCKED = (() => {
+  const b = new net.BlockList();
+  for (const [a, n] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]] as const) b.addSubnet(a, n, 'ipv4');
+  for (const [a, n] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8]] as const) b.addSubnet(a, n, 'ipv6');
+  return b;
+})();
+
+/// The eight 16-bit groups of an IPv6 address, or null.
+function ipv6Groups(ip: string): number[] | null {
+  let s = ip.toLowerCase().replace(/%.*$/, '');
+  // A dotted IPv4 tail (`::ffff:127.0.0.1`) as two groups.
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (tail) {
+    if (!net.isIPv4(tail[1])) return null;
+    const [a, b, c, d] = tail[1].split('.').map(Number);
+    s = s.slice(0, -tail[1].length) + `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (fill < 0) return null;
+  const groups = [...head, ...Array<string>(fill).fill('0'), ...rest].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => Number.isInteger(g) && g >= 0 && g <= 0xffff) ? groups : null;
+}
+
+/// Whether the browser is kept away from this address. IPv4 written as IPv6
+/// (mapped `::ffff:a.b.c.d`, compatible `::a.b.c.d`, NAT64 `64:ff9b::a.b.c.d`)
+/// is judged as the IPv4 address it carries.
+export function blockedAddress(ip: string): boolean {
+  const bare = ip.replace(/^\[|\]$/g, '');
+  if (net.isIPv4(bare)) return BLOCKED.check(bare, 'ipv4');
+  if (!net.isIPv6(bare)) return true;
+  const g = ipv6Groups(bare);
+  if (!g) return true;
+  const embedded =
+    (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) || (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0));
+  if (embedded && (g[6] || g[7] || g[5] === 0xffff)) {
+    const v4 = `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+    return BLOCKED.check(v4, 'ipv4');
+  }
+  return BLOCKED.check(bare, 'ipv6');
+}
+
+async function systemLookup(host: string): Promise<string[]> {
+  const found = await dns.promises.lookup(host, { all: true, verbatim: true });
+  return found.map((a) => a.address);
+}
+
 /// What run code returned: the first line of a Playwright MCP result's
 /// `### Result` section, unquoted.
 export function resultValue(result: ToolResult): string | undefined {
@@ -212,6 +275,9 @@ export class TestSystemsSession {
   private signInsAgain = 0;
   private lastUrl: string | undefined;
   private installTried = false;
+  /// Origins already found public this session, so a page that stays on one
+  /// isn't looked up on every call.
+  private publicOrigins = new Set<string>();
 
   constructor(private readonly deps: SessionDeps) {}
 
@@ -391,7 +457,61 @@ export class TestSystemsSession {
     return text(NO_BROWSER, true);
   }
 
+  /// Why the browser may not go to `raw`, or null when it may: an app's own
+  /// environment always may; otherwise only http(s) at an address that is
+  /// public, and resolves only to public addresses.
+  async refusedAddress(raw: string): Promise<string | null> {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      return `“${raw.slice(0, 200)}” isn’t an address the browser can open.`;
+    }
+    if (u.href === 'about:blank') return null;
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return `The browser only opens http and https addresses, not ${u.protocol}.`;
+    if (this.publicOrigins.has(u.origin)) return null;
+    for (const s of this.visible()) if (resolveEnvironment(s, u.origin).ok) return null;
+    const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+    const refuse = `${u.host} is on a private network (or this server), so the browser doesn’t go there. Only the apps’ own environments may be private; open one with open_system.`;
+    if (host === 'localhost' || host.endsWith('.localhost')) return refuse;
+    let ips: string[];
+    if (net.isIP(host)) ips = [host];
+    else {
+      try {
+        ips = await (this.deps.lookup ?? systemLookup)(host);
+      } catch {
+        return `${u.host} couldn’t be looked up, so the browser doesn’t go there.`;
+      }
+      if (!ips.length) return `${u.host} couldn’t be looked up, so the browser doesn’t go there.`;
+    }
+    if (ips.some(blockedAddress)) return refuse;
+    this.publicOrigins.add(u.origin);
+    return null;
+  }
+
   private async forward(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    // Where the worker asks the browser to go is checked first…
+    const asked = (name === 'browser_navigate' || name === 'browser_tabs') && typeof args.url === 'string' ? args.url : null;
+    if (asked !== null) {
+      const why = await this.refusedAddress(asked);
+      if (why) return text(why, true);
+    }
+    const result = await this.forwardChecked(name, args);
+    // …and where it ended up (a redirect, a link clicked): a private page
+    // isn't shown, and the browser is taken off it.
+    const at = pageUrlOf(result);
+    if (at) {
+      const why = await this.refusedAddress(at);
+      if (why) {
+        await this.callBrowser('browser_navigate', { url: 'about:blank' }).catch(() => undefined);
+        this.lastUrl = undefined;
+        return text(`The page left for an address the browser doesn’t open, so it isn’t shown. ${why}`, true);
+      }
+    }
+    return result;
+  }
+
+  private async forwardChecked(name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const before = this.lastUrl;
     // A file name, never a path: the browser writes only in its own folder.
     let saved: string | undefined;

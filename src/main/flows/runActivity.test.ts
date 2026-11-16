@@ -52,7 +52,7 @@ describe('run activity', () => {
       ['error', 'denied'],
     ]);
     expect(a.list('r1', 1_000).map((x) => x.kind)).toEqual(['error']);
-    await new Promise((r) => setTimeout(r, 20));
+    await a.flushed();
     // A new server reads it back from disk.
     const again = new RunActivity(() => undefined, { dir, keepDays: () => 7 });
     expect(again.list('r1')).toHaveLength(3);

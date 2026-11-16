@@ -60,6 +60,28 @@ describe('continueBranchFor on the team’s open pull requests', () => {
     const d = deps({ openBranches: { 'acme-web': ['release/2026-11'] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => false });
     expect(await continueBranchFor(marker('release/2026-11'), d)).toBeNull();
   });
+
+  it('never pushes onto a shared line, even one with a pull request open', async () => {
+    for (const b of ['develop', 'main', 'master', 'release/2026-11', 'hotfix/1.2.1', 'support/1.x']) {
+      const d = deps({ openBranches: { 'acme-web': [b] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => true });
+      expect(await continueBranchFor(marker(b), d), b).toBeNull();
+    }
+    // Not even one this worker's runs pushed there itself.
+    const own = deps({ openBranches: { 'acme-web': ['develop'] }, fixAskedOn: () => true });
+    expect(await continueBranchFor(marker('develop'), own)).toBeNull();
+  });
+
+  it('never pushes onto a branch another open pull request merges into', async () => {
+    const d = deps({
+      openBranches: { 'acme-web': ['acme-next'] },
+      mayContinueOpenPrs: () => true,
+      hasOpenPr: async () => true,
+      isPrTarget: (r, b) => r.name === 'acme-web' && b === 'acme-next',
+    });
+    expect(await continueBranchFor(marker('acme-next'), d)).toBeNull();
+    const fine = deps({ ...d, isPrTarget: () => false, openBranches: { 'acme-web': ['acme-next'] } });
+    expect(await continueBranchFor(marker('acme-next'), fine)).toBe('acme-next');
+  });
 });
 
 describe('continueBranchFor in a workspace', () => {

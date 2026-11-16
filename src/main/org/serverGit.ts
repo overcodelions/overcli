@@ -39,11 +39,20 @@ const NETWORK = new Set(['push', 'fetch', 'clone', 'ls-remote', 'submodule', 'ar
 const NETWORK_REMOTE = new Set(['update', 'prune', 'show']);
 
 let trustedHelpers: () => Array<[string, string]> = () => [];
+let trustedRemotes: () => string[] = () => [];
 
 /// The credential helpers the server gives git, as `[key, value]` config
 /// pairs: one per connected repo's host (repos.ts credentialHelper).
 export function useTrustedGitCredentials(fn: () => Array<[string, string]>): void {
   trustedHelpers = fn;
+}
+
+/// The remote addresses the server cloned from: each connected repo's url,
+/// from the server's record. A repo's `remote.<name>.url` is let through only
+/// when it is one of these; anything else would send the server's
+/// authenticated push (and the org's code) somewhere a worker chose.
+export function useTrustedGitRemotes(fn: () => string[]): void {
+  trustedRemotes = fn;
 }
 
 export function isGitBinary(file: string): boolean {
@@ -135,7 +144,13 @@ export type GitLaunch =
 /// or who answers for a credential. The command line can't pin them all: a
 /// `http.<url>.*` key for the remote's address wins over a plain `-c`
 /// (git's url matching picks the closest match, whatever its source).
-const STEERING_KEYS = /^(?:http\.|url\.|credential\.|core\.gitproxy$|remote\..+\.(?:proxy|vcs|uploadpack|receivepack)$)/i;
+/// A remote's address and push address decide where the server's
+/// credentials and the org's code go: `remote.<name>.url` is let through
+/// only at an address the server connected (useTrustedGitRemotes), and a
+/// `pushurl` never is, since the server never writes one. `url.<base>.
+/// insteadOf`/`pushInsteadOf` rewrites are caught by `url.`.
+const STEERING_KEYS = /^(?:http\.|url\.|credential\.|core\.gitproxy$|remote\..+\.(?:proxy|vcs|uploadpack|receivepack|url|pushurl)$)/i;
+const REMOTE_URL = /^remote\..+\.url$/i;
 
 /// What stands for a repo whose config couldn't be read: refused, since
 /// what it would have said is unknown.
@@ -159,9 +174,9 @@ export function scopedEntries(out: string): Array<{ scope: string; key: string; 
 /// The steering keys set in the repo at `dir`: its .git/config and its
 /// worktree config, includes followed. A key the server itself writes, with
 /// exactly the value it writes (a connected repo's credential helper,
-/// repos.ts), is not one. Fails closed: config that can't be read is
+/// repos.ts), is not one; nor is a remote at a connected repo's address. Fails closed: config that can't be read is
 /// refused. Not a repo at all: nothing.
-export function unsafeRepoConfig(dir: string, trusted: Array<[string, string]> = trustedHelpers(), env: NodeJS.ProcessEnv = process.env): string[] {
+export function unsafeRepoConfig(dir: string, trusted: Array<[string, string]> = trustedHelpers(), env: NodeJS.ProcessEnv = process.env, remotes: readonly string[] = trustedRemotes()): string[] {
   // Read with the server's git rules (no shared or system config, nothing
   // from the caller's own -c), and past the ownership guard: a tree a worker
   // made would otherwise be skipped silently, and read as empty.
@@ -183,11 +198,13 @@ export function unsafeRepoConfig(dir: string, trusted: Array<[string, string]> =
     return [UNREADABLE_CONFIG];
   }
   const ok = new Set(trusted.map(([k, v]) => `${k.toLowerCase()}\n${v}`));
+  const known = new Set(remotes);
   const keys = new Set<string>();
   for (const e of scopedEntries(out)) {
     if (e.scope !== 'local' && e.scope !== 'worktree') continue;
     if (!STEERING_KEYS.test(e.key)) continue;
     if (ok.has(`${e.key.toLowerCase()}\n${e.value}`)) continue;
+    if (REMOTE_URL.test(e.key) && known.has(e.value)) continue;
     keys.add(e.key);
   }
   return [...keys];
