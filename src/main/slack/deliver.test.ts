@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deliverText, folderPicks, foldersInReply, type DeliverIo } from './deliver';
+import { deliverText, folderPicks, foldersInReply, MAX_TAGS, tagPeople, type DeliverIo } from './deliver';
 
 const DIR = '/data/worker-files/w1/2026-11-06-errand-pricing-spec';
 const FILES: Record<string, string> = { 'prfaq.md': 'P', 'spec.md': 'S', 'research.md': 'R', 'notes.bin': 'x', '.ledger.json': 'l' };
@@ -57,5 +57,49 @@ describe('a folder a reply names', () => {
 
   it('picks what the reply names first, and only what Slack can show', () => {
     expect(folderPicks(Object.keys(FILES), 'start with spec.md')).toEqual(['spec.md', 'prfaq.md', 'research.md']);
+  });
+});
+
+describe('tagging people a reply names', () => {
+  const people = [
+    { name: 'Priya Shah', slackUserId: 'U0PRIYA', handle: 'pshah' },
+    { name: 'Jane Doe', slackUserId: 'U0JANE' },
+    { name: 'Sam Lee', slackUserId: 'U0SAM1' },
+    { name: 'Sam Lee', slackUserId: 'U0SAM2' },
+  ];
+
+  it('turns @Full Name and @handle into Slack mentions, whatever the case', () => {
+    expect(tagPeople('Over to @Priya Shah and @jane doe.', people)).toBe('Over to <@U0PRIYA> and <@U0JANE>.');
+    expect(tagPeople('cc @pshah', people)).toBe('cc <@U0PRIYA>');
+  });
+
+  it('leaves names it can not be sure of, code and email addresses alone', () => {
+    expect(tagPeople('Ask @Sam Lee', people)).toBe('Ask @Sam Lee');
+    expect(tagPeople('Ask @Someone Else', people)).toBe('Ask @Someone Else');
+    expect(tagPeople('Run `@Priya Shah` or write to priya@acme.example', people)).toBe('Run `@Priya Shah` or write to priya@acme.example');
+    expect(tagPeople('Priya Shah should look', people)).toBe('Priya Shah should look');
+    expect(tagPeople('@Priyax', people)).toBe('@Priyax');
+  });
+
+  it('tags a first name alone when only one person has it', () => {
+    expect(tagPeople('Over to @Priya, she decides.', people)).toBe('Over to <@U0PRIYA>, she decides.');
+    expect(tagPeople('@jane?', people)).toBe('<@U0JANE>?');
+    // Two Sams: a guess either way.
+    expect(tagPeople('Ask @Sam', people)).toBe('Ask @Sam');
+    // A first name that is someone else's handle stays theirs.
+    const clash = [...people, { name: 'Pat Kim', slackUserId: 'U0PAT', handle: 'jane' }];
+    expect(tagPeople('@jane', clash)).toBe('<@U0PAT>');
+  });
+
+  it('tags at most a handful of people in one message', () => {
+    const many = Array.from({ length: 8 }, (_, n) => ({ name: `Person${n}`, slackUserId: `U0P${n}` }));
+    const out = tagPeople(many.map((p) => `@${p.name}`).join(' '), many);
+    expect(out.match(/<@U0P\d>/g)).toHaveLength(MAX_TAGS);
+  });
+
+  it('tags in the posted reply when the reader knows the people', async () => {
+    const x = io({ people: () => people });
+    await send(x, '**Over to @Priya Shah.** She decides.');
+    expect(x.posts[0]).toContain('<@U0PRIYA>');
   });
 });

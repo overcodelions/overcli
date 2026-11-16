@@ -76,6 +76,9 @@ export function relayLaunch(config: McpServerConfig, launch: RunLaunch): { comma
   return { ...spawn, ...(cwd ? { cwd } : {}), env: { ...env, ...(launch.home ? { HOME: launch.home } : {}), ...strings(config.env) } };
 }
 
+/// The header that marks an org server's MCP (orgChatTools sets it), lower-cased.
+const ORG_CLIENT_HEADER = 'x-overcli-client';
+
 function transport(config: McpServerConfig, launch: RunLaunch): Transport {
   if (typeof config.url === 'string') {
     const headers = strings(config.headers);
@@ -88,7 +91,11 @@ function transport(config: McpServerConfig, launch: RunLaunch): Transport {
         eventSourceInit: { fetch: (input, init) => fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers).entries()), ...headers } }) },
       });
     }
-    return new StreamableHTTPClientTransport(url, { requestInit: { headers } });
+    // An org server's MCP (marked by the overcli client header) never
+    // redirects; refusing keeps its token from following one anywhere.
+    // Other tools may redirect, and Node drops credentials across origins.
+    const org = Object.keys(headers).some((k) => k.toLowerCase() === ORG_CLIENT_HEADER);
+    return new StreamableHTTPClientTransport(url, { requestInit: { headers, ...(org ? { redirect: 'error' as const } : {}) } });
   }
   return new StdioClientTransport({ ...relayLaunch(config, launch), stderr: 'ignore', maxBufferSize: MAX_FRAME });
 }
@@ -102,6 +109,43 @@ function framed(reply: JSONRPCMessage): string | null {
   return JSON.stringify({ jsonrpc: '2.0', id: reply.id, error: { code: -32603, message: `The tool's response was over ${Math.round(MAX_FRAME / 1024 / 1024)} MB and was dropped.` } });
 }
 
+/// A say over one relayed tool's calls, for tools that act as the person
+/// (overgo, orgChatTools.ts). Consulted for each call to a tool its server
+/// didn't mark read-only, and for each tool list. Null from either: this
+/// tool isn't covered, carry on as before.
+export interface RelayCallGuard {
+  /// 'readOnly': the tool list shows only read-only tools.
+  listMode(ctx: { conversationId: string; tool: string }): 'all' | 'readOnly' | null;
+  checkCall(ctx: { conversationId: string; tool: string; name: string; args: unknown }): Promise<{ allow: true } | { allow: false; message: string }> | null;
+}
+
+let callGuard: RelayCallGuard | null = null;
+
+export function setRelayCallGuard(guard: RelayCallGuard | null): void {
+  callGuard = guard;
+}
+
+/// Why an HTTP tool's request failed, as the chat should hear it: the
+/// server's own sentence when it sent one (a 401's "sign in again"), or that
+/// it couldn't be reached.
+export function relayFailureWords(tool: string, err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown })?.code;
+  const brace = text.indexOf('{');
+  if (brace >= 0) {
+    try {
+      const body = JSON.parse(text.slice(brace)) as { error?: { message?: unknown } | string; message?: unknown };
+      const said = typeof body.error === 'object' ? body.error?.message : typeof body.error === 'string' ? body.error : body.message;
+      if (typeof said === 'string' && said.trim()) return `${tool}: ${said.trim().slice(0, 500)}`;
+    } catch {
+      // Not JSON after all: fall through to the plain words.
+    }
+  }
+  if (code === 401 || code === 403) return `${tool} refused this app's sign-in (${code}). Sign in to it again.`;
+  if (typeof code === 'number') return `${tool} answered with an error (${code}).`;
+  return `${tool} couldn't be reached. Check the connection and try again.`;
+}
+
 function serve(socket: net.Socket): void {
   sockets.add(socket);
   socket.setEncoding('utf8');
@@ -111,6 +155,13 @@ function serve(socket: net.Socket): void {
   let closed = false;
   let processing = false;
   let initializeId: string | number | undefined;
+  let stdio = true;
+  let tool = '';
+  let conv = '';
+  /// Tools the server marked read-only in its list, and the ids of list
+  /// requests whose answers are still to come (RelayCallGuard).
+  const readOnly = new Set<string>();
+  const listing = new Set<string | number>();
   let bufferedBytes = 0;
   let scanned = 0;
   const close = async () => {
@@ -120,6 +171,29 @@ function serve(socket: net.Socket): void {
     run?.sockets.delete(socket);
     socket.destroy();
     try { await upstream?.close(); } catch { /* already disconnected */ }
+  };
+  // HTTP send resolves only when its response arrives. Keep reading frames so
+  // cancellation, concurrent calls and server-request replies can reach the
+  // upstream while another request is still running. A stdio tool that can't
+  // take a message has gone: end the session. An HTTP tool's request can fail
+  // on its own (the server down for a moment, a sign-in that expired): that
+  // call is answered with why, in words, and the next call is tried afresh.
+  const forward = (rpc: JSONRPCMessage) => {
+    void upstream!.send(rpc).catch((err: unknown) => {
+      if (stdio || !('method' in rpc) || !('id' in rpc) || closed) return void close();
+      const line = framed({ jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: relayFailureWords(tool, err) } });
+      if (line) socket.write(line + '\n');
+    });
+  };
+  // A tool list: note which tools the server marked read-only, and with the
+  // guard asking for it, leave out every other one.
+  const guardedList = (reply: JSONRPCMessage): JSONRPCMessage => {
+    const result = (reply as { result?: { tools?: unknown } }).result;
+    if (!result || !Array.isArray(result.tools)) return reply;
+    const tools = result.tools as Array<{ name?: unknown; annotations?: { readOnlyHint?: unknown } }>;
+    for (const t of tools) if (typeof t.name === 'string' && t.annotations?.readOnlyHint === true) readOnly.add(t.name);
+    if (callGuard?.listMode({ conversationId: conv, tool }) !== 'readOnly') return reply;
+    return { ...reply, result: { ...result, tools: tools.filter((t) => typeof t.name === 'string' && readOnly.has(t.name)) } } as JSONRPCMessage;
   };
   socket.on('close', () => void close());
   socket.on('error', () => void close());
@@ -153,6 +227,7 @@ function serve(socket: net.Socket): void {
               const result = reply.result as { protocolVersion?: unknown };
               if (typeof result?.protocolVersion === 'string') upstream?.setProtocolVersion?.(result.protocolVersion);
             }
+            if ('id' in reply && reply.id !== null && reply.id !== undefined && listing.delete(reply.id) && 'result' in reply) reply = guardedList(reply);
             const line = framed(reply);
             if (line) socket.write(line + '\n');
           };
@@ -160,21 +235,36 @@ function serve(socket: net.Socket): void {
           // A stdio tool that prints a line that isn't JSON ("Server running
           // on stdio") is still running: the SDK reports the line here and
           // reads on, as Claude Code does when it starts the tool itself. Its
-          // exit closes the session through onclose. Any other transport's
-          // error ends the session.
-          const stdio = typeof run.tools[hello.tool].command === 'string';
-          upstream.onerror = () => { if (!stdio) void close(); };
+          // exit closes the session through onclose. An HTTP tool reports a
+          // failed request here as well as to its send, which answers that
+          // call with why (below); the session stays for the next call.
+          stdio = typeof run.tools[hello.tool].command === 'string';
+          tool = hello.tool;
+          conv = hello.conversationId as string;
+          upstream.onerror = () => {};
           await upstream.start();
           if (closed) { await upstream.close(); return; }
           socket.write('{"type":"ready"}\n');
         } else {
           const rpc = JSONRPCMessageSchema.parse(message);
           if ('method' in rpc && rpc.method === 'initialize' && 'id' in rpc) initializeId = rpc.id;
-          // HTTP send resolves only when its response arrives. Keep reading
-          // frames so cancellation, concurrent calls and server-request replies
-          // can reach the upstream while another request is still running.
-          // Startup stays sequenced above; each send owns its error handling.
-          void upstream!.send(rpc).catch(() => void close());
+          if ('method' in rpc && rpc.method === 'tools/list' && 'id' in rpc) listing.add(rpc.id);
+          // A call to a tool its server didn't mark read-only goes through the
+          // guard first, when one covers this tool: it may ask the person, or
+          // refuse. Read-only calls and every other tool go straight on.
+          const name = 'method' in rpc && rpc.method === 'tools/call' && 'id' in rpc ? String((rpc as { params?: { name?: unknown } }).params?.name ?? '') : null;
+          const check = name !== null && !readOnly.has(name) ? callGuard?.checkCall({ conversationId: conv, tool, name, args: ((rpc as { params?: { arguments?: unknown } }).params)?.arguments }) : null;
+          if (check) {
+            void check.then(
+              (d) => {
+                if (closed) return;
+                if (d.allow) return forward(rpc);
+                const line = framed({ jsonrpc: '2.0', id: (rpc as { id: string | number }).id, result: { content: [{ type: 'text', text: d.message }], isError: true } });
+                if (line) socket.write(line + '\n');
+              },
+              () => void close(),
+            );
+          } else forward(rpc);
         }
       }
       scanned = buffer.length;

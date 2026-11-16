@@ -22,7 +22,7 @@ import type { TeamRoom } from '../../shared/flows/team';
 import { usedShortName } from '../../shared/shortName';
 import type { ErrandProgress } from '../org/orgService';
 import { escapeMrkdwn, slackAttachments, type SlackFile, type SlackMessage } from './slackApi';
-import { deliverResults, deliverText, finishedText, SLACK_BUDGET, slackMarkup, slug, type DeliverIo, type PostAs } from './deliver';
+import { deliverResults, deliverText, finishedText, SLACK_BUDGET, slackMarkup, slug, type DeliverIo, type PostAs, type Taggable } from './deliver';
 import { isLookup, whenText, type ExistingHit } from './existingWork';
 
 export { toSlack } from './deliver';
@@ -677,6 +677,8 @@ export interface FrontDoorDeps {
   workerFile?(workerId: string, path: string, maxBytes: number): Buffer | null;
   /// See `DeliverIo.workerFolder`.
   workerFolder?(workerId: string, path: string): string[] | null;
+  /// See `DeliverIo.people`.
+  people?(): readonly Taggable[];
   store: { load(): FrontDoorState; save(state: FrontDoorState): void };
   log(message: string): void;
   now?(): number;
@@ -1837,6 +1839,9 @@ export class FrontDoor {
       sharedTexts(context.texts),
       context.others.length ? `\nAlso shared there (not attached): ${context.others.join('; ')}` : '',
       '\nYour reply is posted back in that Slack thread for you, so answer here rather than posting to Slack with any Slack tool you have. If this needs work done, start it; what it produces is posted there when it ends.',
+      // Without this a worker asked to "get Priya to look" says it can't
+      // reach anyone, though a mention in its own reply would.
+      'To bring in someone who isn\'t in the thread (to review, decide or help), write @ and their full name in your reply, as in @Jane Doe: they are tagged in Slack when it is posted.',
       // Without this the thread gets the question read back to it and the
       // plan narrated, before an answer longer than anyone reads.
       SLACK_BUDGET,
@@ -2234,6 +2239,7 @@ export class FrontDoor {
       readFile: (p, max) => this.deps.readFile(p, max),
       ...(this.deps.workerFile ? { workerFile: (id: string, p: string, max: number) => this.deps.workerFile!(id, p, max) } : {}),
       ...(this.deps.workerFolder ? { workerFolder: (id: string, p: string) => this.deps.workerFolder!(id, p) } : {}),
+      ...(this.deps.people ? { people: () => this.deps.people!() } : {}),
     };
   }
 

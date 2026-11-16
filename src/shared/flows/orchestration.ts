@@ -140,6 +140,14 @@ export interface PrTarget {
   number: number;
 }
 
+/// A pull request a batch is about, linked from its thread. Only ever the
+/// host's own link as the server read it (the PR watcher, the lander), never
+/// one read out of a prompt, which quotes whatever the pull request says.
+export interface PrLink {
+  repo: string;
+  url: string;
+}
+
 export interface Orchestration {
   id: UUID;
   /// Human title for the batch — defaults to the producer prompt's gist.
@@ -261,6 +269,9 @@ export interface Orchestration {
         /// across a restart; never read from the run's prompt, which quotes
         /// the pull request's own text.
         prTargets?: PrTarget[];
+        /// The pull requests this errand is about, so its thread links them:
+        /// a PR watcher's wake, a follow-up after a push. See PrLink.
+        prLinks?: PrLink[];
         /// Set on the batch that runs a worker's wrap-up flow: the id of the
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.

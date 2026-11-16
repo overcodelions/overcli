@@ -52,17 +52,35 @@ if [ -n "${OVERCLI_WORKER_UID:-}" ]; then
   chown node "$DATA" "$HOME_DIR" "$HOME_DIR/.overcli" "$HOME_DIR/.overcli/worktrees" "$HOME_DIR/.overcli/team-worktrees" "$HOME_DIR/.overcli/attachments" $SHARED
   chmod 755 "$DATA"
   # Credentials the worker has no use for keep their own group and modes.
+  # The expression after -prune is in brackets: without them, find's comma
+  # (below) would reach the pruned paths themselves and open them up.
   walk() {
     d=$1; shift
     # -xdev: never into bind mounts (a read-only ~/.aws, say); they keep their own modes.
     find "$d" -xdev \( -path "$HOME_DIR/.ssh" -o -path "$HOME_DIR/.gnupg" -o -path "$HOME_DIR/.git-credentials" \
-      -o -path "$HOME_DIR/.netrc" -o -path "$HOME_DIR/.config/gh" -o -path "$HOME_DIR/.overcli/session.log" \) -prune -o "$@"
+      -o -path "$HOME_DIR/.netrc" -o -path "$HOME_DIR/.config/gh" -o -path "$HOME_DIR/.overcli/session.log" \) -prune -o \( "$@" \)
   }
-  for d in "$HOME_DIR" $SHARED; do
-    walk "$d" ! -group "$WGID" -exec chgrp -h "$WGID" {} + 2>/dev/null || true
-    walk "$d" ! -type l ! -perm -g+rw -exec chmod g+rwX {} + 2>/dev/null || true
-    walk "$d" -type d ! -perm -g+s -exec chmod g+s {} + 2>/dev/null || true
+  # The shared folders themselves, now: the server's worker check writes into
+  # each one before it starts, and on a new volume only this opens them.
+  # shellcheck disable=SC2086
+  for d in "$HOME_DIR" "$HOME_DIR/.overcli" "$HOME_DIR/.overcli/worktrees" "$HOME_DIR/.overcli/team-worktrees" "$HOME_DIR/.overcli/attachments" $SHARED; do
+    chgrp -h "$WGID" "$d" 2>/dev/null || true
+    chmod g+rwXs "$d" 2>/dev/null || true
   done
+  # Everything inside them, in the background once the server is starting:
+  # one pass (GNU find's comma runs all three checks on each path), so a big
+  # HOME (caches, checkouts) no longer holds the server up for minutes. It
+  # only ever adds the worker group's access; files made since the last start
+  # already have it (setgid folders, umask 002), so there is rarely anything
+  # to do. Runs as root, as before; tini reaps it.
+  (
+    for d in "$HOME_DIR" $SHARED; do
+      walk "$d" \( ! -group "$WGID" -exec chgrp -h "$WGID" {} + \) , \
+        \( ! -type l ! -perm -g+rw -exec chmod g+rwX {} + \) , \
+        \( -type d ! -perm -g+s -exec chmod g+s {} + \) 2>/dev/null || true
+    done
+    echo "worker group: the shared folders are open to the worker user"
+  ) &
   # Each side runs git in folders the other made; git refuses those otherwise.
   git config --system --get-all safe.directory 2>/dev/null | grep -qx '\*' || git config --system --add safe.directory '*'
   CAPS=+setuid,+setgid,+dac_override,+kill

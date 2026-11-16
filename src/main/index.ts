@@ -187,10 +187,8 @@ import {
 } from './slack/slackSettings';
 import { createOrgControl, createSlackBridge } from './slack/wire';
 import {
-  ORG_TOKEN_ENV,
-  ORG_TOKEN_KEY,
-  configuredOrgToken,
   normalizeOrgUrl,
+  orgCall,
   parseInviteLink,
   pollPairing,
   processPublishPayload,
@@ -205,6 +203,10 @@ import {
   startPairing,
   whoamiAt,
 } from './org/orgClient';
+import { installOrgChatGuard, setOrgChatSource, type OrgChangeRequest } from './org/orgChatTools';
+import { orgPicture } from './org/orgPictures';
+import { orgTabAllowed, orgTabTimeout } from './org/orgTabRoutes';
+import { chatToolNames, defaultServerId, forgetOrgServer, listOrgServers, onOrgServersChanged, orgServerAccess, orgTokenFor, orgTokenKey, rememberSignIn, saveOrgServers, tokenFromEnv, updateOrgServer } from './org/orgServers';
 import { shareForOrg, teamForOrg } from './org/orgShare';
 import { gatherSetup, keyValuesFor } from './org/setupShare';
 import { readClaudeMcpServers } from './mcpConfig';
@@ -615,6 +617,27 @@ export function registerIpc(): void {
     emitToRenderer(event);
   };
   runner = new RunnerManager(flowAwareEmit, () => Store.load().settings);
+  // overgo in chats: the org's address and this app's sign-in, read when a
+  // chat starts, only while the switch is on (org/orgChatTools.ts).
+  setOrgChatSource(() => {
+    const list = listOrgServers();
+    const names = chatToolNames(list);
+    return list.flatMap((e) => {
+      if (!e.inChats) return [];
+      const at = orgServerAccess(e.id);
+      return at.ok ? [{ tool: names.get(e.id) ?? 'overgo', url: at.url, token: at.token, serverId: e.id, org: e.name ?? e.url, access: e.chatAccess ?? 'ask' }] : [];
+    });
+  });
+  // Tasks org workers hand to this desktop: checked every minute on each
+  // server that takes them, with a notification for each new one. The Org
+  // tab shows them; nothing runs until the person allows it there.
+  setInterval(() => void pollDesktopTasks(), 60_000).unref?.();
+  setTimeout(() => void pollDesktopTasks(), 15_000).unref?.();
+  // Every change a chat wants to make on an org server waits for the person,
+  // in a dialog the model can't answer for them (org/orgChatTools.ts).
+  installOrgChatGuard(confirmOrgChange);
+  // Main changes the org server list; the renderer's copy follows.
+  onOrgServersChanged((s) => emitToRenderer({ type: 'orgServers', servers: s.orgServers ?? [], ...(s.orgDefaultServerId ? { defaultId: s.orgDefaultServerId } : {}), ...(s.orgServerUrl ? { orgServerUrl: s.orgServerUrl } : {}) }));
   flowRuntime = new FlowRuntime(
     runner,
     flowAwareEmit,
@@ -925,7 +948,10 @@ export function registerIpc(): void {
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     const wasSlack = slackEnabled();
-    Store.saveSettings(settings);
+    // The org server list is main's (org/orgServers.ts): a renderer copy
+    // from before a sign-in must not undo it.
+    const mine = Store.load().settings;
+    Store.saveSettings(Array.isArray(mine.orgServers) ? { ...settings, orgServers: mine.orgServers, orgDefaultServerId: mine.orgDefaultServerId, orgServerUrl: mine.orgServerUrl } : settings);
     refreshUpdateChannel();
     applyUiScale();
     // The Slack switch rides the sheet's Save like every other setting, so
@@ -997,18 +1023,38 @@ export function registerIpc(): void {
   });
   ipcMain.handle('slack:test', () => testSlackTokens(configuredSlackToken('bot')));
   ipcMain.handle('org:status', async (_e, args) => {
-    const token = configuredOrgToken();
-    const status = { tokenConfigured: !!token, fromEnv: !!process.env[ORG_TOKEN_ENV]?.trim() };
-    const raw = args?.url ?? Store.load().settings.orgServerUrl;
-    if (!raw || !token) return status;
-    const url = normalizeOrgUrl(raw);
-    if (!url.ok) return { ...status, error: url.error };
-    const who = await whoamiAt(url.url, token);
+    const list = listOrgServers();
+    const entry = args?.serverId ? list.find((e) => e.id === args.serverId) : args?.url ? list.find((e) => { const u = normalizeOrgUrl(args.url!); return u.ok && e.url === u.url; }) : list.find((e) => e.id === defaultServerId());
+    const token = entry ? orgTokenFor(entry.id) : null;
+    const status = { tokenConfigured: !!token, fromEnv: !!entry && tokenFromEnv(entry.id) };
+    if (!entry || !token) return status;
+    const who = await whoamiAt(entry.url, token);
     return who.ok ? { ...status, who: who.data } : { ...status, error: who.error };
   });
+  // Every server, each asked who you are there, in parallel. Its org name
+  // and your name are kept on the entry for when it can't be reached.
+  ipcMain.handle('org:servers', async () => {
+    const list = listOrgServers();
+    const def = defaultServerId();
+    const names = chatToolNames(list);
+    return Promise.all(
+      list.map(async (e) => {
+        const token = orgTokenFor(e.id);
+        const base = { ...e, isDefault: e.id === def, tokenConfigured: !!token, fromEnv: tokenFromEnv(e.id), chatTool: names.get(e.id) ?? 'overgo' };
+        if (!token) return base;
+        const who = await whoamiAt(e.url, token);
+        if (!who.ok) return { ...base, error: who.error };
+        if (who.data.org !== e.name || who.data.name !== e.who) updateOrgServer(e.id, { name: who.data.org, who: who.data.name });
+        return { ...base, name: who.data.org, who: who.data.name, me: who.data };
+      }),
+    );
+  });
   ipcMain.handle('org:setToken', (_e, token) => {
+    // The default server's token, pasted (or cleared).
+    const id = defaultServerId();
+    if (!id) return { ok: false, error: 'Add the org server first: paste its address and the token together.' };
     try {
-      const ok = host().secrets.set(ORG_TOKEN_KEY, token?.trim() || null);
+      const ok = host().secrets.set(orgTokenKey(id), token?.trim() || null);
       // A pasted token is a sign-in like the others: send what was waiting on one.
       if (ok && token?.trim()) {
         void connectionsInbox?.retry();
@@ -1019,6 +1065,53 @@ export function registerIpc(): void {
       return { ok: false, error: String(err) };
     }
   });
+  ipcMain.handle('org:addWithToken', async (_e, { url, token }) => {
+    const t = String(token ?? '').trim();
+    if (!t.startsWith('ocli_')) return { ok: false, error: 'That does not look like an overcli token (ocli_…).' };
+    const base = normalizeOrgUrl(String(url ?? ''));
+    if (!base.ok) return base;
+    const who = await whoamiAt(base.url, t);
+    if (!who.ok) return { ok: false, error: who.error };
+    const kept = rememberSignIn(base.url, t, { org: who.data.org, name: who.data.name });
+    if (!kept.ok) return kept;
+    void connectionsInbox?.retry();
+    void apisInbox?.retry();
+    return { ok: true, serverId: kept.entry.id };
+  });
+  ipcMain.handle('org:removeServer', async (_e, { serverId }) => {
+    const at = orgServerAccess(serverId);
+    if (at.ok) await signOutAt(at.url, at.token);
+    return { ok: forgetOrgServer(serverId, true) };
+  });
+  ipcMain.handle('org:setDefaultServer', (_e, { serverId }) => {
+    const list = listOrgServers();
+    if (!list.some((e) => e.id === serverId)) return { ok: false };
+    saveOrgServers(list, serverId);
+    return { ok: true };
+  });
+  ipcMain.handle('org:call', async (_e, args) => {
+    const method = args?.method === 'POST' ? 'POST' : 'GET';
+    const path = String(args?.path ?? '');
+    if (!orgTabAllowed(method, path)) return { ok: false, error: 'The Org tab cannot do that here. Open the console for it.' };
+    const at = orgServerAccess(String(args?.serverId ?? ''));
+    if (!at.ok) return at;
+    const res = await orgCall<Record<string, unknown>>(at.url, at.token, method, path, method === 'POST' ? (args?.body ?? {}) : undefined, orgTabTimeout(method, path));
+    return res.ok ? { ok: true, data: res.data } : { ...res, ...(res.status === 401 ? { signIn: true as const } : {}) };
+  });
+  // The person's answer to a chat's change (OrgChangeDialog); once only.
+  ipcMain.handle('org:answerChange', (_e, { id, allow }) => {
+    const answer = orgChangeAnswers.get(String(id));
+    answer?.(allow === true);
+    return { ok: !!answer };
+  });
+  ipcMain.handle('org:setTakesWork', (_e, { serverId, on }) => {
+    const ok = updateOrgServer(serverId, { takesWork: on === true });
+    if (ok && on) void pollDesktopTasks();
+    return { ok };
+  });
+  ipcMain.handle('org:setChatAccess', (_e, { serverId, access }) => ({ ok: updateOrgServer(serverId, { chatAccess: access === 'read' ? 'read' : 'ask' }) }));
+  ipcMain.handle('org:picture', (_e, url) => orgPicture(String(url ?? '')));
+  ipcMain.handle('org:setInChats', (_e, { serverId, on }) => ({ ok: updateOrgServer(serverId, { inChats: on === true }) }));
   // Signing this app in to the org. One sign-in at a time: each one takes a
   // number, and a newer sign-in, Cancel or Sign out bumps it, so anything an
   // older one was still waiting on lands nowhere.
@@ -1030,14 +1123,9 @@ export function registerIpc(): void {
     pollTimer = null;
   };
   const deviceName = `overcli app on ${os.hostname().replace(/\.local$/, '')}`;
-  const keepOrg = (base: string, token: string): string | null => {
-    try {
-      if (!host().secrets.set(ORG_TOKEN_KEY, token)) return 'This build cannot store the sign-in — set $OVERCLI_ORG_TOKEN instead.';
-      Store.saveSettings({ ...Store.load().settings, orgServerUrl: base });
-      return null;
-    } catch (err) {
-      return `Could not save the sign-in: ${String(err)}`;
-    }
+  const keepOrg = (base: string, token: string, about: { org?: string; name?: string } = {}): string | null => {
+    const kept = rememberSignIn(base, token, about);
+    return kept.ok ? null : kept.error;
   };
   ipcMain.handle('org:signIn', async (_e, { url }) => {
     stopSignIn();
@@ -1048,7 +1136,7 @@ export function registerIpc(): void {
       if (!base.ok) return base;
       const res = await redeemInvite(base.url, invite.code, deviceName);
       if (!res.ok) return res;
-      const failed = keepOrg(base.url, res.data.token);
+      const failed = keepOrg(base.url, res.data.token, { org: res.data.org, name: res.data.name });
       if (failed) return { ok: false, error: failed };
       emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url });
       void connectionsInbox?.retry();
@@ -1114,7 +1202,7 @@ export function registerIpc(): void {
       }
       stopSignIn();
       if (res.data.status === 'signedIn') {
-        const failed = keepOrg(base.url, res.data.token);
+        const failed = keepOrg(base.url, res.data.token, { org: res.data.org, name: res.data.name });
         emitToRenderer(
           failed
             ? { type: 'orgSignIn', outcome: 'failed', error: failed }
@@ -1135,55 +1223,43 @@ export function registerIpc(): void {
     stopSignIn();
     return { ok: true };
   });
-  ipcMain.handle('org:signOut', async () => {
+  ipcMain.handle('org:signOut', async (_e, args) => {
     stopSignIn();
     // Signed out on the server first, so the token stops working there too;
-    // the local copy goes whatever the server says.
-    const token = host().secrets.get(ORG_TOKEN_KEY);
-    const raw = Store.load().settings.orgServerUrl;
-    const url = raw ? normalizeOrgUrl(raw) : null;
-    if (token && url?.ok) await signOutAt(url.url, token);
-    try {
-      return { ok: host().secrets.set(ORG_TOKEN_KEY, null) };
-    } catch {
-      return { ok: false };
-    }
+    // the local copy goes whatever the server says. The server stays on the
+    // list, to sign in again; its chat switch goes off.
+    const id = args?.serverId ?? defaultServerId();
+    if (!id) return { ok: true };
+    const at = orgServerAccess(id);
+    if (at.ok) await signOutAt(at.url, at.token);
+    return { ok: forgetOrgServer(id) };
   });
-  ipcMain.handle('org:publishWorker', async (_e, { id, visibility }) => {
-    const raw = Store.load().settings.orgServerUrl;
-    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
-    if (!raw) return signIn;
-    const url = normalizeOrgUrl(raw);
-    if (!url.ok) return { ...url, signIn: true as const };
-    const token = configuredOrgToken();
-    if (!token) return signIn;
+  ipcMain.handle('org:publishWorker', async (_e, { id, visibility, serverId }) => {
+    const at = orgServerAccess(serverId);
+    if (!at.ok) return at;
+    const url = { url: at.url };
+    const { token } = at;
     const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
     if (!worker) return { ok: false, error: 'No such worker.' };
     const { yaml, tools } = shareForOrg(worker);
     return publishToOrg(url.url, token, yaml, visibility ? { visibility } : {}, tools, worker.id);
   });
-  ipcMain.handle('org:publishTeam', async (_e, { id }) => {
-    const raw = Store.load().settings.orgServerUrl;
-    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
-    if (!raw) return signIn;
-    const url = normalizeOrgUrl(raw);
-    if (!url.ok) return { ...url, signIn: true as const };
-    const token = configuredOrgToken();
-    if (!token) return signIn;
+  ipcMain.handle('org:publishTeam', async (_e, { id, serverId }) => {
+    const at = orgServerAccess(serverId);
+    if (!at.ok) return at;
+    const url = { url: at.url };
+    const { token } = at;
     const team = teamEngine?.list().teams.find((t) => t.id === id);
     if (!team) return { ok: false, error: 'No such team.' };
     const built = teamForOrg(team, (workerEngine?.list() ?? []).map((row) => row.worker));
     if (!built.ok) return built;
     return publishTeamToOrg(url.url, token, built.payload);
   });
-  ipcMain.handle('org:publishProcess', async (_e, { id }) => {
-    const raw = Store.load().settings.orgServerUrl;
-    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
-    if (!raw) return signIn;
-    const url = normalizeOrgUrl(raw);
-    if (!url.ok) return { ...url, signIn: true as const };
-    const token = configuredOrgToken();
-    if (!token) return signIn;
+  ipcMain.handle('org:publishProcess', async (_e, { id, serverId }) => {
+    const at = orgServerAccess(serverId);
+    if (!at.ok) return at;
+    const url = { url: at.url };
+    const { token } = at;
     const got = processService?.get(desktopCaller(), id);
     if (!got?.ok) return { ok: false, error: got?.error ?? 'Processes are not running here.' };
     // "You" on this desktop is whoever the org knows this token as.
@@ -1197,16 +1273,7 @@ export function registerIpc(): void {
   // Publish my setup: what this desktop has, for the org server's admin to
   // install and connect. The renderer only ever sees key NAMES; values are
   // read here, for the tools the person ticked, when they press Publish.
-  const orgSignedIn = () => {
-    const raw = Store.load().settings.orgServerUrl;
-    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org.', signIn: true as const };
-    if (!raw) return signIn;
-    const url = normalizeOrgUrl(raw);
-    if (!url.ok) return { ...url, signIn: true as const };
-    const token = configuredOrgToken();
-    if (!token) return signIn;
-    return { ok: true as const, url: url.url, token };
-  };
+  const orgSignedIn = () => orgServerAccess();
   const desktopSetup = () => {
     const store = Store.load();
     return gatherSetup(readClaudeMcpServers(), store.projects.map((p) => ({ id: p.id, name: p.name, path: p.path })));
@@ -4412,6 +4479,67 @@ function startHandoffInbox(): void {
   }
 }
 
+/// New tasks on the org servers this desktop takes work from, each told once.
+const toldDesktopTasks = new Set<string>();
+async function pollDesktopTasks(): Promise<void> {
+  for (const e of listOrgServers()) {
+    if (!e.takesWork) continue;
+    const at = orgServerAccess(e.id);
+    if (!at.ok) continue;
+    const res = await orgCall<{ tasks?: Array<{ id: string; workerName: string; task: string; status: string }> }>(at.url, at.token, 'GET', '/api/desktop/tasks');
+    if (!res.ok) continue;
+    for (const t of res.data.tasks ?? []) {
+      if (toldDesktopTasks.has(t.id) || t.status !== 'waiting') continue;
+      toldDesktopTasks.add(t.id);
+      host().notify({ title: `${t.workerName} handed you a task`, body: `${t.task.slice(0, 160)}${t.task.length > 160 ? '…' : ''} Open Workers → Org to allow or decline it.` });
+    }
+  }
+}
+
+/// A chat asking to change something on an org server: one question at a
+/// time, shown in the app's own window (OrgChangeDialog), with what it would
+/// do laid out field by field. The window comes forward; unanswered in ten
+/// minutes, or no window at all (headless): no.
+const ORG_CHANGE_WAIT_MS = 10 * 60_000;
+const orgChangeAnswers = new Map<string, (allow: boolean) => void>();
+let orgChangeQueue: Promise<unknown> = Promise.resolve();
+function confirmOrgChange(req: OrgChangeRequest): Promise<boolean> {
+  const ask = (): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+      if (!win) return resolve(false);
+      const chat = (() => {
+        const s = Store.load();
+        for (const list of [...s.projects.map((p) => p.conversations), ...s.workspaces.map((w) => w.conversations)]) {
+          const c = list?.find((x) => x.id === req.conversationId);
+          if (c) return c.name;
+        }
+        return null;
+      })();
+      const id = randomUUID();
+      const timer = setTimeout(() => {
+        orgChangeAnswers.delete(id);
+        emitToRenderer({ type: 'orgChangeRequest', id, done: true });
+        resolve(false);
+      }, ORG_CHANGE_WAIT_MS);
+      orgChangeAnswers.set(id, (allow) => {
+        clearTimeout(timer);
+        orgChangeAnswers.delete(id);
+        resolve(allow);
+      });
+      if (!win.isFocused()) {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        if (process.platform === 'darwin') app.dock?.bounce('critical');
+        host().notify({ title: `A chat wants to change something on ${req.org}`, body: `${chat ? `“${chat}”` : 'A chat'} is waiting for you to allow or refuse it.` });
+      }
+      emitToRenderer({ type: 'orgChangeRequest', id, ...(chat ? { chat } : {}), org: req.org, name: req.name, args: req.args ?? {} });
+    });
+  const next = orgChangeQueue.then(ask, ask);
+  orgChangeQueue = next.catch(() => false);
+  return next.catch(() => false);
+}
+
 /// Open `~/.overcli/inbox/connections` — databases overdb publishes to the
 /// org — and push what is there. Making the folder is what tells overdb this
 /// app can take them, so it is made whether or not anyone is signed in to an
@@ -4422,12 +4550,11 @@ function startConnectionsInbox(): void {
   connectionsInbox = new ConnectionsInbox(
     defaultConnectionsDir(),
     async (push) => {
-      const raw = Store.load().settings.orgServerUrl;
-      if (!raw) return signInFirst;
-      const url = normalizeOrgUrl(raw);
-      if (!url.ok) return { ok: false, error: url.error, retry: true };
-      const token = configuredOrgToken();
-      if (!token) return signInFirst;
+      // The default org server: the one publishing goes to.
+      const at = orgServerAccess();
+      if (!at.ok) return { ...signInFirst, error: at.error };
+      const url = { url: at.url };
+      const token = at.token;
       return publishOverdbConnectionToOrg(url.url, token, push);
     },
     {
@@ -4451,12 +4578,11 @@ function startApisInbox(): void {
   apisInbox = new ApisInbox(
     defaultApisDir(),
     async (push) => {
-      const raw = Store.load().settings.orgServerUrl;
-      if (!raw) return signInFirst;
-      const url = normalizeOrgUrl(raw);
-      if (!url.ok) return { ok: false, error: url.error, retry: true };
-      const token = configuredOrgToken();
-      if (!token) return signInFirst;
+      // The default org server: the one publishing goes to.
+      const at = orgServerAccess();
+      if (!at.ok) return { ...signInFirst, error: at.error };
+      const url = { url: at.url };
+      const token = at.token;
       return publishOverapiProjectToOrg(url.url, token, push);
     },
     {

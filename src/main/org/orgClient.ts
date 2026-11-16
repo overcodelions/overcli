@@ -52,8 +52,11 @@ export function normalizeOrgUrl(raw: string): { ok: true; url: string } | { ok: 
 /// Why a request never got an answer, in words someone can act on.
 export function unreachable(base: string, err: unknown): string {
   const code = (err as { cause?: { code?: string } } | null)?.cause?.code;
+  if (/redirect/i.test(String((err as { cause?: { message?: string } } | null)?.cause?.message ?? ''))) {
+    return `${base} answered with a redirect, which overcli doesn't follow (your token would go with it). Use the address it ends up at.`;
+  }
   if (code === 'ECONNREFUSED') return `Nothing is answering at ${base}. Is overcli serve running there? If it just started, try again in a few seconds.`;
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return `Could not find ${base}. Check the address in Settings → Your org.`;
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return `Could not find ${base}. Check the address in Settings → overgo.`;
   if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') return `${base} dropped the connection. If the server was restarting, try again.`;
   return `Could not reach the org server at ${base}${code ? ` (${code})` : ''}.`;
 }
@@ -72,15 +75,21 @@ export function dialable(base: string): string {
   }
 }
 
-async function call<T>(base: string, token: string, method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number }> {
+/// Every call from this app says so, so the server's decision log can show a
+/// change came from the overcli app (controlPlane.ts).
+export const DESKTOP_CLIENT = 'desktop-app';
+
+export async function orgCall<T>(base: string, token: string, method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = TIMEOUT_MS): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${dialable(base)}${path}`, {
       method,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: { Authorization: `Bearer ${token}`, 'X-Overcli-Client': DESKTOP_CLIENT, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: controller.signal,
+      // An org server has no reason to redirect: refuse rather than follow.
+      redirect: 'error',
     });
     if (res.status === 401) return { ok: false, error: 'The org server did not accept your token. Ask an admin for a new one.', status: 401 };
     if (!res.ok) return { ok: false, error: `The org server answered HTTP ${res.status}.`, status: res.status };
@@ -96,7 +105,7 @@ async function call<T>(base: string, token: string, method: 'GET' | 'POST', path
 }
 
 export function whoamiAt(base: string, token: string) {
-  return call<{ org: string; name: string; admin: boolean; canHire: boolean }>(base, token, 'GET', '/api/whoami');
+  return orgCall<{ org: string; name: string; admin: boolean; canHire: boolean }>(base, token, 'GET', '/api/whoami');
 }
 
 export async function publishToOrg(
@@ -108,7 +117,7 @@ export async function publishToOrg(
   /// The worker's id here, so a team published later finds this copy.
   localId?: string,
 ): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
-  const res = await call<{ hired?: { name: string }; hire: { status: string; reasons?: string[]; contract?: { name: string } } }>(
+  const res = await orgCall<{ hired?: { name: string }; hire: { status: string; reasons?: string[]; contract?: { name: string } } }>(
     base,
     token,
     'POST',
@@ -139,7 +148,7 @@ export interface TeamPublishPayload {
 }
 
 export async function publishTeamToOrg(base: string, token: string, team: TeamPublishPayload): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
-  const res = await call<{ team?: { name: string }; updated: boolean; added: string[]; reused: string[]; waitingOn: string[] }>(base, token, 'POST', '/api/publish/team', team);
+  const res = await orgCall<{ team?: { name: string }; updated: boolean; added: string[]; reused: string[]; waitingOn: string[] }>(base, token, 'POST', '/api/publish/team', team);
   if (!res.ok) return res;
   const d = res.data;
   const list = (names: string[]) => names.join(', ');
@@ -203,7 +212,7 @@ export function processPublishPayload(
 }
 
 export async function publishProcessToOrg(base: string, token: string, payload: ProcessPublishPayload): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
-  const res = await call<{ process?: { name: string; stages?: unknown[] }; updated: boolean }>(base, token, 'POST', '/api/publish/process', payload);
+  const res = await orgCall<{ process?: { name: string; stages?: unknown[] }; updated: boolean }>(base, token, 'POST', '/api/publish/process', payload);
   if (!res.ok) return res;
   const name = res.data.process?.name ?? payload.name;
   return {
@@ -225,7 +234,7 @@ export async function publishSetupToOrg(
     keys?: Record<string, { env?: Record<string, string>; headers?: Record<string, string> }>;
   },
 ): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
-  const res = await call<{ installed: string[]; offered: { tools: number; repos: number; workspaces: number } }>(base, token, 'POST', '/api/publish/setup', payload);
+  const res = await orgCall<{ installed: string[]; offered: { tools: number; repos: number; workspaces: number } }>(base, token, 'POST', '/api/publish/setup', payload);
   if (!res.ok) return res;
   const { installed, offered } = res.data;
   const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
@@ -249,7 +258,7 @@ export async function publishOverdbConnectionToOrg(
   token: string,
   push: ConnectionPush,
 ): Promise<{ ok: true; message: string } | { ok: false; error: string; retry: boolean }> {
-  const res = await call<{ waiting: boolean }>(base, token, 'POST', '/api/publish/overdb-connection', { id: push.id, connection: push.connection });
+  const res = await orgCall<{ waiting: boolean }>(base, token, 'POST', '/api/publish/overdb-connection', { id: push.id, connection: push.connection });
   if (!res.ok) {
     const answered = res.status !== undefined && res.status !== 401 && res.status < 500;
     // A 404 is a server too old to take connections: worth trying again once it is updated.
@@ -266,7 +275,7 @@ export async function publishOverapiProjectToOrg(
   token: string,
   push: ApiPush,
 ): Promise<{ ok: true; message: string } | { ok: false; error: string; retry: boolean }> {
-  const res = await call<{ waiting: boolean }>(base, token, 'POST', '/api/publish/overapi-project', { push });
+  const res = await orgCall<{ waiting: boolean }>(base, token, 'POST', '/api/publish/overapi-project', { push });
   if (!res.ok) {
     const answered = res.status !== undefined && res.status !== 401 && res.status < 500;
     // A 404 is a server too old to take APIs: worth trying again once it is updated.
@@ -284,6 +293,8 @@ async function callPublic<T>(base: string, path: string, body: unknown): Promise
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: controller.signal,
+      // An org server has no reason to redirect: refuse rather than follow.
+      redirect: 'error',
     });
     if (res.status === 429) return { ok: false, error: 'Too many tries. Wait a minute.' };
     if (!res.ok) return { ok: false, error: `The org server answered HTTP ${res.status}.` };
@@ -313,7 +324,7 @@ export function parseInviteLink(raw: string): { base: string; code: string } | n
 /// Sign this app's own token out on the server, so it stops working there
 /// and not only here.
 export function signOutAt(base: string, token: string) {
-  return call<{ ok: boolean }>(base, token, 'POST', '/api/signout');
+  return orgCall<{ ok: boolean }>(base, token, 'POST', '/api/signout');
 }
 
 export function redeemInvite(base: string, code: string, device: string) {

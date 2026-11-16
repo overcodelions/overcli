@@ -8,12 +8,13 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bindRunTools, closeRunToolRelay, relayLaunch, releaseRunTools, runToolLaunch, runToolRelayEnv } from './runToolRelay';
+import { bindRunTools, closeRunToolRelay, relayLaunch, releaseRunTools, runToolLaunch, runToolRelayEnv, setRelayCallGuard } from './runToolRelay';
 import { SANDBOX_EXEC } from '../sandbox/seatbeltProfile';
 import { overdbToolsForRun, useOverdbWorkerLookup } from './overdbBinding';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
+  setRelayCallGuard(null);
   closeRunToolRelay();
   for (const fn of cleanup.splice(0)) fn();
   useOverdbWorkerLookup(() => undefined);
@@ -250,8 +251,14 @@ describe('run tool relay', () => {
     expect(await client.next()).toMatchObject({ id: 2, result: { content: [] } });
   });
 
-  it('contains an asynchronous HTTP send failure without losing the relay listener', async () => {
-    const upstream = http.createServer((_req, res) => res.writeHead(503).end('unavailable'));
+  it('answers a failed HTTP call with why, in words, and keeps the session for the next call', async () => {
+    let down = true;
+    const upstream = http.createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      if (down) return res.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Not signed in: sign in again under Settings → Your org.' }, id: null }));
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(body).id, result: { tools: [] } }));
+    });
     cleanup.push(() => { upstream.closeAllConnections(); upstream.close(); });
     upstream.listen(0, '127.0.0.1');
     await once(upstream, 'listening');
@@ -260,9 +267,52 @@ describe('run tool relay', () => {
     const client = await connect(config.gateway, 'one', 'gateway');
     expect(await client.next()).toEqual({ type: 'ready' });
     client.send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
-    expect(await client.next()).toBeUndefined();
+    expect(await client.next()).toEqual({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'gateway: Not signed in: sign in again under Settings → Your org.' } });
+    down = false;
+    client.send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    expect(await client.next()).toMatchObject({ id: 2, result: { tools: [] } });
     const next = await connect(config.gateway, 'one', 'gateway');
     expect(await next.next()).toEqual({ type: 'ready' });
+  });
+
+  it('refuses a redirect from an org server, but lets another tool follow one', async () => {
+    const reached: string[] = [];
+    const upstream = http.createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      if (req.url === '/mcp') return res.writeHead(307, { Location: '/elsewhere' }).end();
+      reached.push(String(req.headers.authorization ?? ''));
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(body).id, result: { tools: [] } }));
+    });
+    cleanup.push(() => { upstream.closeAllConnections(); upstream.close(); });
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    const port = (upstream.address() as net.AddressInfo).port;
+    const config = bindRunTools(
+      {
+        overgo: { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: 'Bearer org-secret', 'X-Overcli-Client': 'desktop-chat' } },
+        other: { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: 'Bearer other' } },
+      },
+      'one',
+    );
+    const org = await connect(config.overgo, 'one', 'overgo');
+    expect(await org.next()).toEqual({ type: 'ready' });
+    org.send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    expect(await org.next()).toMatchObject({ id: 1, error: { code: -32000 } });
+    expect(reached).toEqual([]);
+    const other = await connect(config.other, 'one', 'other');
+    expect(await other.next()).toEqual({ type: 'ready' });
+    other.send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    expect(await other.next()).toMatchObject({ id: 1, result: { tools: [] } });
+    expect(reached).toEqual(['Bearer other']);
+  });
+
+  it('says a tool that is down could not be reached', async () => {
+    const config = bindRunTools({ gateway: { url: 'http://127.0.0.1:9/mcp' } }, 'one');
+    const client = await connect(config.gateway, 'one', 'gateway');
+    expect(await client.next()).toEqual({ type: 'ready' });
+    client.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+    expect(await client.next()).toEqual({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: "gateway couldn't be reached. Check the connection and try again." } });
   });
 
   it('buffers initialization across failed startup attempts and until the ready handshake', async () => {
@@ -294,5 +344,71 @@ describe('run tool relay', () => {
       { type: 'hello', token: 'token', conversationId: 'one', tool: 'overdb' },
       { jsonrpc: '2.0', id: 9, method: 'initialize', params: {} },
     ]);
+  });
+});
+
+describe('the call guard', () => {
+  // A tool server with one read-only tool and one that changes something.
+  async function orgLike() {
+    const calls: string[] = [];
+    const upstream = http.createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      const m = JSON.parse(body);
+      if (m.method === 'tools/call') calls.push(m.params.name);
+      const result = m.method === 'tools/list'
+        ? { tools: [{ name: 'whoami', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }, { name: 'retire_worker', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false, destructiveHint: true } }] }
+        : { content: [{ type: 'text', text: `did ${m.params?.name}` }] };
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }));
+    });
+    cleanup.push(() => { upstream.closeAllConnections(); upstream.close(); });
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    const config = bindRunTools({ overgo: { url: `http://127.0.0.1:${(upstream.address() as net.AddressInfo).port}` } }, 'chat');
+    const client = await connect(config.overgo, 'chat', 'overgo');
+    expect(await client.next()).toEqual({ type: 'ready' });
+    return { client, calls };
+  }
+
+  it('lets read-only calls through, and holds every other call for the guard', async () => {
+    const asked: string[] = [];
+    let allow = false;
+    setRelayCallGuard({ listMode: () => 'all', checkCall: ({ name, args }) => (asked.push(`${name} ${JSON.stringify(args)}`), Promise.resolve(allow ? { allow: true } : { allow: false, message: 'Not without your OK.' })) });
+    const { client, calls } = await orgLike();
+    client.send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    expect((await client.next()).result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami', 'retire_worker']);
+    client.send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'whoami', arguments: {} } });
+    expect(await client.next()).toMatchObject({ id: 2, result: { content: [{ text: 'did whoami' }] } });
+    client.send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'retire_worker', arguments: { worker: 'Mario' } } });
+    expect(await client.next()).toEqual({ jsonrpc: '2.0', id: 3, result: { content: [{ type: 'text', text: 'Not without your OK.' }], isError: true } });
+    expect(calls).toEqual(['whoami']);
+    allow = true;
+    client.send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'retire_worker', arguments: { worker: 'Mario' } } });
+    expect(await client.next()).toMatchObject({ id: 4, result: { content: [{ text: 'did retire_worker' }] } });
+    expect(calls).toEqual(['whoami', 'retire_worker']);
+    expect(asked).toEqual(['retire_worker {"worker":"Mario"}', 'retire_worker {"worker":"Mario"}']);
+  });
+
+  it('treats a tool it was never shown as one that changes something', async () => {
+    setRelayCallGuard({ listMode: () => 'all', checkCall: () => Promise.resolve({ allow: false, message: 'no' }) });
+    const { client, calls } = await orgLike();
+    client.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {} } });
+    expect(await client.next()).toMatchObject({ id: 1, result: { isError: true } });
+    expect(calls).toEqual([]);
+  });
+
+  it('shows only read-only tools when the guard says so', async () => {
+    setRelayCallGuard({ listMode: () => 'readOnly', checkCall: () => Promise.resolve({ allow: false, message: 'Read only.' }) });
+    const { client } = await orgLike();
+    client.send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    expect((await client.next()).result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami']);
+  });
+
+  it('leaves tools it does not cover alone', async () => {
+    setRelayCallGuard({ listMode: () => null, checkCall: () => null });
+    const { client, calls } = await orgLike();
+    client.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'retire_worker', arguments: {} } });
+    expect(await client.next()).toMatchObject({ id: 1, result: { content: [{ text: 'did retire_worker' }] } });
+    expect(calls).toEqual(['retire_worker']);
   });
 });

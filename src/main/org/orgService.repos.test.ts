@@ -140,6 +140,29 @@ describe('repos', () => {
     expect(h.svc.update(pat, 'Triage', { preferredFlowId: null }).ok).toBe(true);
     expect(h.roster.get('triage')!.preferredFlowId).toBeUndefined();
   });
+
+  it('stops a worker changing code: only its repo flows go, for its manager only', async () => {
+    const h = harness();
+    await h.svc.connectRepo(admin, { url: 'https://github.com/acme/app' });
+    expect(h.svc.stopWorkOnRepo(pat, 'Triage')).toEqual({ ok: false, error: "Triage isn't changing code in a repo." });
+    h.svc.letWorkOnRepo(pat, 'Triage', 'app');
+    expect(h.svc.stopWorkOnRepo(sam, 'Triage').ok).toBe(false);
+    expect(h.svc.stopWorkOnRepo(pat, 'Triage')).toEqual({ ok: true, worker: 'Triage', removed: ['org-pr-app'] });
+    const w = h.roster.get('triage')!;
+    expect(w.flowIds).toEqual(['triage-flow']);
+    expect(w.preferredFlowId).toBeUndefined();
+    // It still reads where it worked.
+    expect(w.projectPath).toBe('/data/repos/app');
+  });
+
+  it('keeps a preferred flow someone picked when it stops changing code', async () => {
+    const h = harness();
+    await h.svc.connectRepo(admin, { url: 'https://github.com/acme/app' });
+    h.svc.update(pat, 'Triage', { preferredFlowId: 'triage-flow' });
+    h.svc.letWorkOnRepo(pat, 'Triage', 'app');
+    expect(h.svc.stopWorkOnRepo(pat, 'Triage').ok).toBe(true);
+    expect(h.roster.get('triage')).toMatchObject({ flowIds: ['triage-flow'], preferredFlowId: 'triage-flow' });
+  });
 });
 
 describe('branch prefix', () => {

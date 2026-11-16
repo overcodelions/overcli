@@ -173,12 +173,13 @@ describe('whose pull requests', () => {
     let state: PrWatchState = { repos: {} };
     let t = 0;
     const woken: string[] = [];
+    const links: Array<Array<{ repo: string; url: string }>> = [];
     const w = new PrWatcher({
       store: { load: () => state, save: (v) => (state = v) },
       watchers: () => [{ workerId: 'mario', repos: [REPO], authors: ['dana'], commentAuthors: ['dana'] }],
       host: () => f.host,
       ownPush: notOurs,
-      wake: async (_id, text) => woken.push(text),
+      wake: async (_id, text, prs) => (woken.push(text), links.push(prs)),
       log: () => {},
       now: () => t,
     });
@@ -188,6 +189,8 @@ describe('whose pull requests', () => {
     expect(woken).toHaveLength(1);
     expect(woken[0]).toContain('PR #42');
     expect(woken[0]).not.toContain('PR #43');
+    // The pull requests it was handed, by the host's own links, for its thread.
+    expect(links).toEqual([[{ repo: REPO.name, url: pr().url }]]);
   });
 });
 

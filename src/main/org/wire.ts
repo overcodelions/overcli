@@ -44,6 +44,8 @@ import { mcpServerKey } from '../../shared/flows/toolScope';
 import { checkLogin, checkLoginByCall, type LoginResult } from './toolLogin';
 import { callTool, listServerTools } from './mcpDirect';
 import type { TriggerService } from './triggers';
+import type { PrWatchState } from './prWatch';
+import type { DesktopTask } from './desktopTasks';
 import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy, orgDir } from './orgStores';
 import { RepoService, credentialHelper, parseRepoUrl, serverGitNote, type RepoState } from './repos';
 import { useTrustedGitCredentials, useTrustedGitRemotes } from './serverGit';
@@ -349,7 +351,7 @@ export function createOrgService(
       const saved = saveFlow({ flow, target: 'generated' });
       return saved.ok ? { ok: true } : saved;
     },
-    reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, drafterDepsFor(runner)),
+    reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, { ...drafterDepsFor(runner), serverTool: true }),
     pickPicture: (worker, taken) =>
       pickPicture(
         (system, message) =>
@@ -524,6 +526,10 @@ export function createOrgService(
       return abort ? abort.call(engines.orchestrator, { id }) : { ok: false, error: 'Batches can’t be stopped from here.' };
     },
     runDeliverables: runDeliverablesFor((id) => engines.flowRuntime.getRun(id)),
+    desktopTasks: jsonOrgStore<{ tasks: DesktopTask[] }>('desktop-tasks.json', () => ({ tasks: [] })),
+    runIdForConversation: (id) => engines.flowRuntime.runIdForConversation(id),
+    // Read straight from the watcher's file: what it holds, no host calls (prWatch.ts).
+    prWatchState: () => jsonOrgStore<PrWatchState>('pr-watch.json', () => ({ repos: {} })).load(),
     runChanges: (run, opts) => changesOfRun(run, opts),
     workerFiles: {
       list: (id) => listWorkerFiles(id),

@@ -11,6 +11,7 @@ import { OrgNudge } from "../OrgNudge";
 import { Markdown } from "../../Markdown";
 import { Composer } from "../../Composer";
 import { useStore } from "../../../store";
+import { useOrgServerPick } from "../OrgServerPick";
 import type { Attachment } from "@shared/types";
 import { useTickingNow } from "../../../hooks";
 import { useFlowsStore } from "../../../flowsStore";
@@ -117,6 +118,7 @@ export function TeamDesk({
   const orgAlpha = useStore((s) => s.settings.orgAlpha ?? false);
   const openSheet = useStore((s) => s.openSheet);
   const [publishing, setPublishing] = useState(false);
+  const { serverId: orgServerId, picker: orgPicker } = useOrgServerPick();
   const [published, setPublished] = useState<{ ok: boolean; text: string; signIn?: boolean } | null>(null);
   const current = team ? currentTeamTask(tasks, team.id) : undefined;
   const past = useMemo(
@@ -176,7 +178,7 @@ export function TeamDesk({
     setPublishing(true);
     setPublished(null);
     void window.overcli
-      .invoke("org:publishTeam", { id: team.id })
+      .invoke("org:publishTeam", { id: team.id, serverId: orgServerId })
       .then((res) => setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error, signIn: res.signIn }))
       .finally(() => setPublishing(false));
   };
@@ -298,6 +300,7 @@ export function TeamDesk({
                   {publishing ? "Publishing…" : "Publish to your org"}
                 </button>
               )}
+              {orgAlpha && orgPicker}
             </span>
           </div>
         )}

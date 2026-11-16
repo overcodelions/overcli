@@ -4373,6 +4373,12 @@ export const useStore = create<StoreState>((set, get) => ({
       set((s) => ({ settings: { ...s.settings, uiScale: event.uiScale } }));
       return;
     }
+    if (event.type === 'orgServers') {
+      // Main owns the org server list (org/orgServers.ts): keep this copy in
+      // step, so the next settings save carries the same.
+      set((s) => ({ settings: { ...s.settings, orgServers: event.servers, orgDefaultServerId: event.defaultId, orgServerUrl: event.orgServerUrl } }));
+      return;
+    }
     if (event.type === 'orgSignIn' && event.orgServerUrl) {
       // Likewise the org address a sign-in saved, or the next settings save
       // from here would write the stale copy back over it.

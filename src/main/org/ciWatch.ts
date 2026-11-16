@@ -30,6 +30,8 @@ export interface CiWatch {
   repo: string;
   branch: string;
   sha: string;
+  /// The pull request the push went to, when the lander knew it.
+  prUrl?: string;
   /// 0 for the worker's own push; each fix after a red build adds one.
   round: number;
   status: 'waiting' | 'passed' | 'failed' | 'gave-up' | 'no-ci' | 'timed-out' | 'unreadable';
@@ -78,7 +80,8 @@ export interface CiDeps {
   fetchImpl?: Fetch;
   /// How many fixes to ask for before telling the manager. 0: watch only.
   rounds(): number;
-  followUp(args: { workerId: string; flowId: string; title: string; prompt: string }): Promise<Result>;
+  /// `prLinks`: the pull requests the failing pushes went to, for its thread.
+  followUp(args: { workerId: string; flowId: string; title: string; prompt: string; prLinks?: Array<{ repo: string; url: string }> }): Promise<Result>;
   /// Carry the fix on in the run that made the change: its own checkout,
   /// plan and conversation. Refused (its checkout swept, no step to carry
   /// on): a fix run of its own instead (`followUp`). Resolves once started.
@@ -443,7 +446,7 @@ export class CiWatcher {
     const tip = await readTip(repo, w.branch, this.deps).catch(() => null);
     if (!tip || tip.sha === w.sha || !tip.parents.includes(w.sha)) return null;
     if (this.load().some((x) => x.repo === w.repo && x.sha === tip.sha)) return null;
-    const next: CiWatch = { id: randomUUID(), runId: w.runId, workerId: w.workerId, workerName: w.workerName, flowId: w.flowId, title: w.title, repo: w.repo, branch: w.branch, sha: tip.sha, round: w.round, status: 'waiting', startedAt: this.now() };
+    const next: CiWatch = { id: randomUUID(), runId: w.runId, workerId: w.workerId, workerName: w.workerName, flowId: w.flowId, title: w.title, repo: w.repo, branch: w.branch, sha: tip.sha, ...(w.prUrl ? { prUrl: w.prUrl } : {}), round: w.round, status: 'waiting', startedAt: this.now() };
     this.put(next);
     return next;
   }
@@ -465,7 +468,7 @@ export class CiWatcher {
 
   /// A branch the server just pushed. The round follows on from the watch a
   /// fix was asked for on the same branch.
-  watch(args: { runId: string; workerId: string; workerName: string; flowId: string; title: string; repo: string; branch: string; sha: string }): CiWatch | null {
+  watch(args: { runId: string; workerId: string; workerName: string; flowId: string; title: string; repo: string; branch: string; sha: string; prUrl?: string }): CiWatch | null {
     const repo = this.deps.repo(args.repo);
     if (!repo || !slugOf(repo)) return null;
     const all = this.load();
@@ -479,7 +482,8 @@ export class CiWatcher {
     const before = all.filter((w) => w.repo === args.repo && w.branch === args.branch && w.followedUp).sort((a, b) => b.startedAt - a.startedAt)[0];
     // Still-waiting watches on this branch are for commits it has moved past.
     for (const w of all.filter((x) => x.repo === args.repo && x.branch === args.branch && x.status === 'waiting')) this.put({ ...w, status: 'timed-out', summary: 'Superseded by a newer push.' });
-    const w: CiWatch = { id: randomUUID(), ...args, round: before ? before.round + 1 : 0, status: 'waiting', startedAt: this.now() };
+    // A fix's push may not know the pull request; the push it fixes did.
+    const w: CiWatch = { id: randomUUID(), ...(before?.prUrl ? { prUrl: before.prUrl } : {}), ...args, round: before ? before.round + 1 : 0, status: 'waiting', startedAt: this.now() };
     this.put(w);
     // A push lands whenever it lands: never only in a poll's memory.
     this.flush();
@@ -623,6 +627,7 @@ export class CiWatcher {
             flowId: first.flowId,
             title: `${first.title}: fix CI${group.length > 1 ? ` in ${group.length} repos` : ` on ${first.branch}`}`,
             prompt: fixPrompt(group, rounds),
+            prLinks: group.flatMap((w) => (w.prUrl ? [{ repo: w.repo, url: w.prUrl }] : [])),
           });
       if (!res.ok) {
         done({ status: 'gave-up' }, `Failed, and the fix couldn't start: ${res.error}`);

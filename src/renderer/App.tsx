@@ -1,3 +1,4 @@
+import { OrgChangeDialog } from './components/workers/org/OrgChangeDialog';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { installAutoTidy } from './components/sheets/cleanupScan';
 import { anyBackendReady, useStore } from './store';
@@ -805,6 +806,7 @@ export function App() {
       </div>
       <SheetHost />
       <UpdateToast />
+      <OrgChangeDialog />
       <AutoTidyPrompt />
     </div>
   );

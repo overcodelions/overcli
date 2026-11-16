@@ -96,6 +96,9 @@ export interface WorkThread {
   team?: { id: UUID; name: string; taskId: UUID };
   /// A follow-up overcli started after a push: which kind.
   followUp?: 'ci' | 'ticket' | 'replies';
+  /// The pull requests it's about (state `linked`): the PR watcher's wake, a
+  /// follow-up after a push. What its runs pushed is on each run instead.
+  pullRequests?: LandedPullRequest[];
 }
 
 export interface ThreadInputs {
@@ -479,6 +482,9 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     const at = base.at;
     const updatedAt = Math.max(at, base.decidedAt ?? at, ...runs.map((r) => r.endedAt ?? (r.state === 'working' ? input.now : r.startedAt)), b?.createdAt ?? at);
     const costUSD = runs.reduce((n, r) => n + (r.costUSD ?? 0), 0);
+    const linked: LandedPullRequest[] = (b?.origin?.kind === 'worker' ? (b.origin.prLinks ?? []) : [])
+      .filter((l) => /^https?:\/\//.test(l.url))
+      .map((l) => ({ repo: l.repo, url: l.url, state: 'linked' }));
     return {
       id: base.id,
       at,
@@ -499,6 +505,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
       ...(base.choices?.length ? { choices: base.choices } : {}),
       ...(team ? { team } : {}),
       ...(base.followUp ? { followUp: base.followUp } : {}),
+      ...(linked.length ? { pullRequests: linked } : {}),
       lastAt: at,
     };
   };

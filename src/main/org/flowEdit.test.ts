@@ -64,6 +64,17 @@ describe('a flow changed by saying so', () => {
     expect(holdFlowEdit(before, after, { admin: true })).toEqual({ ok: false, error: expect.stringMatching(/needs the cloudwatch tool\./) });
   });
 
+  it('lets a step post through the server’s own notify call, which nobody installs', () => {
+    const post = step('post', { tools: ['Read', 'mcp__overgo__notify'], effect: 'external' });
+    const after = flow([step('plan'), step('change'), push, post]);
+    const held = holdFlowEdit(before, after, { admin: false, servers: [] });
+    expect(held.ok).toBe(true);
+    if (held.ok) expect(held.flow.steps.at(-1)?.tools).toEqual(['Read', 'mcp__overgo__notify']);
+    // Only the server's own tool: another server is still refused.
+    const slack = flow([step('plan'), step('change'), push, step('post', { tools: ['mcp__slack__slack_post_message'], effect: 'external' })]);
+    expect(holdFlowEdit(before, slack, { admin: false, servers: [] })).toEqual({ ok: false, error: expect.stringMatching(/needs the slack tool/) });
+  });
+
   it('keeps a step that names no tools to reading, rather than letting it use any', () => {
     const held = holdFlowEdit(before, flow([step('plan'), step('change'), step('report', { tools: [] }), push]), { admin: false });
     if (!held.ok) throw new Error(held.error);

@@ -102,6 +102,10 @@ export interface WorkerCaps {
   /// request in its place counts, so its fixes land on that pull request.
   /// An admin's call: it pushes onto branches other people opened.
   continueOpenPrs?: boolean;
+  /// May hand a task to its manager's overcli desktop (the server's
+  /// ask_desktop): browser work with their sign-ins, design, local files.
+  /// The manager's call; each task still waits for them to allow it.
+  desktopHandOff?: boolean;
   /// Take work from anyone who may ask it as its manager's own: what they ask
   /// starts as the manager's ask would, under its trust, instead of waiting for
   /// the manager's OK. Who may ask is still its audience. An admin's call.

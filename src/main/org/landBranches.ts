@@ -324,8 +324,9 @@ export interface LandedPullRequest {
   url: string;
   branch?: string;
   /// open/draft: opened now; updated: new commits on one already open;
-  /// existing: found open, left alone; unopened: only a link to open one.
-  state: 'open' | 'draft' | 'updated' | 'existing' | 'unopened';
+  /// existing: found open, left alone; unopened: only a link to open one;
+  /// linked: what the work was about, not something it pushed (PrLink).
+  state: 'open' | 'draft' | 'updated' | 'existing' | 'unopened' | 'linked';
 }
 
 /// The pull requests in a landing note (describe()'s output), in order.

@@ -89,7 +89,10 @@ import { SLACK_BUDGET } from '../slack/deliver';
 import { escapeMrkdwn } from '../slack/slackApi';
 import { TRIGGER_STARTS } from './askPreface';
 import { outcomeOf } from './outcome';
-import { buildPeopleDirectory, type DirectoryPerson, type PersonSighting } from './peopleDirectory';
+import { buildPeopleDirectory, withoutEmails, type DirectoryPerson, type PersonSighting } from './peopleDirectory';
+import { MAX_COMMENT_ROUNDS, MAX_WAKES_PER_DAY, prWatchSummary, type PrWatchPr, type PrWatchState } from './prWatch';
+import { MAX_DESKTOP_RESULT_CHARS, MAX_DESKTOP_TASK_CHARS, MAX_OPEN_DESKTOP_TASKS, tidyDesktopTasks, type DesktopTask, type DesktopTaskKind, type DesktopTaskStore } from './desktopTasks';
+import { BUILD_FAILED_HEADING, CONFLICTS_HEADING, MERGED_HEADING } from '../flows/mergeOnConflict';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -210,6 +213,11 @@ export interface WorkerSummary {
   last30: { jobs: number; failed: number; prior: number; lastRun?: { at: number; outcome: 'done' | 'failed' | 'stopped' } };
   waiting: number;
   youManage: boolean;
+  /// One of the caller's own: they are its manager (directly, or the nearest
+  /// one up its chain). Unlike `youManage`, an admin's reach over everyone
+  /// else's workers doesn't count, so a desktop can list "Yours" apart from
+  /// the workers merely shared with them.
+  yours: boolean;
   /// What it is doing now: working, waiting on a person, paused, stuck, idle.
   state: WorkerState;
   /// The tools (MCP servers) it lists, whether this server has each, and how
@@ -226,6 +234,8 @@ export interface WorkerSummary {
   skipCheckpoints?: boolean;
   /// Works on the team's open pull requests (WorkerCaps.continueOpenPrs).
   continueOpenPrs?: boolean;
+  /// May hand tasks to its manager's desktop (WorkerCaps.desktopHandOff).
+  desktopHandOff?: boolean;
   /// Takes work from anyone who may ask it (WorkerCaps.anyoneMayStart).
   anyoneMayStart?: boolean;
   /// Or from these (WorkerCaps.startAudience); and who else approves (approvers).
@@ -1012,6 +1022,12 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   runChanges?(run: FlowRun, opts: { diff?: boolean }): Promise<RunChanges>;
   /// A file a run wrote, whole. Absent or null: it cannot be read here.
   readRunFile?(path: string): Buffer | null;
+  /// What the pull request watcher holds (pr-watch.json). Absent: not watched here.
+  prWatchState?(): PrWatchState;
+  /// Tasks handed to managers' desktops (desktopTasks.ts). Absent: not offered.
+  desktopTasks?: DesktopTaskStore;
+  /// The run a step's conversation belongs to.
+  runIdForConversation?(conversationId: string): string | undefined;
   /// Change org.json in place (a tool's default scope).
   updateOrg?(mutate: (raw: Record<string, unknown>) => void): void;
   /// A worker's own files (its cabinet): what it filed from runs, and what
@@ -1399,6 +1415,32 @@ export function autonomousWithoutGrant(roster: Worker[]): Worker[] {
     .map((w) => ({ ...w, caps: { ...w.caps, allowExternalActions: true } }));
 }
 
+/// The artifacts a run report shows, in this order, each clipped to REPORT_CLIP.
+const REPORT_ARTIFACTS = ['plan.md', 'pull-request.md', 'pull-requests.md', 'review.md', 'ci.md', 'pr-replies.md', 'ticket-update.md'];
+const REPORT_CLIP = 4000;
+
+export interface RunReport {
+  worker: string;
+  flow: string;
+  run: { id: UUID; title: string; state: string; pausedFor?: string; startedAt: number; endedAt?: number; costUSD?: number };
+  steps: Array<{ step: string; status: string; minutes?: number; tries?: number; error?: string }>;
+  artifacts: Array<{ name: string; text: string; clipped?: true; chars?: number }>;
+  /// Set when an ended run pushed nothing.
+  pushed?: string;
+  /// A run that added to a pushed branch, and what it was told about it.
+  continued?: { branch: string; toldOfConflicts: boolean; toldDefaultBranchMerged: boolean; toldWhyBuildFailed: boolean };
+}
+
+export interface RunListItem {
+  runId: UUID;
+  worker: string;
+  title: string;
+  state: string;
+  pausedFor?: string;
+  startedAt: number;
+  costUSD?: number;
+}
+
 export class OrgService {
   constructor(private readonly deps: OrgServiceDeps) {}
 
@@ -1520,6 +1562,7 @@ export class OrgService {
           last30: this.last30Of(runsBy.get(w.id) ?? []),
           waiting: waiting.get(w.id) ?? 0,
           youManage: canManage(policy, roster, w.id, caller),
+          yours: managesDirectly(roster, w.id, caller) || (!caller.admin && canManage(policy, roster, w.id, caller)),
           schedule: scheduleText(w.cadence),
           cadence: w.cadence,
           nextRunAt: w.enabled ? nextShift(w.id) ?? null : null,
@@ -1528,6 +1571,7 @@ export class OrgService {
           answersAtOnce: w.caps.answersAtOnce ?? ANSWERS_AT_ONCE,
           ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
           ...(w.caps.continueOpenPrs ? { continueOpenPrs: true } : {}),
+          ...(w.caps.desktopHandOff ? { desktopHandOff: true } : {}),
           ...(w.caps.anyoneMayStart ? { anyoneMayStart: true } : {}),
           ...(w.caps.startAudience ? { startAudience: structuredClone(w.caps.startAudience) as Audience } : {}),
           ...(w.caps.approvers ? { approvers: structuredClone(w.caps.approvers) as Audience } : {}),
@@ -2070,6 +2114,9 @@ export class OrgService {
     /// The trigger's own "starts on its own". No longer decides anything: an
     /// autonomous worker's triggers always start alone (see `startsAlone`).
     _triggerStarts = false,
+    /// Who said it, and where, for an ask a Slack message set off: what the
+    /// ask is shown by, in place of the trigger's name.
+    about?: AskRecord['from'],
   ): Result<{ askId: string; warning?: string; done: Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
@@ -2113,6 +2160,7 @@ export class OrgService {
       status: 'working',
       via,
       ...(thread ? { replyTo: thread } : {}),
+      ...(about && (about.slackUserId || about.where) ? { from: about } : {}),
       prompt: (from + context + text).slice(0, 16_000),
       ...(conversation ? { conversation } : {}),
       ...(!manages ? { untrusted: true } : {}),
@@ -3749,6 +3797,8 @@ export class OrgService {
       skipCheckpoints?: boolean;
       /// Work on the team's open pull requests. An admin's call.
       continueOpenPrs?: boolean;
+      /// Hand tasks to its manager's desktop. Its manager's call.
+      desktopHandOff?: boolean;
       /// Take work from anyone who may ask it. An admin's call.
       anyoneMayStart?: boolean;
       /// Take work from these, and who else approves; null for none. An admin's call.
@@ -3826,6 +3876,14 @@ export class OrgService {
       const caps = { ...next.caps };
       if (patch.skipCheckpoints) caps.skipCheckpoints = true;
       else delete caps.skipCheckpoints;
+      next.caps = caps;
+    }
+    if (patch.desktopHandOff !== undefined && patch.desktopHandOff !== (w.caps.desktopHandOff === true)) {
+      // Only ever to its manager's own desktop, and each task waits for them:
+      // the manager decides.
+      const caps = { ...next.caps };
+      if (patch.desktopHandOff) caps.desktopHandOff = true;
+      else delete caps.desktopHandOff;
       next.caps = caps;
     }
     if (patch.continueOpenPrs !== undefined && patch.continueOpenPrs !== (w.caps.continueOpenPrs === true)) {
@@ -4009,7 +4067,7 @@ export class OrgService {
     // Re-read through the caller's eyes: moving a worker to another manager
     // can take it out of the caller's sight.
     const summary = this.summaryFor(caller, w.id);
-    if (!summary) return { ok: true, worker: { ...this.summaryFor({ name: 'admin', admin: true }, w.id)!, youManage: false } };
+    if (!summary) return { ok: true, worker: { ...this.summaryFor({ name: 'admin', admin: true }, w.id)!, youManage: false, yours: false } };
     return { ok: true, worker: summary };
   }
 
@@ -4474,6 +4532,7 @@ export class OrgService {
       by: caller.name,
       ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
       what,
+      ...(caller.via ? { via: caller.via } : {}),
     };
     this.deps.audit?.append(entry);
   }
@@ -4982,6 +5041,263 @@ export class OrgService {
     };
   }
 
+  // ---- DESKTOP HAND-OFF --------------------------------------------------
+
+  /// A worker's run hands a task to its manager's desktop (the server's
+  /// ask_desktop). Only when its manager allowed it, and it never runs until
+  /// they say so on their desktop. Returns what the worker is told.
+  handOffToDesktop(req: { conversationId: string; task: string; kind?: string }): Result<{ message: string; taskId: string }> {
+    const store = this.deps.desktopTasks;
+    if (!store) return { ok: false, error: 'Handing work to a desktop isn’t set up on this server.' };
+    const runId = this.deps.runIdForConversation?.(req.conversationId);
+    const run = runId ? this.deps.runs.getRun(runId) : null;
+    const roster = this.deps.workers.roster();
+    const w = run?.workerId ? roster.find((x) => x.id === run.workerId) : undefined;
+    if (!run || !w) return { ok: false, error: 'Only a worker’s run can hand work to a desktop.' };
+    if (!w.caps.desktopHandOff) return { ok: false, error: `${w.name} isn’t allowed to hand work to a desktop. Its manager turns that on in its settings. Do the work another way, or say what you couldn’t do.` };
+    const manager = managerFor(roster, w.id);
+    if (!manager?.slackUserId) return { ok: false, error: `${w.name} has no manager with a desktop to hand this to.` };
+    // Only work its manager asked for may reach their desktop. A run set off
+    // by a Slack message, a trigger, its own schedule or someone else could
+    // be carrying words written by anyone, and on the desktop those words
+    // land in a chat with the manager's own browser and sign-ins.
+    const ask = run.parentOrchestrationId ? this.allAsks().find((a) => a.orchestrationId === run.parentOrchestrationId) : undefined;
+    const managersOwn = !!ask && ask.via !== 'trigger' && !ask.untrusted && (ask.slackUserId ? ask.slackUserId === manager.slackUserId : ask.by === manager.name);
+    if (!managersOwn) {
+      const why = !ask ? 'your own schedule' : ask.via === 'trigger' ? 'a trigger or a Slack message' : `${ask.by}, not ${manager.name}`;
+      return { ok: false, error: `This work came from ${why}, so it can’t go to ${manager.name}’s desktop: only work ${manager.name} asked you for can. Say what you couldn’t do, and ${manager.name} can ask you directly.` };
+    }
+    const task = req.task.trim();
+    if (!task) return { ok: false, error: 'Say what the task is ("task").' };
+    if (task.length > MAX_DESKTOP_TASK_CHARS) return { ok: false, error: `Keep the task under ${MAX_DESKTOP_TASK_CHARS} characters: what to do, where, and what to send back.` };
+    const kind: DesktopTaskKind = req.kind === 'browser' || req.kind === 'design' ? req.kind : 'other';
+    const now = this.now();
+    const tasks = tidyDesktopTasks(store.load().tasks, now);
+    if (tasks.filter((t) => t.workerId === w.id && (t.status === 'waiting' || t.status === 'claimed')).length >= MAX_OPEN_DESKTOP_TASKS) {
+      return { ok: false, error: `${w.name} already has ${MAX_OPEN_DESKTOP_TASKS} tasks waiting on ${manager.name}’s desktop. Wait for those first.` };
+    }
+    const t: DesktopTask = { id: randomUUID(), workerId: w.id, workerName: w.name, runId: run.id, thread: `run:${run.id}`, forSlackUserId: manager.slackUserId, forName: manager.name, task, kind, at: now, status: 'waiting' };
+    store.save({ tasks: [...tasks, t] });
+    this.record({ name: w.name, admin: false }, `${w.name} handed ${manager.name}’s desktop a task: ${task.slice(0, 120)}`);
+    return {
+      ok: true,
+      taskId: t.id,
+      message: `Handed to ${manager.name}’s overcli. They see it on their desktop and decide; if they do it, what they send back comes to you as a reply in this thread. Don’t wait for it: say you’ve handed it over, and carry on with anything that doesn’t need it.`,
+    };
+  }
+
+  /// The tasks waiting on the caller's own desktop.
+  desktopTasks(caller: OrgCaller): Result<{ tasks: DesktopTask[] }> {
+    const store = this.deps.desktopTasks;
+    if (!store) return { ok: true, tasks: [] };
+    if (!caller.slackUserId) return { ok: true, tasks: [] };
+    const all = tidyDesktopTasks(store.load().tasks, this.now());
+    store.save({ tasks: all });
+    return { ok: true, tasks: all.filter((t) => t.forSlackUserId === caller.slackUserId && (t.status === 'waiting' || t.status === 'claimed')).sort((a, b) => a.at - b.at) };
+  }
+
+  private desktopTask(caller: OrgCaller, id: string, want: Array<DesktopTask['status']>): Result<{ task: DesktopTask; all: DesktopTask[] }> {
+    const store = this.deps.desktopTasks;
+    if (!store) return { ok: false, error: 'Handing work to a desktop isn’t set up on this server.' };
+    const all = tidyDesktopTasks(store.load().tasks, this.now());
+    const task = all.find((t) => t.id === id);
+    if (!task || !caller.slackUserId || task.forSlackUserId !== caller.slackUserId) return { ok: false, error: 'No task by that id for your desktop.' };
+    if (!want.includes(task.status)) return { ok: false, error: task.status === 'expired' ? 'That task lapsed: nobody picked it up within a day.' : `That task is already ${task.status}.` };
+    return { ok: true, task, all };
+  }
+
+  /// The person said yes: it's theirs to do on their desktop now.
+  claimDesktopTask(caller: OrgCaller, id: string): Result<{ task: DesktopTask }> {
+    const got = this.desktopTask(caller, id, ['waiting']);
+    if (!got.ok) return got;
+    const task = { ...got.task, status: 'claimed' as const, claimedAt: this.now() };
+    this.deps.desktopTasks!.save({ tasks: got.all.map((t) => (t.id === id ? task : t)) });
+    return { ok: true, task };
+  }
+
+  /// The person said no, or gave up on it: the worker hears why.
+  declineDesktopTask(caller: OrgCaller, id: string, why: string): Result<{ task: DesktopTask; note?: string }> {
+    const got = this.desktopTask(caller, id, ['waiting', 'claimed']);
+    if (!got.ok) return got;
+    const reason = why.trim().slice(0, 1000);
+    const task = { ...got.task, status: 'declined' as const, doneAt: this.now(), ...(reason ? { why: reason } : {}) };
+    this.deps.desktopTasks!.save({ tasks: got.all.map((t) => (t.id === id ? task : t)) });
+    this.record(caller, `Declined ${task.workerName}’s desktop task${reason ? `: ${reason}` : ''}`);
+    const note = this.desktopReply(caller, task, `${caller.name} didn’t do the task you handed to their desktop ("${task.task.slice(0, 200)}")${reason ? `: ${reason}` : '.'} Finish what you can without it, and say plainly what’s still missing.`);
+    return { ok: true, task, ...(note ? { note } : {}) };
+  }
+
+  /// What the person sends back goes to the worker, in the same thread.
+  finishDesktopTask(caller: OrgCaller, id: string, result: string): Result<{ task: DesktopTask; note?: string }> {
+    const got = this.desktopTask(caller, id, ['waiting', 'claimed']);
+    if (!got.ok) return got;
+    const text = result.trim();
+    if (!text) return { ok: false, error: 'Send back what came of it.' };
+    const task = { ...got.task, status: 'done' as const, doneAt: this.now(), result: text.slice(0, MAX_DESKTOP_RESULT_CHARS) };
+    this.deps.desktopTasks!.save({ tasks: got.all.map((t) => (t.id === id ? task : t)) });
+    this.record(caller, `Sent back ${task.workerName}’s desktop task`);
+    const note = this.desktopReply(
+      caller,
+      task,
+      `${caller.name} did the task you handed to their desktop ("${task.task.slice(0, 200)}") and sent back:\n\n${task.result}\n\nCarry on with what you were doing, using this. If whoever asked you is waiting in Slack, tell them with your notify call.`,
+    );
+    return { ok: true, task, ...(note ? { note } : {}) };
+  }
+
+  /// The reply to the worker, in the thread that asked. Why not, when it
+  /// couldn't be handed over (the worker paused, say): the person is told.
+  private desktopReply(caller: OrgCaller, task: DesktopTask, text: string): string | null {
+    const started = this.startAsk(caller, task.workerId, text, 'console', undefined, task.thread);
+    return started.ok ? null : `${task.workerName} couldn’t be given it: ${started.error}`;
+  }
+
+  /// One run told for a chat: its state and why it's paused, each step, the
+  /// text of what it wrote (plan, pull requests, review, CI), and what it was
+  /// told when it continued a pushed branch. For "why did this run do that".
+  runReport(caller: OrgCaller, runId: UUID): Result<RunReport> {
+    const r = this.deps.runs.getRun(runId);
+    const roster = this.deps.workers.roster();
+    if (!r?.workerId || !canSee(this.policy(), roster, r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    const w = roster.find((x) => x.id === r.workerId);
+    if (!w) return { ok: false, error: 'No run with that id that you can see.' };
+    // What a chat reads, so credentials a run printed are scrubbed out first,
+    // as the server's logs are.
+    const known = collectKnownSecretValues(process.env);
+    const clean = (t: string) => redactSecrets(scrubOutbound(t), known).text;
+    const ended = r.state.kind === 'done' || r.state.kind === 'aborted';
+    const steps = r.flowSnapshot.steps.map((s) => {
+      const tries = r.attempts.filter((a) => a.stepId === s.id);
+      const last = tries[tries.length - 1];
+      const from = tries[0]?.startedAt;
+      return {
+        step: s.id,
+        status: last?.outcome ?? (r.state.kind === 'running' && r.state.currentStepId === s.id ? 'running' : tries.length ? 'started' : 'not started'),
+        ...(from ? { minutes: Math.max(0, Math.round(((last?.endedAt ?? this.now()) - from) / 60_000)) } : {}),
+        ...(tries.length > 1 ? { tries: tries.length } : {}),
+        ...(last?.errorMessage ? { error: clean(last.errorMessage).slice(0, 800) } : {}),
+      };
+    });
+    const artifacts: RunReport['artifacts'] = [];
+    for (const name of REPORT_ARTIFACTS) {
+      const raw = r.artifacts?.[name]?.body;
+      if (raw === undefined) continue;
+      const body = clean(raw);
+      const clipped = body.length > REPORT_CLIP;
+      artifacts.push({ name, text: clipped ? `${body.slice(0, REPORT_CLIP)}\n…` : body, ...(clipped ? { clipped: true, chars: body.length } : {}) });
+    }
+    const pushed = r.artifacts?.[LANDED_ARTIFACT]?.body;
+    const prompt = r.userPrompt ?? '';
+    return {
+      ok: true,
+      worker: w.name,
+      flow: r.flowSnapshot.name ?? r.flowId,
+      run: {
+        id: r.id,
+        title: flowRunTitle(r),
+        state: ended ? OrgService.runOutcome(r) : r.state.kind,
+        ...(r.state.kind === 'paused' ? { pausedFor: r.state.reason } : {}),
+        startedAt: r.createdAt,
+        ...(ended ? { endedAt: OrgService.runEndedAt(r) } : {}),
+        ...(r.costUSD ? { costUSD: r.costUSD } : {}),
+      },
+      steps,
+      artifacts,
+      ...(ended && pushed === undefined ? { pushed: 'Nothing was pushed: this run has no pull-requests.md.' } : {}),
+      ...(r.continues
+        ? {
+            continued: {
+              branch: r.continues,
+              toldOfConflicts: prompt.includes(CONFLICTS_HEADING),
+              toldDefaultBranchMerged: prompt.includes(MERGED_HEADING),
+              toldWhyBuildFailed: prompt.includes(BUILD_FAILED_HEADING),
+            },
+          }
+        : {}),
+    };
+  }
+
+  /// Recent runs of the workers the caller can see, newest first: to find
+  /// the run to read with runReport. state: running, paused, done, failed or stopped.
+  recentRuns(caller: OrgCaller, opts: { worker?: string; since?: number; state?: string; limit?: number } = {}): Result<{ runs: RunListItem[] }> {
+    const roster = this.deps.workers.roster();
+    const policy = this.policy();
+    let only: Worker | null = null;
+    if (opts.worker) {
+      only = this.resolve(caller, opts.worker);
+      if (!only) return { ok: false, error: NOT_FOUND };
+    }
+    const names = new Map(roster.filter((w) => canSee(policy, roster, w.id, caller)).map((w) => [w.id, w.name]));
+    const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? 20)));
+    const runs = this.deps.runs
+      .listRuns()
+      .filter((r) => !!r.workerId && names.has(r.workerId) && (!only || r.workerId === only.id) && (!opts.since || r.createdAt >= opts.since))
+      .map((r) => ({ r, state: r.state.kind === 'done' || r.state.kind === 'aborted' ? OrgService.runOutcome(r) : r.state.kind }))
+      .filter((x) => !opts.state || x.state === opts.state)
+      .sort((a, b) => b.r.createdAt - a.r.createdAt)
+      .slice(0, limit)
+      .map(({ r, state }) => ({
+        runId: r.id,
+        worker: names.get(r.workerId!)!,
+        title: flowRunTitle(r),
+        state,
+        ...(r.state.kind === 'paused' ? { pausedFor: r.state.reason } : {}),
+        startedAt: r.createdAt,
+        ...(r.costUSD ? { costUSD: r.costUSD } : {}),
+      }));
+    return { ok: true, runs };
+  }
+
+  /// What the pull request watcher holds for a worker's repos, from its
+  /// state with no host calls: whether it looks after pull requests, whose,
+  /// and per pull request its build, conflict, comments and what's waiting.
+  prWatch(caller: OrgCaller, idOrName: string): Result<{
+    worker: string;
+    looksAfterPullRequests: boolean;
+    authors: string[];
+    commentAuthors: string[];
+    repos: string[];
+    tracked: number;
+    limits: { wakesPerDay: number; commentRounds: number };
+    pullRequests: PrWatchPr[];
+  }> {
+    const w = this.resolve(caller, idOrName);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    if (!this.deps.prWatchState) return { ok: false, error: 'Pull requests are not watched on this server.' };
+    const repos = this.deps.repos;
+    const ws = repos?.workspaces().find((x) => x.rootPath === w.projectPath);
+    const names = !repos ? [] : ws ? ws.repos : repos.list().filter((r) => r.path === w.projectPath).map((r) => r.name);
+    const { tracked, pullRequests } = prWatchSummary(this.deps.prWatchState(), names, this.now());
+    return {
+      ok: true,
+      worker: w.name,
+      looksAfterPullRequests: w.enabled && w.caps.continueOpenPrs === true,
+      authors: w.caps.prAuthors ?? [],
+      commentAuthors: w.caps.prCommentAuthors ?? [],
+      repos: names,
+      tracked,
+      limits: { wakesPerDay: MAX_WAKES_PER_DAY, commentRounds: MAX_COMMENT_ROUNDS },
+      pullRequests,
+    };
+  }
+
+  /// People and groups matching some words, to name them in an audience:
+  /// "Emmanuel" or "the design group" to Slack ids and `team:<name>`.
+  /// Work emails only for an admin, as /api/directory.
+  findPeople(caller: OrgCaller, query: string): Result<{ people: Array<{ name: string; slackUserId?: string; handle?: string; email?: string; groups: string[] }>; groups: Array<{ id: string; name: string; members: number }> }> {
+    const q = query.trim().toLowerCase();
+    if (!q) return { ok: false, error: 'Say who to look for.' };
+    const dir = this.directory();
+    const all = isAdmin(this.policy(), caller) ? this.peopleDirectory() : withoutEmails(this.peopleDirectory());
+    const hit = (...words: Array<string | undefined>) => words.some((x) => !!x && x.toLowerCase().includes(q));
+    const groupsOf = (id?: string) => (id ? dir.groups.filter((g) => g.members.some((m) => m.slackUserId === id)).map((g) => g.id) : []);
+    const people = all
+      .filter((p) => hit(p.name, p.handle, p.email, p.slackUserId, ...(p.aliases ?? [])))
+      .slice(0, 20)
+      .map((p) => ({ name: p.name, ...(p.slackUserId ? { slackUserId: p.slackUserId } : {}), ...(p.handle ? { handle: p.handle } : {}), ...(p.email ? { email: p.email } : {}), groups: groupsOf(p.slackUserId) }));
+    const groups = dir.groups.filter((g) => hit(g.id, g.name)).map((g) => ({ id: g.id, name: g.name, members: g.members.length }));
+    return { ok: true, people, groups };
+  }
+
   /// What a run has changed so far, repo by repo, for whoever can see its
   /// worker: before it pushes, so a Continue is made with the diff in view.
   async runChanges(caller: OrgCaller, runId: UUID, diff = false): Promise<Result<RunChanges>> {
@@ -5342,7 +5658,7 @@ export class OrgService {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     const all = this.threadsFor(caller, w, opts.before != null);
-    const limit = Number.isFinite(opts.limit) ? Math.min(100, Math.max(1, Math.floor(opts.limit!))) : 20;
+    const limit = Number.isFinite(opts.limit) ? Math.min(1000, Math.max(1, Math.floor(opts.limit!))) : 20;
     const page = opts.before != null && Number.isFinite(opts.before) ? all.filter((t) => t.lastAt < opts.before!) : all;
     const threads = page.slice(0, limit);
     return {
@@ -6815,6 +7131,25 @@ export class OrgService {
     if (!saved.ok) return saved;
     this.record(caller, `Let ${w.name} change ${repo ? repo.name : `the ${ws!.name} workspace (${ws!.repos.join(', ')})`}; its changes arrive as branches to open pull requests from.`);
     return { ok: true, worker: w.name, flow: flowId };
+  }
+
+  /// Undo letWorkOnRepo: it stops changing code. Its repo and workspace flows
+  /// go, so its planning can never launch a push; it keeps its place, to read
+  /// there. Its manager or an admin decides.
+  stopWorkOnRepo(caller: OrgCaller, idOrName: string): Result<{ worker: string; removed: string[] }> {
+    const w = this.resolve(caller, idOrName);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    if (!canManage(this.policy(), this.deps.workers.roster(), w.id, caller)) return { ok: false, error: `Only ${w.name}'s manager or an admin can do that.` };
+    const removed = w.flowIds.filter((id) => id.startsWith('org-pr-'));
+    if (!removed.length) return { ok: false, error: `${w.name} isn't changing code in a repo.` };
+    const flowIds = w.flowIds.filter((id) => !removed.includes(id));
+    if (!flowIds.length) return { ok: false, error: `That's the only way ${w.name} works, so it would have nothing to run. Give it another flow first, or retire it.` };
+    const next = { ...w, flowIds };
+    if (next.preferredFlowId && removed.includes(next.preferredFlowId)) delete next.preferredFlowId;
+    const saved = this.deps.workers.save(next);
+    if (!saved.ok) return saved;
+    this.record(caller, `Stopped ${w.name} changing code: it no longer pushes branches.`);
+    return { ok: true, worker: w.name, removed };
   }
 
   /// Rewrite the repo and workspace flows workers use from what this version

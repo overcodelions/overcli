@@ -63,12 +63,18 @@ export async function mergeDefaultInto(places: MergePlace[], git: MergeGit, opts
   return { conflicts: lines, merged };
 }
 
+/// The headings of what a continued run is told after its prompt: read back
+/// from the run's prompt to say what it was told (OrgService.runReport).
+export const MERGED_HEADING = 'THE DEFAULT BRANCH WAS MERGED IN';
+export const CONFLICTS_HEADING = 'CONFLICTS TO RESOLVE';
+export const BUILD_FAILED_HEADING = 'WHY ITS LATEST BUILD FAILED';
+
 /// What the run is told, after its prompt, when the default branch was merged in cleanly.
 export function mergedNote(lines: string[]): string {
   return [
     '',
     '',
-    'THE DEFAULT BRANCH WAS MERGED IN',
+    MERGED_HEADING,
     'This branch was behind its default branch, and its failing build ran on the two merged together,',
     'so the server merged the default branch into your checkout first. Tests, fixtures and code that',
     'came from the default branch are here now:',
@@ -84,7 +90,7 @@ export function conflictNote(lines: string[]): string {
   return [
     '',
     '',
-    'CONFLICTS TO RESOLVE',
+    CONFLICTS_HEADING,
     'This pull request no longer merges cleanly, so the server started merging the default branch',
     'into your checkout. The conflict markers are in these files:',
     ...lines,

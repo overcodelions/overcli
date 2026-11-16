@@ -2308,7 +2308,9 @@ function Detail() {
   const binding = stack.bindings.find((b) => b.serviceId === spec.id);
   const runtime = stack.runtimes.find((r) => r.serviceId === spec.id);
   const headerDrift = taskDrift(runtime, binding);
-  const pendingLease = useServicesStore((s) => s.pendingLease[stack.workspaceId]);
+  // Read from the map subscribed above: a hook here, after the early return,
+  // changes the hook count once a service gets selected and crashes React.
+  const pendingLease = pending[stack.workspaceId];
 
   return (
     <div className="flex min-w-0 flex-1 flex-col border-l border-card">

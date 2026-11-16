@@ -102,6 +102,51 @@ interface RepoSeen {
   prs: Record<string, Seen>;
 }
 
+/// What the watcher holds for these repos' pull requests, read from its
+/// state with no host calls: for "why hasn't it picked up #1234?".
+export interface PrWatchPr {
+  repo: string;
+  id: string;
+  build?: BuildState;
+  conflicted?: boolean;
+  comments?: number;
+  /// Gathered and not handed over yet: handed over once it settles (QUIET_MS).
+  waiting?: { conflict?: true; failed?: true; comments?: number };
+  /// Times its worker was handed review comments on it, of MAX_COMMENT_ROUNDS.
+  commentRounds: number;
+  /// Wakes for it in the last day, of MAX_WAKES_PER_DAY.
+  wakesToday: number;
+  lastWokenAt?: number;
+  lastActiveAt?: number;
+  /// Missing from the host's list since then: closed, merged, or a short page.
+  goneAt?: number;
+}
+
+export function prWatchSummary(state: PrWatchState, repos: readonly string[], now: number): { tracked: number; pullRequests: PrWatchPr[] } {
+  const pullRequests: PrWatchPr[] = [];
+  for (const repo of repos) {
+    for (const [id, seen] of Object.entries(state.repos[repo]?.prs ?? {})) {
+      const woken = (seen.woken ?? []).filter((t) => now - t < DAY_MS);
+      const waiting = seen.pending && Object.keys(seen.pending).length ? seen.pending : undefined;
+      pullRequests.push({
+        repo,
+        id,
+        ...(seen.build ? { build: seen.build } : {}),
+        ...(seen.conflicted !== undefined ? { conflicted: seen.conflicted } : {}),
+        ...(seen.comments !== undefined ? { comments: seen.comments } : {}),
+        ...(waiting ? { waiting } : {}),
+        commentRounds: seen.commentRounds ?? 0,
+        wakesToday: woken.length,
+        ...(seen.woken?.length ? { lastWokenAt: Math.max(...seen.woken) } : {}),
+        ...(seen.activeAt ? { lastActiveAt: seen.activeAt } : {}),
+        ...(seen.goneAt ? { goneAt: seen.goneAt } : {}),
+      });
+    }
+  }
+  pullRequests.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+  return { tracked: pullRequests.filter((p) => !p.goneAt).length, pullRequests };
+}
+
 /// A worker that looks after pull requests, and whose.
 export interface PrWatcherOf {
   workerId: string;
@@ -123,7 +168,8 @@ export interface PrWatchDeps {
   ownPush(repo: ConnectedRepo, branch: string, head: string): boolean;
   /// Resolves false or `{ ok: false }` when the worker wasn't actually handed
   /// it (it refused, say on budget): then nothing counts as told.
-  wake(workerId: string, text: string): Promise<unknown>;
+  /// `prs`: the pull requests in `text`, by the host's own links, for its thread.
+  wake(workerId: string, text: string, prs: Array<{ repo: string; url: string }>): Promise<unknown>;
   /// Still on what it was last handed (planning, or its runs going): the next
   /// pull requests wait until it's free, rather than piling up behind it.
   busy?(workerId: string): boolean;
@@ -351,7 +397,7 @@ export class PrWatcher {
         if (!mine.length || this.deps.busy?.(w.workerId)) continue;
         const batch = mine.slice(0, Math.max(1, w.perWake ?? 3));
         this.deps.log(`${batch.length} pull request${batch.length === 1 ? '' : 's'} ready${mine.length > batch.length ? `, ${mine.length - batch.length} more waiting` : ''}; waking worker ${w.workerId}.`);
-        const woke = await Promise.resolve(this.deps.wake(w.workerId, wakeText(batch))).then(
+        const woke = await Promise.resolve(this.deps.wake(w.workerId, wakeText(batch), batch.map((c) => ({ repo: c.repo, url: c.pr.url })))).then(
           (res) => {
             if (delivered(res)) return true;
             const why = res && typeof res === 'object' && 'error' in res ? String((res as { error: unknown }).error) : 'it refused';

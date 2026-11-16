@@ -467,8 +467,8 @@ export function createOrgControl(
       const w = engines.workerEngine.roster().find((x) => x.id === id);
       return w ? { id: w.id, name: w.name, enabled: w.enabled, avatarUrl: w.avatarUrl ?? initialsPicture(w.id, w.name) } : null;
     },
-    ask: (workerId, triggerName, text, startsOnItsOwn) => {
-      const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger', undefined, undefined, undefined, undefined, false, startsOnItsOwn);
+    ask: (workerId, triggerName, text, startsOnItsOwn, about) => {
+      const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger', undefined, undefined, undefined, about?.said, false, startsOnItsOwn, about ? { ...(about.slackUserId ? { slackUserId: about.slackUserId } : {}), where: about.where } : undefined);
       return started.ok
         ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched, ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.orchestrationId ? { orchestrationId: r.orchestrationId } : {}) } : r)) }
         : started;
@@ -967,6 +967,9 @@ export function createOrgControl(
         return null;
       }
     },
+    // Who a worker's reply can tag: everyone the org knows by a Slack id.
+    people: () =>
+      org.peopleDirectory().flatMap((p) => (p.slackUserId ? [{ name: p.name, slackUserId: p.slackUserId, ...(p.handle ? { handle: p.handle } : {}) }] : [])),
     store: jsonOrgStore<FrontDoorState>('front-door.json', () => ({ threads: [], follows: [] })),
     log: (message) => log('info', 'slack', message),
   });

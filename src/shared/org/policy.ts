@@ -183,6 +183,9 @@ export interface OrgCaller {
   name: string;
   /// Granted by a token minted with `--admin`, or by `OrgPolicy.admins`.
   admin: boolean;
+  /// Where the request came from, when it says: 'overcli chat' for a chat in
+  /// the desktop app reaching the org's MCP server. Recorded in the decision log.
+  via?: string;
 }
 
 export type WebFetchMode = 'ask' | 'safe' | 'any';
