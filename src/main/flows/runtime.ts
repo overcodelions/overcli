@@ -424,6 +424,14 @@ function parseCommitCount(result: { stdout: string; exitCode: number }): number 
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+/// One tool call a call guard (setCallGuard) is asked about.
+export interface CallGuardCall {
+  stepId: string;
+  tool: string;
+  input: string;
+  run: Pick<FlowRun, 'id' | 'parentOrchestrationId'>;
+}
+
 export class FlowRuntimeImpl {
   private runs = new Map<UUID, FlowRun>();
   /// Reverse index: which run owns this conversation id. With participants,
@@ -918,7 +926,7 @@ export class FlowRuntimeImpl {
             // A call guard (setCallGuard) may narrow one by what it is
             // given: a host's generic POST, granted to post a comment, that
             // aims at an approve or merge path is not let through ahead.
-            const guarded = !!current && this.callGuard?.({ stepId: current.id, tool: ev.kind.info.toolName, input: ev.kind.info.toolInput }) === false;
+            const guarded = !!current && this.callGuard?.({ stepId: current.id, tool: ev.kind.info.toolName, input: ev.kind.info.toolInput, run }) === false;
             const named = !!current && !guarded && stepGrantAllows(run, current, ev.kind.info.toolName);
             // One of its role's tools: its job, so no step has to list it,
             // once a person approved the run or its manager always allows it.
@@ -4905,12 +4913,13 @@ export class FlowRuntimeImpl {
     this.toolScopesFor = fn;
   }
 
-  private callGuard: ((call: { stepId: string; tool: string; input: string }) => boolean | undefined) | null = null;
+  private callGuard: ((call: CallGuardCall) => boolean | undefined) | null = null;
 
   /// A check on one call's input, for a step a grant names: `false` keeps
   /// the grant from letting it through ahead (it is refused like any call
-  /// the step doesn't list), anything else leaves the grant to decide.
-  setCallGuard(fn: (call: { stepId: string; tool: string; input: string }) => boolean | undefined): void {
+  /// the step doesn't list), anything else leaves the grant to decide. It
+  /// is given the run, to hold a call to what that run is about.
+  setCallGuard(fn: (call: CallGuardCall) => boolean | undefined): void {
     this.callGuard = fn;
   }
 

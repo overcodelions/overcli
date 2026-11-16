@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 import type { CiWatch } from './ciWatch';
-import { continueBranchFor, type ContinueBranchDeps } from './continueBranch';
+import { continueBranchFor, isSharedLine, type ContinueBranchDeps } from './continueBranch';
 import { LANDED_ARTIFACT } from './landBranches';
 import type { ConnectedRepo } from './repos';
 
@@ -71,16 +71,34 @@ describe('continueBranchFor on the team’s open pull requests', () => {
     expect(await continueBranchFor(marker('develop'), own)).toBeNull();
   });
 
-  it('never pushes onto a branch another open pull request merges into', async () => {
-    const d = deps({
-      openBranches: { 'acme-web': ['acme-next'] },
-      mayContinueOpenPrs: () => true,
-      hasOpenPr: async () => true,
-      isPrTarget: (r, b) => r.name === 'acme-web' && b === 'acme-next',
-    });
-    expect(await continueBranchFor(marker('acme-next'), d)).toBeNull();
-    const fine = deps({ ...d, isPrTarget: () => false, openBranches: { 'acme-web': ['acme-next'] } });
-    expect(await continueBranchFor(marker('acme-next'), fine)).toBe('acme-next');
+  it('refuses release lines named with a dash, dot or underscore, but not a feature that starts with the word', async () => {
+    for (const b of ['release-1.4', 'release_2026.11', 'hotfix-1.2.1', 'support.3', 'release-v2', 'next']) {
+      const d = deps({ openBranches: { 'acme-web': [b] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => true });
+      expect(await continueBranchFor(marker(b), d), b).toBeNull();
+    }
+    const feature = deps({ openBranches: { 'acme-web': ['release-notes-tidy'] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => true });
+    expect(await continueBranchFor(marker('release-notes-tidy'), feature)).toBe('release-notes-tidy');
+  });
+
+  it('continues a stacked pull request’s base branch, which has one of its own', async () => {
+    // feature-a has its own pull request, and feature-b's merges into it.
+    const d = deps({ openBranches: { 'acme-web': ['feature/ACME-9-a'] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => true });
+    expect(await continueBranchFor(marker('feature/ACME-9-a'), d)).toBe('feature/ACME-9-a');
+  });
+
+  it('refuses an org’s own shared lines from OVERCLI_PROTECTED_BRANCHES', async () => {
+    const env = { OVERCLI_PROTECTED_BRANCHES: 'stable, env-*, rc/*' };
+    for (const b of ['stable', 'env-eu', 'rc/7']) expect(isSharedLine({ defaultBranch: 'main' }, b, env), b).toBe(true);
+    for (const b of ['stable-fix', 'feature/env-eu']) expect(isSharedLine({ defaultBranch: 'main' }, b, env), b).toBe(false);
+    // A pattern's dots and brackets are literal.
+    expect(isSharedLine({ defaultBranch: 'main' }, 'v1x0', { OVERCLI_PROTECTED_BRANCHES: 'v1.0' })).toBe(false);
+    vi.stubEnv('OVERCLI_PROTECTED_BRANCHES', 'stable');
+    try {
+      const d = deps({ openBranches: { 'acme-web': ['stable'] }, mayContinueOpenPrs: () => true, hasOpenPr: async () => true });
+      expect(await continueBranchFor(marker('stable'), d)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

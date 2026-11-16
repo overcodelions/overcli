@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ConnectedRepo } from './repos';
-import { changesIn, FORGET_GONE_MS, gitConflicted, isPrTarget, markTold, MAX_COMMENT_ROUNDS, MAX_WAKES_PER_DAY, nextLink, OWN_MARK, prHostFor, PrWatcher, QUIET_MS, wakeText, wantsOf, type BuildState, type GitRun, type OpenPr, type PrHost, type PrWatchState } from './prWatch';
+import { changesIn, FORGET_GONE_MS, gitConflicted, markTold, MAX_COMMENT_ROUNDS, MAX_WAKES_PER_DAY, nextLink, OWN_MARK, prHostFor, PrWatcher, QUIET_MS, wakeText, wantsOf, type BuildState, type GitRun, type OpenPr, type PrHost, type PrWatchState } from './prWatch';
 
 const REPO = { name: 'acme-web', url: 'https://bitbucket.org/acme/acme-web.git', host: 'bitbucket', defaultBranch: 'main', path: '/data/repos/acme-web' } as ConnectedRepo;
 const pr = (over: Partial<OpenPr> = {}): OpenPr => ({ id: '42', url: 'https://bitbucket.org/acme/acme-web/pull-requests/42', title: 'Sort by date', branch: 'feature/ACME-9-sort', head: 'abc123', updatedAt: 't1', draft: false, author: ['Dana Reviewer', 'dana'], ...over });
@@ -480,15 +480,6 @@ describe('what the watcher remembers', () => {
     expect(f.asked.conflicted).toBe(2);
   });
 
-  it('remembers which branches open pull requests merge into, drafts too', async () => {
-    const f = fakeHost({ prs: [pr(), pr({ id: '43', branch: 'develop', target: 'main' }), pr({ id: '44', target: 'develop', draft: true })] });
-    const seen = await watch(f, 0);
-    const state: PrWatchState = { repos: { 'acme-web': seen.now } };
-    expect(isPrTarget(state, 'acme-web', 'develop')).toBe(true);
-    expect(isPrTarget(state, 'acme-web', 'main')).toBe(true);
-    expect(isPrTarget(state, 'acme-web', 'feature/ACME-9-sort')).toBe(false);
-    expect(isPrTarget(state, 'acme-other', 'develop')).toBe(false);
-  });
 });
 
 describe('waking workers', () => {
@@ -551,6 +542,8 @@ describe('waking workers', () => {
     expect(woken[1][1]).not.toContain('its build failed');
     expect(state.repos['acme-web'].prs['42'].commentRounds).toBe(1);
     expect(state.repos['acme-web'].prs['42'].pending).toBeUndefined();
+    // Two watchers in one check spend one of the pull request's day's wakes.
+    expect(state.repos['acme-web'].prs['42'].woken).toHaveLength(1);
   });
 
   it('puts what the pull request’s author wrote inside an untrusted block', () => {
@@ -601,6 +594,35 @@ describe('host listings', () => {
 });
 
 describe('conflict checks in one look', () => {
+  it('doesn’t count a target as fetched when its fetch failed, nor let a missing branch take it down', async () => {
+    const calls: string[][] = [];
+    const has = new Set<string>();
+    let targetFails = 1;
+    const git: GitRun = async (args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') return { code: has.has(args[3].replace(/\^\{commit\}$/, '')) ? 0 : 1, stdout: '' };
+      if (args[0] === 'fetch') {
+        const to = args[3].split(':')[1];
+        // The first try at the target fails (a blip); a fork's branch is never on origin.
+        if (to === 'refs/remotes/origin/main' && targetFails-- > 0) return { code: 128, stdout: '' };
+        if (to.endsWith('/from-fork')) return { code: 128, stdout: '' };
+        has.add(to);
+        return { code: 0, stdout: '' };
+      }
+      return { code: 0, stdout: '' };
+    };
+    const fetched = new Set<string>();
+    expect(await gitConflicted(REPO, { branch: 'feature/a', head: '' }, git, fetched)).toBeUndefined();
+    expect(fetched.has('main')).toBe(false);
+    // The next pull request tries the target again, and a fork's missing branch
+    // fails on its own without undoing that.
+    expect(await gitConflicted(REPO, { branch: 'from-fork', head: '' }, git, fetched)).toBeUndefined();
+    expect(fetched.has('main')).toBe(true);
+    await gitConflicted(REPO, { branch: 'feature/b', head: '' }, git, fetched);
+    const targetFetches = calls.filter((c) => c[0] === 'fetch' && c[3].endsWith('refs/remotes/origin/main'));
+    expect(targetFetches).toHaveLength(2);
+  });
+
   it('fetches the target once for all of a repo’s pull requests, and a head it already has not at all', async () => {
     const calls: string[][] = [];
     const has = new Set(['h1', 'refs/remotes/origin/main']);

@@ -3,6 +3,8 @@
 // (a Slack display name, the name on a sign-in, a token named for a device),
 // so the console needs the map back to the name a person goes by.
 
+import { createHash } from 'node:crypto';
+
 /// One person, as the console's directory lists them. Names, a handle and an
 /// email only: nothing about roles, devices or spend.
 export interface DirectoryPerson {
@@ -16,17 +18,35 @@ export interface DirectoryPerson {
   aliases?: string[];
 }
 
-/// An address that reads as an email.
-const EMAILISH = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+/// An email anywhere in a string: on its own, or inside `name:<email>`.
+const HAS_EMAIL = /[^@\s<>:]+@[^@\s<>]+\.[^@\s<>]+/;
 
 /// The directory as someone who isn't an admin sees it: names, handles and
-/// Slack ids, but no work emails, as `email` or among the aliases. Who
-/// someone's sign-in email belongs to is for admins (Setup → People).
+/// Slack ids, but no work emails, as `email`, among the aliases, or as the
+/// name and id of someone known only by their email. Who someone's sign-in
+/// email belongs to is for admins (Setup → People). A masked id stays the
+/// same from one load to the next and differs between people, so the
+/// console's lookups and pictures still work.
 export function withoutEmails(people: readonly DirectoryPerson[]): DirectoryPerson[] {
-  return people.map(({ email: _email, aliases, ...rest }) => {
-    const kept = (aliases ?? []).filter((a) => !EMAILISH.test(a.trim()));
-    return { ...rest, ...(kept.length ? { aliases: kept } : {}) };
+  return people.map(({ email: _email, aliases, handle, ...rest }) => {
+    const kept = (aliases ?? []).filter((a) => !HAS_EMAIL.test(a));
+    const id = HAS_EMAIL.test(rest.id) ? `person:${createHash('sha256').update(rest.id.trim().toLowerCase()).digest('hex').slice(0, 12)}` : rest.id;
+    const name = HAS_EMAIL.test(rest.name) ? hiddenName(rest.name) : rest.name;
+    return {
+      ...rest,
+      id,
+      name,
+      ...(handle && !HAS_EMAIL.test(handle) ? { handle } : {}),
+      ...(kept.length ? { aliases: kept } : {}),
+    };
   });
+}
+
+/// "j… (email hidden)" for jo@acme.example: enough to tell two apart in a
+/// list, not enough to write to.
+function hiddenName(name: string): string {
+  const first = (HAS_EMAIL.exec(name)?.[0] ?? name).trim().charAt(0).toLowerCase();
+  return first ? `${first}… (email hidden)` : 'Someone (email hidden)';
 }
 
 /// Somewhere a person was written down: a sign-in, a manager, an asker.

@@ -239,9 +239,10 @@ export function createOrgService(
     }
     return [...out];
   });
-  // And the addresses it cloned from: a repo whose origin a worker pointed
-  // somewhere else doesn't get the server's push.
-  useTrustedGitRemotes(() => repos.list().map((r) => r.url));
+  // And the address each was cloned from: a repo whose origin a worker
+  // pointed somewhere else (another connected repo included) doesn't get the
+  // server's push.
+  useTrustedGitRemotes(() => repos.list().map((r) => ({ path: r.path, url: r.url })));
   // Java, Node, Python, Go and custom kits on the data volume: on every
   // worker's PATH, the version per repo.
   const toolchains = new ToolchainService({

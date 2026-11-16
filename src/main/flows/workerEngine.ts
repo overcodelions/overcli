@@ -40,7 +40,7 @@ import {
 } from '../../shared/responseDirectives';
 import type { NotifyArgs } from '../host';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
-import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem } from '../../shared/flows/orchestration';
+import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem, type PrTarget } from '../../shared/flows/orchestration';
 import { flowRunTitle, type AdoptedWorktrees, type FlowRun } from '../../shared/flows/schema';
 import {
   evaluateSchedule,
@@ -1752,12 +1752,18 @@ export class WorkerEngine {
   /// A ticket update carries the worker's job description: moving a ticket
   /// often needs fields only the job says how to fill (a problem type, whether
   /// automation is required), and without it the move stops at "requires …".
-  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' | 'replies' }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+  /// `prTargets`: for `replies`, the pull requests it may post on, saved
+  /// with its batch (Orchestration origin.prTargets).
+  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' | 'replies'; prTargets?: PrTarget[] }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     const res = await this.deps.parker.parkDirect({
-      origin: { ...{ ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w) }, followUp: args.kind },
+      origin: {
+        ...{ ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w) },
+        followUp: args.kind,
+        ...(args.kind === 'replies' && args.prTargets?.length ? { prTargets: args.prTargets.map((t) => ({ owner: t.owner, repo: t.repo, number: t.number })) } : {}),
+      },
       projectPath: w.projectPath,
       prompt: args.kind !== 'ci' ? this.buildDirectPrompt(w, args.prompt, { files: false }) : args.prompt,
       title: args.title,

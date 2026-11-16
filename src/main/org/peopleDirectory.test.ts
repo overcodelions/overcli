@@ -59,4 +59,22 @@ describe('withoutEmails', () => {
       { id: 'U2', name: 'Pat' },
     ]);
   });
+
+  it('hides someone known only by their email, keeping a steady id of their own', () => {
+    const dir = buildPeopleDirectory({ seen: [{ email: 'jo@acme.example' }, { email: 'kim@acme.example' }, { name: 'Ray', email: 'ray@acme.example' }] });
+    // As built, the email is the name and the id.
+    expect(dir.some((p) => p.id === 'name:jo@acme.example')).toBe(true);
+    const shown = withoutEmails(dir);
+    expect(JSON.stringify(shown)).not.toMatch(/@/);
+    const jo = shown.find((p) => p.name.startsWith('j'))!;
+    expect(jo.name).toBe('j… (email hidden)');
+    expect(jo.id).toMatch(/^person:[0-9a-f]{12}$/);
+    // The same on the next load, and not the same as anyone else's.
+    expect(withoutEmails(dir).find((p) => p.name === jo.name)!.id).toBe(jo.id);
+    expect(new Set(shown.map((p) => p.id)).size).toBe(shown.length);
+    // Someone with a name keeps it.
+    expect(shown.some((p) => p.name === 'Ray' && p.id === 'name:Ray')).toBe(true);
+    // A handle that is an email goes too.
+    expect(withoutEmails([{ id: 'U3', name: 'Al', handle: 'al@acme.example' }])).toEqual([{ id: 'U3', name: 'Al' }]);
+  });
 });

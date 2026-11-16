@@ -26,7 +26,6 @@
 // unless it is one of the apps' own environments (those may well be on a
 // private network).
 
-import dns from 'node:dns';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -82,8 +81,6 @@ export interface SessionDeps {
   /// The run's evidence folder (OVERCLI_RUN_FILES): screenshots are copied
   /// there, so they show with the run's Files. Absent: kept here only.
   filesDir?: string;
-  /// Every address a host name resolves to. Default: the system resolver.
-  lookup?(host: string): Promise<string[]>;
 }
 
 /// A screenshot's file name from whatever the worker asked for: no folder,
@@ -173,6 +170,10 @@ const OWN_TOOLS: ToolInfo[] = [
   },
 ];
 
+/// What the browser's proxy (browserProxy.ts) answers a refused request with:
+/// a refusal that names itself, so it isn't read as the app being down.
+export const REFUSED_MARK = 'Refused by the test-systems browser proxy:';
+
 const text = (t: string, isError = false): ToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) });
 
 /// Addresses the browser never goes to unless they are an app's own: the
@@ -224,11 +225,6 @@ export function blockedAddress(ip: string): boolean {
   return BLOCKED.check(bare, 'ipv6');
 }
 
-async function systemLookup(host: string): Promise<string[]> {
-  const found = await dns.promises.lookup(host, { all: true, verbatim: true });
-  return found.map((a) => a.address);
-}
-
 /// What run code returned: the first line of a Playwright MCP result's
 /// `### Result` section, unquoted.
 export function resultValue(result: ToolResult): string | undefined {
@@ -275,9 +271,6 @@ export class TestSystemsSession {
   private signInsAgain = 0;
   private lastUrl: string | undefined;
   private installTried = false;
-  /// Origins already found public this session, so a page that stays on one
-  /// isn't looked up on every call.
-  private publicOrigins = new Set<string>();
 
   constructor(private readonly deps: SessionDeps) {}
 
@@ -458,8 +451,11 @@ export class TestSystemsSession {
   }
 
   /// Why the browser may not go to `raw`, or null when it may: an app's own
-  /// environment always may; otherwise only http(s) at an address that is
-  /// public, and resolves only to public addresses.
+  /// environment always may; otherwise only http(s), and never an address
+  /// written out that is private, loopback or link-local. A name isn't looked
+  /// up here: the browser's proxy (browserProxy.ts) looks each one up as it
+  /// connects, for every request a page makes, and connects to the address
+  /// it checked. This is the quick answer for what can be judged by reading.
   async refusedAddress(raw: string): Promise<string | null> {
     let u: URL;
     try {
@@ -469,23 +465,11 @@ export class TestSystemsSession {
     }
     if (u.href === 'about:blank') return null;
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return `The browser only opens http and https addresses, not ${u.protocol}.`;
-    if (this.publicOrigins.has(u.origin)) return null;
     for (const s of this.visible()) if (resolveEnvironment(s, u.origin).ok) return null;
     const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
     const refuse = `${u.host} is on a private network (or this server), so the browser doesn’t go there. Only the apps’ own environments may be private; open one with open_system.`;
     if (host === 'localhost' || host.endsWith('.localhost')) return refuse;
-    let ips: string[];
-    if (net.isIP(host)) ips = [host];
-    else {
-      try {
-        ips = await (this.deps.lookup ?? systemLookup)(host);
-      } catch {
-        return `${u.host} couldn’t be looked up, so the browser doesn’t go there.`;
-      }
-      if (!ips.length) return `${u.host} couldn’t be looked up, so the browser doesn’t go there.`;
-    }
-    if (ips.some(blockedAddress)) return refuse;
-    this.publicOrigins.add(u.origin);
+    if (net.isIP(host) && blockedAddress(host)) return refuse;
     return null;
   }
 
@@ -497,6 +481,12 @@ export class TestSystemsSession {
       if (why) return text(why, true);
     }
     const result = await this.forwardChecked(name, args);
+    // The proxy refused a connection the page needed: say why, so it isn't
+    // read as the app being down.
+    const said = result.content.map((c) => c.text ?? '').join(' ');
+    if (/ERR_TUNNEL_CONNECTION_FAILED/.test(said) || said.includes(REFUSED_MARK)) {
+      result.content.push({ type: 'text', text: 'That address was refused by the browser’s proxy: it is on a private network (or this server), and only the apps’ own environments may be. Open an app with open_system.' });
+    }
     // …and where it ended up (a redirect, a link clicked): a private page
     // isn't shown, and the browser is taken off it.
     const at = pageUrlOf(result);
