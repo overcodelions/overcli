@@ -36,15 +36,13 @@ function fakeBrowser(onCall: (name: string, args: Record<string, unknown>) => To
   return { child, calls };
 }
 
-function session(systems: TestSystem[], browser: BrowserChild, more: { worker?: string; fetch?: typeof fetch; now?: () => number; lookup?: (host: string) => Promise<string[]> } = {}) {
+function session(systems: TestSystem[], browser: BrowserChild, more: { worker?: string; fetch?: typeof fetch; now?: () => number } = {}) {
   return new TestSystemsSession({
     systems: () => systems,
     secret: (n) => SECRETS[n],
     startBrowser: async () => browser,
     tempDir: () => path.join(os.tmpdir(), 'overcli-ts-test'),
     sleep: async () => {},
-    // Every name is public unless a test says otherwise.
-    lookup: async () => ['203.0.113.10'],
     ...more,
   });
 }
@@ -225,12 +223,10 @@ describe('the test-systems tool', () => {
 
 describe('where the browser may go', () => {
   const internal: TestSystem = { ...billing, id: 'admin', name: 'Admin', url: 'http://10.1.2.3:8080', envPattern: 'http://{env}.qa.acme.internal', signIn: { kind: 'none' }, workers: [] };
-  const lookup = async (host: string) => ({ 'docs.acme.dev': ['203.0.113.7'], 'rebind.acme.dev': ['203.0.113.8', '127.0.0.1'], 'meta.acme.dev': ['169.254.169.254'], 'v6.acme.dev': ['::ffff:a9fe:a9fe'] } as Record<string, string[]>)[host] ?? [];
-
-  it('refuses loopback, private, link-local and metadata addresses, and names that resolve to them', async () => {
+  it('refuses loopback, private, link-local and metadata addresses written out, before the browser is asked', async () => {
     const { child, calls } = fakeBrowser((_n, args) => page(String(args.url)));
-    const s = session([internal], child, { lookup });
-    for (const url of ['http://127.0.0.1:9464/metrics', 'http://localhost:3000', 'http://app.localhost', 'http://169.254.169.254/latest/', 'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://[::ffff:a9fe:a9fe]/', 'http://192.168.1.1', 'http://172.20.0.5', 'http://100.100.100.100', 'http://0.0.0.0:8080', 'http://2130706433/', 'http://meta.acme.dev/', 'http://rebind.acme.dev/', 'http://v6.acme.dev/', 'http://nowhere.acme.dev/']) {
+    const s = session([internal], child);
+    for (const url of ['http://127.0.0.1:9464/metrics', 'http://localhost:3000', 'http://app.localhost', 'http://169.254.169.254/latest/', 'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://[::ffff:a9fe:a9fe]/', 'http://192.168.1.1', 'http://172.20.0.5', 'http://100.100.100.100', 'http://0.0.0.0:8080', 'http://2130706433/']) {
       const res = await s.call('browser_navigate', { url });
       expect(res.isError, url).toBe(true);
     }
@@ -242,7 +238,7 @@ describe('where the browser may go', () => {
 
   it('lets the apps’ own environments be private, and the public internet through', async () => {
     const { child, calls } = fakeBrowser((_n, args) => page(String(args.url)));
-    const s = session([internal], child, { lookup });
+    const s = session([internal], child);
     for (const url of ['http://10.1.2.3:8080/users', 'http://bill-7.qa.acme.internal/', 'https://docs.acme.dev/guide', 'about:blank']) expect((await s.call('browser_navigate', { url })).isError, url).toBeUndefined();
     expect(calls.map((c) => c.args.url)).toEqual(['http://10.1.2.3:8080/users', 'http://bill-7.qa.acme.internal/', 'https://docs.acme.dev/guide', 'about:blank']);
     // The same private address on another port isn't the app.
@@ -251,12 +247,26 @@ describe('where the browser may go', () => {
 
   it('takes the browser off a private page it was sent to, and doesn’t show it', async () => {
     const { child, calls } = fakeBrowser((name, args) => (name === 'browser_click' ? page('http://169.254.169.254/latest/meta-data/', 'secret-role-name') : page(String(args.url))));
-    const s = session([internal], child, { lookup });
+    const s = session([internal], child);
     await s.call('browser_navigate', { url: 'https://docs.acme.dev/' });
     const res = await s.call('browser_click', { ref: 'e3' });
     expect(res.isError).toBe(true);
     expect(JSON.stringify(res)).not.toContain('secret-role-name');
     expect(calls.at(-1)).toEqual({ name: 'browser_navigate', args: { url: 'about:blank' } });
+  });
+
+  it('leaves names to the browser’s proxy, and says so when the proxy refused one', async () => {
+    const { child, calls } = fakeBrowser((_n, args) =>
+      String(args.url).includes('meta')
+        ? { content: [{ type: 'text', text: '### Error\nError: page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://meta.acme.dev/' }], isError: true }
+        : page(String(args.url)),
+    );
+    const s = session([internal], child);
+    // No lookup on the way: the proxy judges a name as the browser connects.
+    expect((await s.call('browser_navigate', { url: 'https://docs.acme.dev/' })).isError).toBeUndefined();
+    const res = await s.call('browser_navigate', { url: 'https://meta.acme.dev/' });
+    expect(JSON.stringify(res)).toContain('refused by the browser’s proxy');
+    expect(calls).toHaveLength(2);
   });
 
   it('judges addresses, IPv4 hidden in IPv6 included', () => {

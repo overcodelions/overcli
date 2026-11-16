@@ -1370,6 +1370,9 @@ export async function releaseWorktree(
 /// tree (a sweep overlapping auto-tidy) waits its turn rather than racing.
 const releasing = new Set<string>();
 
+/// git's answer to an unforced remove of a tree with submodules, clean or not.
+const SUBMODULE_REFUSAL = /containing submodules cannot be moved or removed/i;
+
 /// Async sibling of `removeWorktree`. `removeWorktree` shells out via the
 /// blocking `runGit`/`spawnSync`, which freezes the main-process thread for
 /// the whole `git worktree remove --force` — noticeable as a UI beachball on
@@ -1388,10 +1391,20 @@ export async function removeWorktreeAsync(args: {
   /// commits git can't vouch for instead of force-deleting it. Clean up's rule.
   keepUnmerged?: boolean;
 }): Promise<{ ok: boolean; error?: string; warning?: string; branchKept?: boolean }> {
-  const res = await runGitAsync(
+  let res = await runGitAsync(
     ['worktree', 'remove', ...(args.force === false ? [] : ['--force']), args.worktreePath],
     args.projectPath,
   );
+  // git refuses any tree with submodules unless forced, clean or not. Look
+  // again, submodules included, and force only a tree that has nothing in it
+  // to lose; one with changes is kept, as any other would be.
+  if (res.exitCode !== 0 && args.force === false && SUBMODULE_REFUSAL.test(res.stderr + res.stdout)) {
+    const status = await runGitAsync(['status', '--porcelain', '--ignore-submodules=none'], args.worktreePath);
+    if (status.exitCode !== 0 || status.stdout.trim()) {
+      return { ok: false, error: 'kept: it has changes that were not there when you were asked' };
+    }
+    res = await runGitAsync(['worktree', 'remove', '--force', args.worktreePath], args.projectPath);
+  }
   if (res.exitCode !== 0) {
     const error = res.stderr.trim() || res.stdout.trim();
     return { ok: false, error: /modified or untracked/i.test(error) ? 'kept: it has changes that were not there when you were asked' : error };

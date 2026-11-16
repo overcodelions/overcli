@@ -44,7 +44,7 @@ import { WorkerEngine } from '../main/flows/workerEngine';
 import { SchedulerEngine } from '../main/flows/scheduler';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { runHandoffOutputs } from '../shared/flows/worker';
-import type { MainToRendererEvent } from '../shared/types';
+import type { MainToRendererEvent, UUID } from '../shared/types';
 import type { PermissionPolicy } from './args';
 import { permissionTap, type PermissionDecision } from './permissions';
 import type { SlackBridge } from '../main/slack/slackBridge';
@@ -73,7 +73,8 @@ import { loadOrgPolicy, orgDir, fileHandbook, jsonOrgStore } from '../main/org/o
 import { CiWatcher, continueBranchOf, readFailure, type CiWatch } from '../main/org/ciWatch';
 import { continueBranchFor } from '../main/org/continueBranch';
 import { findOpenPullRequest, openPullRequest } from '../main/org/prOpen';
-import { gitHostOf, repliesCallAllowed, repliesFlowId, repliesFlowYaml, repliesPrompt } from '../main/org/prReplies';
+import { gitHostOf, prTargetOf, prTargetsOf, repliesCallAllowed, repliesFlowId, repliesFlowYaml, repliesPrompt } from '../main/org/prReplies';
+import type { PrTarget } from '../shared/flows/orchestration';
 import { PrWatcher, prHostFor, type PrWatchState } from '../main/org/prWatch';
 import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
@@ -386,7 +387,8 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
 
   // A worker's tool scopes, enforced on its runs (toolScope.ts).
   flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine.get(id)?.toolScopes, loadOrgPolicy().policy.toolDefaults));
-  flowRuntime.setCallGuard(repliesCallAllowed);
+  // A replies run's posts, held to the pull requests saved with its batch.
+  flowRuntime.setCallGuard((call) => repliesCallAllowed(call, (id) => prTargetsOf(orchestrator.get(id as UUID))));
   workerEngine.handbook = () => fileHandbook.read();
   flowRuntime.skipsCheckpoints = (id) => workerEngine.get(id)?.caps.skipCheckpoints === true;
   // Judged by the folder the run works in (a team piece runs in the team's
@@ -690,8 +692,6 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       // Still there on origin, and not merged yet: worth building on.
       mayContinueOpenPrs: (workerId) => workerEngine.get(workerId)?.caps.continueOpenPrs === true,
       hasOpenPr: async (repo, branch) => !!(await findOpenPullRequest(repo, branch, { env: (n) => process.env[n] })),
-      // A branch an open pull request merges into (develop, a release): never a fix's home.
-      isPrTarget: (repo, branch) => prWatch.isPrTarget(repo.name, branch),
       open: async (repo, branch) => {
         await serverGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo.path);
         const there = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], repo.path);
@@ -794,7 +794,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         return head?.ok ? { ...l, commit: head.stdout.trim() } : l;
       }),
     );
-    const res = await workerEngine.followUp(workerId, { title: `${flowRunTitle(run)}: reply on the pull request`, prompt: repliesPrompt(run, withCommits), flowId: flow.id, kind: 'replies' });
+    // The pull requests the fixes went to: the only ones its posts may land on.
+    const targets = withCommits.filter((l) => l.updated).map((l) => prTargetOf(l.url)).filter((t): t is PrTarget => !!t);
+    const res = await workerEngine.followUp(workerId, { title: `${flowRunTitle(run)}: reply on the pull request`, prompt: repliesPrompt(run, withCommits), flowId: flow.id, kind: 'replies', prTargets: targets });
     if (!res.ok) log('warn', 'org.repos', `Couldn't start the pull request replies: ${res.error}`);
   };
   const lander = new BranchLander({

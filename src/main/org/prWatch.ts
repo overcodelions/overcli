@@ -100,8 +100,6 @@ export interface PrWatchState {
 interface RepoSeen {
   base?: string;
   prs: Record<string, Seen>;
-  /// The branches the open pull requests merge into, drafts too: never a branch to push a fix onto.
-  targets?: string[];
 }
 
 /// A worker that looks after pull requests, and whose.
@@ -233,14 +231,15 @@ export async function changesIn(
       ...(conflicted === undefined ? { undecided: undecidedKey } : {}),
     };
   }
-  const targets = [...new Set(open.map((p) => p.target || repo.defaultBranch).filter(Boolean))].sort();
-  return { changes, now: { ...(base ? { base } : {}), prs, ...(targets.length ? { targets } : {}) } };
+  return { changes, now: { ...(base ? { base } : {}), prs } };
 }
 
 /// A pull request handed to a worker: what it took of what was gathered is
 /// told, and the wake counts toward the day's. `took`: what that worker takes
 /// up there (wantsOf); what it doesn't stays for a watcher that does.
-export function markTold(entry: { prs: Record<string, Seen> } | undefined, id: string, now: number, took: { fixes: boolean; comments: boolean } = { fixes: true, comments: true }): void {
+/// `countWake`: false when the pull request was already counted this check,
+/// so two watchers woken for it in one check spend one of its day's wakes.
+export function markTold(entry: { prs: Record<string, Seen> } | undefined, id: string, now: number, took: { fixes: boolean; comments: boolean } = { fixes: true, comments: true }, countWake = true): void {
   const seen = entry?.prs[id];
   if (!seen) return;
   if (seen.pending) {
@@ -256,7 +255,7 @@ export function markTold(entry: { prs: Record<string, Seen> } | undefined, id: s
     if (Object.keys(pending).length) seen.pending = pending;
     else delete seen.pending;
   }
-  seen.woken = [...(seen.woken ?? []).filter((t) => now - t < DAY_MS), now];
+  if (countWake) seen.woken = [...(seen.woken ?? []).filter((t) => now - t < DAY_MS), now];
 }
 
 /// Whether a wake's answer says the worker was handed it.
@@ -265,11 +264,6 @@ function delivered(res: unknown): boolean {
   return !(res && typeof res === 'object' && 'ok' in res && (res as { ok: unknown }).ok === false);
 }
 
-/// Whether a branch is one an open pull request in that repo merges into, as
-/// last seen: a shared line (develop, a release) that fixes never go onto.
-export function isPrTarget(state: PrWatchState, repo: string, branch: string): boolean {
-  return state.repos[repo]?.targets?.includes(branch) ?? false;
-}
 
 /// The errand a worker is woken with. Titles and branch names are whatever
 /// whoever opened the pull request wrote, so they go in as data.
@@ -293,11 +287,6 @@ export class PrWatcher {
   private readonly cantCheck = new Map<string, string>();
   constructor(private readonly deps: PrWatchDeps) {}
 
-  /// Whether an open pull request in that repo merges into this branch, as
-  /// last seen (continueBranch.ts refuses to push a fix onto one).
-  isPrTarget(repo: string, branch: string): boolean {
-    return isPrTarget(this.deps.store.load(), repo, branch);
-  }
 
   start(everyMs = 5 * 60_000): void {
     if (this.timer) return;
@@ -346,6 +335,8 @@ export class PrWatcher {
       // What was handed already this poll, per pull request and kind: a
       // watcher woken for a red build leaves the comments for one that fixes them.
       const told = new Set<string>();
+      // Pull requests whose wake was counted this check (markTold countWake).
+      const wokenThisCheck = new Set<string>();
       const kindOf = (x: string) => (/review comment/.test(x) ? 'comments' : 'fixes');
       for (const w of watchers) {
         const mine = changed
@@ -372,7 +363,9 @@ export class PrWatcher {
         if (!woke) continue;
         for (const c of batch) {
           const took = { fixes: c.what.some((x) => kindOf(x) === 'fixes'), comments: c.what.some((x) => kindOf(x) === 'comments') };
-          markTold(state.repos[c.repo], c.pr.id, now, took);
+          const key = `${c.repo}#${c.pr.id}`;
+          markTold(state.repos[c.repo], c.pr.id, now, took, !wokenThisCheck.has(key));
+          wokenThisCheck.add(key);
           if (took.fixes) told.add(`${c.repo}#${c.pr.id}:fixes`);
           if (took.comments) told.add(`${c.repo}#${c.pr.id}:comments`);
         }
@@ -484,9 +477,15 @@ export async function gitConflicted(repo: ConnectedRepo, pr: Pick<OpenPr, 'branc
   const spec = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`;
   const has = async (ref: string) => (await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], repo.path)).code === 0;
   const haveHead = !!pr.head && (await has(pr.head));
-  const specs = [...(haveHead ? [] : [spec(pr.branch)]), ...(fetched?.has(target) ? [] : [spec(target)])];
-  if (specs.length) await git(['fetch', '--quiet', 'origin', ...specs], repo.path);
-  fetched?.add(target);
+  // Each fetched on its own: a branch gone from origin (a fork's, a deleted
+  // one) fails its fetch, and must not take the target's down with it.
+  if (!fetched?.has(target)) {
+    const got = await git(['fetch', '--quiet', 'origin', spec(target)], repo.path);
+    // Only a fetch that worked counts: a failed one is tried again by the
+    // next pull request, rather than leaving the rest on an old target.
+    if (got.code === 0) fetched?.add(target);
+  }
+  if (!haveHead) await git(['fetch', '--quiet', 'origin', spec(pr.branch)], repo.path);
   const head = haveHead || (pr.head && (await has(pr.head))) ? pr.head : `refs/remotes/origin/${pr.branch}`;
   // A branch or target that isn't there can't be test-merged; git's "no" would read as a conflict.
   if (!(await has(head)) || !(await has(`refs/remotes/origin/${target}`))) return undefined;

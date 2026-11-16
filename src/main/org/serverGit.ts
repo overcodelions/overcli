@@ -39,7 +39,13 @@ const NETWORK = new Set(['push', 'fetch', 'clone', 'ls-remote', 'submodule', 'ar
 const NETWORK_REMOTE = new Set(['update', 'prune', 'show']);
 
 let trustedHelpers: () => Array<[string, string]> = () => [];
-let trustedRemotes: () => string[] = () => [];
+/// A connected repo: where the server cloned it, and the address it cloned from.
+export interface TrustedRemote {
+  path: string;
+  url: string;
+}
+
+let trustedRemotes: () => TrustedRemote[] = () => [];
 
 /// The credential helpers the server gives git, as `[key, value]` config
 /// pairs: one per connected repo's host (repos.ts credentialHelper).
@@ -47,11 +53,12 @@ export function useTrustedGitCredentials(fn: () => Array<[string, string]>): voi
   trustedHelpers = fn;
 }
 
-/// The remote addresses the server cloned from: each connected repo's url,
-/// from the server's record. A repo's `remote.<name>.url` is let through only
-/// when it is one of these; anything else would send the server's
-/// authenticated push (and the org's code) somewhere a worker chose.
-export function useTrustedGitRemotes(fn: () => string[]): void {
+/// The connected repos, each with the address the server cloned it from. A
+/// repo's `remote.<name>.url` is let through only when it is that repo's own
+/// address (for a worktree, the repo it was made from). Anything else, even
+/// another connected repo's, would send the server's authenticated push
+/// (and this repo's code) somewhere a worker chose.
+export function useTrustedGitRemotes(fn: () => TrustedRemote[]): void {
   trustedRemotes = fn;
 }
 
@@ -174,9 +181,10 @@ export function scopedEntries(out: string): Array<{ scope: string; key: string; 
 /// The steering keys set in the repo at `dir`: its .git/config and its
 /// worktree config, includes followed. A key the server itself writes, with
 /// exactly the value it writes (a connected repo's credential helper,
-/// repos.ts), is not one; nor is a remote at a connected repo's address. Fails closed: config that can't be read is
-/// refused. Not a repo at all: nothing.
-export function unsafeRepoConfig(dir: string, trusted: Array<[string, string]> = trustedHelpers(), env: NodeJS.ProcessEnv = process.env, remotes: readonly string[] = trustedRemotes()): string[] {
+/// repos.ts), is not one; nor is a remote at the address the server cloned
+/// this repo from. Fails closed: config that can't be read is refused. Not a
+/// repo at all: nothing.
+export function unsafeRepoConfig(dir: string, trusted: Array<[string, string]> = trustedHelpers(), env: NodeJS.ProcessEnv = process.env, remotes: readonly TrustedRemote[] = trustedRemotes()): string[] {
   // Read with the server's git rules (no shared or system config, nothing
   // from the caller's own -c), and past the ownership guard: a tree a worker
   // made would otherwise be skipped silently, and read as empty.
@@ -198,16 +206,47 @@ export function unsafeRepoConfig(dir: string, trusted: Array<[string, string]> =
     return [UNREADABLE_CONFIG];
   }
   const ok = new Set(trusted.map(([k, v]) => `${k.toLowerCase()}\n${v}`));
-  const known = new Set(remotes);
+  // This repo's own address, looked up once and only when a remote names one.
+  let own: string | null | undefined;
+  const ownUrl = () => (own === undefined ? (own = ownRemoteUrl(dir, remotes, clean)) : own);
   const keys = new Set<string>();
   for (const e of scopedEntries(out)) {
     if (e.scope !== 'local' && e.scope !== 'worktree') continue;
     if (!STEERING_KEYS.test(e.key)) continue;
     if (ok.has(`${e.key.toLowerCase()}\n${e.value}`)) continue;
-    if (REMOTE_URL.test(e.key) && known.has(e.value)) continue;
+    if (REMOTE_URL.test(e.key) && e.value === ownUrl()) continue;
     keys.add(e.key);
   }
   return [...keys];
+}
+
+/// The address the server cloned the repo at `dir` from: the connected repo
+/// whose .git it shares (itself, or the repo a worktree was made from).
+/// Null for a repo the server didn't connect, or one git can't place.
+function ownRemoteUrl(dir: string, remotes: readonly TrustedRemote[], env: NodeJS.ProcessEnv): string | null {
+  if (!remotes.length) return null;
+  let common: string;
+  try {
+    const out = execFileSync('git', ['-c', 'safe.directory=*', 'rev-parse', '--git-common-dir'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5_000,
+      env: { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    }).trim();
+    common = realPath(path.resolve(dir, out));
+  } catch {
+    return null;
+  }
+  return remotes.find((r) => realPath(path.join(r.path, '.git')) === common)?.url ?? null;
+}
+
+function realPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
 }
 
 /// How the server should start `git …args` in `cwd`, or null to start it as

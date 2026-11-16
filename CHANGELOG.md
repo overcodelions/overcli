@@ -8,7 +8,9 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **The server now limits how much runs at once.** Answers are capped by memory (two per GiB above 2 GiB, between 4 and 64) and code runs in their own checkout at one per CPU, on top of each worker's own limits. Work over a limit waits its turn, oldest first, and nothing fails. Change them on Setup → Capacity, or fix one from the environment with `OVERCLI_ANSWERS_AT_ONCE` / `OVERCLI_CODE_RUNS_AT_ONCE` (`0` for no limit). A busy server that ran everything at once before may now queue work.
 - **`/api/directory` is open to anyone signed in,** so the console can show people as names. Only admins see email addresses in it.
 - **The server only pushes and fetches at the addresses it connected.** With `OVERCLI_WORKER_UID` set, a repo whose `remote.<name>.url` isn't a connected repo's address, or that sets a `pushurl`, has its network git commands refused. A worker that cloned a repo of its own can no longer fetch or push it with the server's credentials; connect the repo on Setup → Repos instead.
-- **The Docker image vendors Playwright MCP from a lockfile** (`deploy/playwright-mcp`), and its Chromium comes from that copy. The `PLAYWRIGHT_VERSION` build setting is gone and is ignored if passed. `OVERCLI_PLAYWRIGHT_MCP` now takes only an absolute path to a `.js` file, never a package name.
+- **`OVERCLI_PROTECTED_BRANCHES`** (comma-separated names, `*` wildcards) adds branches a worker on the team's pull requests may never continue, on top of the built-in shared lines.
+- **The desktop app installs Playwright MCP from the same lockfile** on first use, into `~/.overcli/playwright-mcp`, instead of `npx -y`. It needs `npm` on the PATH, as `npx` did.
+- **The Docker image vendors Playwright MCP from a lockfile** (`deploy/playwright-mcp`), and its Chromium comes from that copy. The `PLAYWRIGHT_VERSION` build setting is gone and is ignored if passed. `OVERCLI_PLAYWRIGHT_MCP` now takes only an absolute path to a `.js` file, never a package name, and in the image the vendored copy wins over it: set there, it's ignored.
 
 ### Added
 - **Workers can look after the team's open pull requests.** An admin turns on **continueOpenPrs** for a worker, optionally narrowed to some authors (`prAuthors`), with review comments handled only for some (`prCommentAuthors`). The server checks open pull requests every few minutes, with no model in the loop, and wakes the worker when one settles with a red build, a merge conflict or new review comments. Wakes are capped at three a day per pull request, and review comments at three rounds per pull request for as long as it's open. The run gets why the build failed, starts the merge of the default branch when the pull request no longer merges, and a small replies run posts under each fixed comment naming the commit. The lander refuses to push a change that still has conflict markers.
@@ -39,12 +41,12 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - The catalog's Bitbucket MCP package is pinned to `@3.1.0`.
 
 ### Security
-- **A worker on the team's pull requests can't push onto a shared line.** `[continue-branch]` refuses the default branch, `main`, `master`, `develop`, `release/*`, `hotfix/*` and similar, and any branch an open pull request merges into.
-- **The pull-request replies step can only read and post comments.** It no longer gets the whole git-host tool, so it can't approve, merge or decline, and pull-request titles, comments and the ask reach it marked as untrusted text. With Bitbucket's generic `bb_post` call, each call is checked: it's let through only to a pull request's comments, and anything else waits for a person.
-- **A repo's config can't redirect the server's push.** `remote.*.url` and `remote.*.pushurl` are checked like the other steering keys.
-- **The test-systems browser stays off private addresses.** It refuses loopback, private, link-local and metadata addresses, and anything not http(s), except the apps to test's own environments, and checks again wherever a page ends up.
+- **A worker on the team's pull requests can't push onto a shared line.** `[continue-branch]` refuses the default branch, `main`, `master`, `develop`, `release/*`, `hotfix/*`, versioned lines like `release-1.4` and `hotfix-1.2.1`, and anything in `OVERCLI_PROTECTED_BRANCHES`. A stacked branch with its own open pull request can still be continued.
+- **The pull-request replies step can only read and post comments.** It no longer gets the whole git-host tool, so it can't approve, merge or decline, and pull-request titles, comments and the ask reach it marked as untrusted text. Each write is held to the pull request its fixes went to, saved with the run before it starts: Bitbucket's generic `bb_post` only to that pull request's comments, and named comment tools only with that repo and number. Anything else waits for a person.
+- **A repo's config can't redirect the server's push.** `remote.*.url` and `remote.*.pushurl` are checked like the other steering keys, and a remote is trusted only at that repo's own recorded address, not another connected repo's.
+- **The test-systems browser stays off private addresses.** Every request it makes, frames and page fetches included, goes through a proxy in the server that resolves the name itself, refuses loopback, private, link-local and metadata addresses, and connects to the address it checked, so DNS rebinding can't get past it. An app to test's own hosts and environments may be private; link-local never is.
 - **Untrusted text can't close its own wrapper** with spaces, look-alike brackets, full-width letters or invisible characters, and a handed-back answer is wrapped again after it's unescaped.
-- **`/api/directory` shows email addresses to admins only.**
+- **`/api/directory` shows email addresses to admins only,** including people known only by an email, whose name and id are masked for everyone else.
 - **Playwright MCP is installed from a lockfile in the image,** so nothing under it is resolved from the registry at run time.
 
 ### Fixed
@@ -55,12 +57,13 @@ All notable changes to Overcli are documented here. The format is based on [Keep
   - A pull request toggled to draft, or missing from one listing, keeps its comment-round count. A Bitbucket listing with a page that can't be read fails as a whole.
   - With two watchers on a pull request, each clears and counts only the news it took.
   - GitHub listings follow every page, so repos with more than 100 open pull requests, or pull requests with more than 100 comments, are fully watched.
-  - Each target branch is fetched once per check, and a conflict git couldn't decide isn't tried again until a commit moves.
+  - Each target branch is fetched once per check, and only counts as fetched when the fetch worked, and a conflict git couldn't decide isn't tried again until a commit moves.
+  - Two watchers woken for one pull request in the same check use one of its daily wakes, not two.
 - **Setup → Capacity no longer says "needs a bigger box" because of file cache.** Reclaimable page cache is left out of a container's memory use.
 - **A conversation title starting with "Keep"** ("Keep-alive timeout…") is used, not taken as an instruction to keep the old one.
 - **A note from someone who doesn't decide a process stage** is recorded as a note instead of being refused and lost.
 - **Auto-tidy and Clean up:**
-  - An orphaned worktree that gained changes after the scan is kept, not force-removed.
+  - An orphaned worktree that gained changes after the scan is kept, not force-removed. One with submodules is still removed when it's clean.
   - A deliberate keep no longer marks the conversation orphaned.
   - A branch that couldn't be deleted keeps its name on the conversation.
   - A turn can't start in a worktree while it's being removed.

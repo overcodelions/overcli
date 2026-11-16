@@ -39,20 +39,29 @@ export interface ContinueBranchDeps {
   mayContinueOpenPrs?(workerId: string): boolean;
   /// Whether the branch has an open pull request in that repo, asked of its host.
   hasOpenPr?(repo: ConnectedRepo, branch: string): Promise<boolean>;
-  /// Whether an open pull request in that repo merges INTO the branch (the
-  /// PR watcher's last look): a shared line like develop, never a fix's home.
-  isPrTarget?(repo: ConnectedRepo, branch: string): boolean | Promise<boolean>;
 }
 
 /// Shared lines by name: a repo's main lines, and git-flow's release, hotfix
-/// and support branches. Work is never pushed straight onto one, whatever
-/// pull request it has open (a standing develop → main one, say).
-const SHARED_LINE = /^(?:main|master|trunk|develop|development|dev|staging|stage|production|prod|qa|uat|integration|(?:release|releases|hotfix|hotfixes|support)\/.+)$/i;
+/// and support branches, as `release/1.4` or `release-1.4` (`_`, `.` too, with
+/// a version after it: `release-notes` is a feature). Work is never pushed
+/// straight onto one, whatever pull request it has open (a standing
+/// develop → main one, say).
+const SHARED_LINE = /^(?:main|master|trunk|develop|development|dev|next|staging|stage|production|prod|qa|uat|integration|(?:release|releases|hotfix|hotfixes|support)(?:\/.+|[-_.]v?\d.*))$/i;
+
+/// An org's own shared lines, beyond the names above: OVERCLI_PROTECTED_BRANCHES,
+/// comma-separated, `*` for any run of characters (`stable`, `env-*`, `rc/*`).
+export function protectedBranchPatterns(env: NodeJS.ProcessEnv = process.env): RegExp[] {
+  return (env.OVERCLI_PROTECTED_BRANCHES ?? '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => new RegExp(`^${p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`, 'i'));
+}
 
 /// Whether a branch is one a worker's fixes must never be pushed onto in that repo.
-export function isSharedLine(repo: Pick<ConnectedRepo, 'defaultBranch'>, branch: string): boolean {
+export function isSharedLine(repo: Pick<ConnectedRepo, 'defaultBranch'>, branch: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const b = branch.trim().replace(/^refs\/heads\//, '');
-  return !b || b === repo.defaultBranch || SHARED_LINE.test(b);
+  return !b || b === repo.defaultBranch || SHARED_LINE.test(b) || protectedBranchPatterns(env).some((p) => p.test(b));
 }
 
 /// The branch to start on, or null to start fresh. In a workspace, each repo
@@ -99,11 +108,12 @@ export async function continueBranchFor(
   if (marked && (deps.fixAskedOn(args.workerId, marked, names) || pushedBy(ownRuns).some((p) => p.branch === marked))) return firstOpen([marked]);
   // A worker that looks after the team's pull requests may name anyone's,
   // but only a branch its host says has one open here: never a branch a
-  // prompt merely mentions, nor one another open pull request merges into.
+  // prompt merely mentions. A branch other pull requests merge into is fine
+  // when it has one of its own: a stack (feature-b onto feature-a) is still
+  // feature work. Shared lines are refused by name above, and an org adds
+  // its own (OVERCLI_PROTECTED_BRANCHES).
   if (marked && deps.mayContinueOpenPrs?.(args.workerId) && deps.hasOpenPr) {
     const hasPr = deps.hasOpenPr;
-    const target = await Promise.all(repos.map(async (r) => !!(await deps.isPrTarget?.(r, marked))));
-    if (target.some(Boolean)) return null;
     const withPr = await Promise.all(repos.map(async (r) => (await deps.open(r, marked)) && (await hasPr(r, marked))));
     if (withPr.some(Boolean)) return marked;
   }

@@ -82,6 +82,16 @@
       "!**/node_modules/@smithy/**",
       "!**/node_modules/@aws-crypto/**"
     ],
+    "extraResources": [
+      {
+        "from": "deploy/playwright-mcp",
+        "to": "playwright-mcp",
+        "filter": [
+          "package.json",
+          "package-lock.json"
+        ]
+      }
+    ],
     "extraMetadata": {
       "main": "dist/main/index.js"
     },

@@ -6,6 +6,7 @@
 // worker does it in a small run of its own, with its own git host tool, the
 // way the ticket gets its comment (ticketFollowUp.ts).
 
+import type { Orchestration, PrTarget } from '../../shared/flows/orchestration';
 import type { FlowRun } from '../../shared/flows/schema';
 import { flowRunTitle } from '../../shared/flows/schema';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
@@ -79,23 +80,67 @@ export function replyTools(server: string, known: readonly string[]): string[] {
 const GENERIC_POST = /^bb_post$/;
 /// Where a reply goes: a pull request's comments, and nowhere else. Approve,
 /// merge, decline and request-changes are POSTs too, to other paths.
-const COMMENTS_PATH = /^\/(?:2\.0\/)?repositories\/[^/?#\s]+\/[^/?#\s]+\/pullrequests\/\d+\/comments\/?$/;
+const COMMENTS_PATH = /^\/(?:2\.0\/)?repositories\/([^/?#\s]+)\/([^/?#\s]+)\/pullrequests\/(\d+)\/comments\/?$/;
 
-/// The runtime's call guard (setCallGuard) for the replies step: a generic
-/// POST is let through ahead only to a pull request's comments. `false`
-/// sends it to a person; any other call, or any other step, is left to the
-/// step's grant.
-export function repliesCallAllowed(call: { stepId: string; tool: string; input: string }): boolean | undefined {
+/// A pull request's link, as the lander records it: Bitbucket's
+/// `/<workspace>/<repo>/pull-requests/<n>` or GitHub's `/<owner>/<repo>/pull/<n>`.
+export function prTargetOf(url: string | undefined): PrTarget | null {
+  const m = /^https:\/\/(?:www\.)?(?:bitbucket\.org|github\.com)\/([^/\s]+)\/([^/\s]+)\/(?:pull-requests|pull)\/(\d+)(?:[/?#]|$)/i.exec(url ?? '');
+  return m ? { owner: m[1], repo: m[2], number: Number(m[3]) } : null;
+}
+
+/// The pull requests a replies batch may post on, as saved with it
+/// (workerEngine.followUp). Nothing for any other batch.
+export function prTargetsOf(o: Pick<Orchestration, 'origin'> | null | undefined): PrTarget[] | undefined {
+  const origin = o?.origin;
+  return origin?.kind === 'worker' && origin.followUp === 'replies' ? origin.prTargets : undefined;
+}
+
+const same = (a: string, b: unknown) => typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+const num = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : NaN);
+const pick = (o: Record<string, unknown>, keys: string[]) => keys.map((k) => o[k]).find((v) => v !== undefined);
+
+/// Whether a named comment call (GitHub's `add_issue_comment`, Bitbucket's
+/// `addPullRequestComment`) names one of these pull requests by its arguments.
+function namesTarget(args: Record<string, unknown>, targets: PrTarget[]): boolean {
+  const owner = pick(args, ['owner', 'workspace', 'workspaceSlug', 'workspace_slug']);
+  const repo = pick(args, ['repo', 'repo_slug', 'repoSlug', 'repository']);
+  const n = num(pick(args, ['pull_number', 'pullNumber', 'issue_number', 'issueNumber', 'pull_request_id', 'pullRequestId', 'prId', 'pr_id']));
+  return targets.some((t) => same(t.owner, owner) && same(t.repo, repo) && t.number === n);
+}
+
+/// The runtime's call guard (setCallGuard) for the replies step. A call that
+/// only reads is left to the grant. Anything else the step lists (a comment
+/// or reply, or the host's generic POST) is let through ahead only onto the
+/// pull requests saved with its batch, and a generic POST only to their
+/// comments: not another pull request, not another repo, and not approve or
+/// merge. `false` sends it to a person; any other step is left to its grant.
+/// `targetsOf`: a batch's saved pull requests by its id (prTargetsOf of the
+/// orchestrator's batch), so it holds across a restart.
+export function repliesCallAllowed(
+  call: { stepId: string; tool: string; input: string; run?: { parentOrchestrationId?: string } },
+  targetsOf: (orchestrationId: string) => PrTarget[] | undefined,
+): boolean | undefined {
   if (call.stepId !== REPLIES_STEP) return undefined;
   const parsed = parseMcpToolName(call.tool);
-  if (!parsed || !GENERIC_POST.test(parsed.tool)) return undefined;
-  let path: unknown;
+  if (!parsed || isReadOnlyMcpTool(call.tool)) return undefined;
+  const targets = call.run?.parentOrchestrationId ? targetsOf(call.run.parentOrchestrationId) : undefined;
+  if (!targets?.length) return false;
+  let args: Record<string, unknown>;
   try {
-    path = (JSON.parse(call.input || '{}') as { path?: unknown }).path;
+    const v = JSON.parse(call.input || '{}') as unknown;
+    if (!v || typeof v !== 'object') return false;
+    args = v as Record<string, unknown>;
   } catch {
     return false;
   }
-  return typeof path === 'string' && !path.includes('..') && COMMENTS_PATH.test(path);
+  if (GENERIC_POST.test(parsed.tool)) {
+    const path = args.path;
+    if (typeof path !== 'string' || path.includes('..')) return false;
+    const m = COMMENTS_PATH.exec(path);
+    return !!m && targets.some((t) => same(t.owner, m[1]) && same(t.repo, m[2]) && t.number === Number(m[3]));
+  }
+  return namesTarget(args, targets);
 }
 
 function seenTools(): string[] {

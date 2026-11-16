@@ -100,7 +100,7 @@ describe("the server's git while workers run as their own user", () => {
       const helper = '!f() { test "$1" = get && echo "username=${ACME_USER:-x-token-auth}" && echo "password=$ACME_TOKEN"; }; f';
       git('config', 'credential.https://bitbucket.org.helper', helper);
       const trusted: Array<[string, string]> = [['credential.https://bitbucket.org.helper', helper]];
-      const remotes = ['https://bitbucket.org/acme/web.git'];
+      const remotes = [{ path: dir, url: 'https://bitbucket.org/acme/web.git' }];
       // What every connected https repo looks like: nothing to refuse.
       expect(unsafeRepoConfig(dir, trusted, process.env, remotes)).toEqual([]);
       // The same key with another value is a worker's helper, not the server's.
@@ -120,14 +120,22 @@ describe("the server's git while workers run as their own user", () => {
 
   it("refuses a remote a worker pointed away from the address the server connected", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-steer-remote-'));
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-steer-other-'));
     try {
       const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' });
       git('init', '-q');
+      execFileSync('git', ['init', '-q'], { cwd: other });
       git('remote', 'add', 'origin', 'https://github.com/acme/web.git');
-      const remotes = ['https://github.com/acme/web.git', 'https://github.com/acme/api.git'];
+      const remotes = [
+        { path: dir, url: 'https://github.com/acme/web.git' },
+        { path: other, url: 'https://github.com/acme/api.git' },
+      ];
       expect(unsafeRepoConfig(dir, [], process.env, remotes)).toEqual([]);
       // The same host, someone else's repo: the server's token would push the org's code there.
       git('remote', 'set-url', 'origin', 'https://github.com/mallory/web.git');
+      expect(unsafeRepoConfig(dir, [], process.env, remotes)).toEqual(['remote.origin.url']);
+      // Another connected repo's address: this repo's work would land in that one.
+      git('remote', 'set-url', 'origin', 'https://github.com/acme/api.git');
       expect(unsafeRepoConfig(dir, [], process.env, remotes)).toEqual(['remote.origin.url']);
       // Nothing connected at all: every remote is unknown.
       git('remote', 'set-url', 'origin', 'https://github.com/acme/web.git');
@@ -142,6 +150,26 @@ describe("the server's git while workers run as their own user", () => {
       expect(unsafeRepoConfig(dir, [], process.env, remotes).sort()).toEqual(['remote.mirror.url', 'url.https://evil.example/.pushinsteadof']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('trusts a worktree made from a connected repo at that repo’s address', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-steer-wt-'));
+    const tree = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-steer-wt-parent-')), 'tree');
+    try {
+      const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' });
+      git('init', '-q', '-b', 'main');
+      git('-c', 'user.email=a@acme.test', '-c', 'user.name=acme', 'commit', '-q', '--allow-empty', '-m', 'first');
+      git('remote', 'add', 'origin', 'https://github.com/acme/web.git');
+      git('worktree', 'add', '-q', '-b', 'feature/x', tree);
+      const remotes = [{ path: dir, url: 'https://github.com/acme/web.git' }];
+      expect(unsafeRepoConfig(tree, [], process.env, remotes)).toEqual([]);
+      // Another repo's record doesn't vouch for it.
+      expect(unsafeRepoConfig(tree, [], process.env, [{ path: '/elsewhere', url: 'https://github.com/acme/web.git' }])).toEqual(['remote.origin.url']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(path.dirname(tree), { recursive: true, force: true });
     }
   });
 
@@ -151,7 +179,7 @@ describe("the server's git while workers run as their own user", () => {
       execFileSync('git', ['init', '-q'], { cwd: dir });
       execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/web.git'], { cwd: dir });
       expect(unsafeRepoConfig(dir, [])).toEqual(['remote.origin.url']);
-      useTrustedGitRemotes(() => ['https://github.com/acme/web.git']);
+      useTrustedGitRemotes(() => [{ path: dir, url: 'https://github.com/acme/web.git' }]);
       expect(unsafeRepoConfig(dir, [])).toEqual([]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

@@ -48,6 +48,41 @@ describe('sweepWorktrees and changes made after the scan', () => {
     expect(existsSync(wt)).toBe(false);
   });
 
+  describe('with a submodule, which git won\u2019t remove unforced', () => {
+    const ID = ['-c', 'user.name=A', '-c', 'user.email=a@acme.example', '-c', 'protocol.file.allow=always'];
+    const withSubmodule = (name: string) => {
+      const lib = join(root, 'lib');
+      mkdirSync(lib);
+      git(lib, 'init', '-q', '-b', 'main');
+      writeFileSync(join(lib, 'lib.txt'), 'shared');
+      git(lib, 'add', '.');
+      git(lib, ...ID, 'commit', '-q', '-m', 'lib');
+      git(projectPath, ...ID, 'submodule', 'add', '-q', lib, 'vendor/lib');
+      git(projectPath, ...ID, 'commit', '-q', '-m', 'add lib');
+      const wt = tree(name);
+      git(wt, ...ID, 'submodule', 'update', '-q', '--init');
+      return wt;
+    };
+
+    it('removes a clean tree after looking again', async () => {
+      const wt = withSubmodule('sub-clean');
+      expect(existsSync(join(wt, 'vendor/lib/lib.txt'))).toBe(true);
+      const res = await sweepWorktrees({ entries: [{ projectPath, worktreePath: wt, branchName: 'agent/sub-clean', dirtyAtScan: 0 }] });
+      expect(res.failures).toEqual([]);
+      expect(res.removed).toBe(1);
+      expect(existsSync(wt)).toBe(false);
+    });
+
+    it('keeps one whose submodule gained changes after the scan', async () => {
+      const wt = withSubmodule('sub-dirty');
+      writeFileSync(join(wt, 'vendor/lib/lib.txt'), 'changed inside the submodule');
+      const res = await sweepWorktrees({ entries: [{ projectPath, worktreePath: wt, branchName: 'agent/sub-dirty', dirtyAtScan: 0 }] });
+      expect(res.removed).toBe(0);
+      expect(res.failures).toEqual([{ worktreePath: wt, error: 'kept: it has changes that were not there when you were asked' }]);
+      expect(existsSync(join(wt, 'vendor/lib/lib.txt'))).toBe(true);
+    });
+  });
+
   it('removes a clean orphan', async () => {
     const wt = tree('clean');
     const res = await sweepWorktrees({ entries: [{ projectPath, worktreePath: wt, branchName: 'agent/clean' }] });

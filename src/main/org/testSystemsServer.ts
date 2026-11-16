@@ -5,6 +5,8 @@
 // (OVERCLI_WORKER, overdbBinding.ts). It serves MCP on stdio and starts a
 // Playwright MCP server behind it; testSystemsSession.ts does the work.
 
+import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,13 +20,14 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { TEST_SYSTEMS_VERSION, type TestSystem, type TestSystemsFile } from '../../shared/testSystems';
 import { NO_BROWSER, TestSystemsSession, browserMissing, resultValue, type BrowserChild, type ToolResult } from './testSystemsSession';
 import { HEALTH_PATHS, discoverScript, planFromScan, type Discovered, type ScreenScan } from './testSystemsDiscover';
+import { startBrowserProxy } from './browserProxy';
 
 /// The Playwright MCP the tool drives, pinned: the tools it passes through,
 /// and the ones it keeps for signing in, are by name. The server image
-/// vendors exactly this version with a lockfile (deploy/playwright-mcp), so
-/// nothing is resolved from the registry when a run starts; elsewhere (the
-/// desktop app, a development checkout) it comes from npx at this exact
-/// version. Change it there too.
+/// vendors exactly this version with a lockfile (deploy/playwright-mcp);
+/// elsewhere (the desktop app, a development checkout) the same lockfile is
+/// installed with `npm ci` on first use (lockedPlaywright). Either way nothing
+/// under it is resolved from the registry by version range. Change it there too.
 export const PLAYWRIGHT_MCP = '@playwright/mcp@0.0.84';
 
 /// Where the image puts the vendored Playwright MCP (deploy/Dockerfile).
@@ -38,7 +41,9 @@ export const PLAYWRIGHT_FOR_MCP = '1.65.0-alpha-2026-10-30';
 /// Chrome, which a server seldom has), an in-memory profile per run, with
 /// the storage tools (for loading a session) and the test assertions on.
 /// Chromium's sandbox needs privileges a container's user lacks on Linux.
-export function playwrightArgs(outputDir: string, platform: NodeJS.Platform = process.platform): string[] {
+/// With `proxy`, every request goes through it (browserProxy.ts), loopback
+/// too: Chromium skips a proxy for localhost unless told `<-loopback>`.
+export function playwrightArgs(outputDir: string, platform: NodeJS.Platform = process.platform, proxy?: string): string[] {
   return [
     '--headless',
     '--browser',
@@ -48,43 +53,121 @@ export function playwrightArgs(outputDir: string, platform: NodeJS.Platform = pr
     '--caps=storage,testing',
     '--output-dir',
     outputDir,
+    ...(proxy ? ['--proxy-server', proxy, '--proxy-bypass', '<-loopback>'] : []),
   ];
 }
 
+/// Where the lockfile is: deploy/playwright-mcp in a checkout, or the copy a
+/// packaged app carries in its resources (package.json build.extraResources).
+export function lockfileDirs(here: string = __dirname): string[] {
+  const resources = (process as { resourcesPath?: string }).resourcesPath;
+  return [
+    path.resolve(here, '..', '..', '..', 'deploy', 'playwright-mcp'),
+    // dist/main/org inside app.asar (or app.asar.unpacked): Resources is four up.
+    path.resolve(here, '..', '..', '..', '..', 'playwright-mcp'),
+    ...(resources ? [path.join(resources, 'playwright-mcp')] : []),
+  ];
+}
+
+/// Playwright MCP installed from the lockfile, outside the image: once per
+/// lockfile, into ~/.overcli/playwright-mcp/<its hash>, with `npm ci` (exact
+/// versions, integrity checked, no install scripts). The cli.js to run, or
+/// null when there is no lockfile to install from.
+export async function lockedPlaywright(
+  opts: { dirs?: string[]; home?: string; ci?: (dir: string) => Promise<void> } = {},
+): Promise<string | null> {
+  const src = (opts.dirs ?? lockfileDirs()).find((d) => fs.existsSync(path.join(d, 'package-lock.json')) && fs.existsSync(path.join(d, 'package.json')));
+  if (!src) return null;
+  const lock = fs.readFileSync(path.join(src, 'package-lock.json'));
+  const hash = crypto.createHash('sha256').update(lock).digest('hex').slice(0, 16);
+  const root = path.join(opts.home ?? os.homedir(), '.overcli', 'playwright-mcp');
+  const dest = path.join(root, hash);
+  const cli = path.join(dest, 'node_modules', '@playwright', 'mcp', 'cli.js');
+  if (fs.existsSync(cli)) return cli;
+  fs.mkdirSync(root, { recursive: true });
+  // Installed beside it and moved in whole, so a second session starting at
+  // the same moment never runs a half-installed copy.
+  const work = fs.mkdtempSync(path.join(root, `${hash}-`));
+  try {
+    fs.copyFileSync(path.join(src, 'package.json'), path.join(work, 'package.json'));
+    fs.writeFileSync(path.join(work, 'package-lock.json'), lock);
+    await (opts.ci ?? npmCi)(work);
+    try {
+      fs.renameSync(work, dest);
+    } catch {
+      // Another session got there first: use its copy.
+    }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+  if (!fs.existsSync(cli)) throw new Error(`Playwright MCP didn’t install from its lockfile (${src}).`);
+  return cli;
+}
+
+function npmCi(dir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: dir, timeout: 300_000, maxBuffer: 8 * 1024 * 1024 }, (err, _out, stderr) =>
+      err ? reject(new Error(`npm ci failed: ${String(stderr || err.message).slice(0, 400)}`)) : resolve(),
+    );
+  });
+}
+
 /// What starts Playwright MCP: the vendored copy when there is one, run by
-/// this node; otherwise npx at the pinned version. $OVERCLI_PLAYWRIGHT_MCP
-/// may name a local copy's cli.js instead (an absolute path that exists),
-/// for trying another version by hand. It is never a package spec, and the
-/// vendored copy wins over it, so nothing in a server's environment can make
-/// it fetch and run some other package.
+/// this node; otherwise the copy installed from the lockfile (`locked`).
+/// $OVERCLI_PLAYWRIGHT_MCP may name a local copy's cli.js instead (an
+/// absolute path that exists), for trying another version by hand outside
+/// the image. It is never a package spec, and the vendored copy wins over
+/// it, so nothing in a server's environment can make it fetch and run some
+/// other package. npx at the pinned version is only for a checkout with no
+/// lockfile at all.
 export function playwrightCommand(
   outputDir: string,
-  opts: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; exists?: (file: string) => boolean; node?: string } = {},
+  opts: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; exists?: (file: string) => boolean; node?: string; proxy?: string; locked?: string | null } = {},
 ): { command: string; args: string[] } {
   const exists = opts.exists ?? ((f: string) => fs.existsSync(f));
   const node = opts.node ?? process.execPath;
-  const flags = playwrightArgs(outputDir, opts.platform);
+  const flags = playwrightArgs(outputDir, opts.platform, opts.proxy);
   if (exists(VENDORED_PLAYWRIGHT_MCP)) return { command: node, args: [VENDORED_PLAYWRIGHT_MCP, ...flags] };
-  const local = (opts.env ?? process.env).OVERCLI_PLAYWRIGHT_MCP?.trim();
-  if (local && path.isAbsolute(local) && /\.(?:c|m)?js$/.test(local) && exists(local)) return { command: node, args: [local, ...flags] };
+  const local = localOverride(opts.env ?? process.env, exists);
+  if (local) return { command: node, args: [local, ...flags] };
+  if (opts.locked) return { command: node, args: [opts.locked, ...flags] };
   return { command: 'npx', args: ['-y', PLAYWRIGHT_MCP, ...flags] };
 }
 
-/// Start Playwright MCP, as `playwrightCommand` says.
-export async function startPlaywright(outputDir: string): Promise<BrowserChild> {
+/// $OVERCLI_PLAYWRIGHT_MCP when it names a local cli.js that exists.
+function localOverride(env: NodeJS.ProcessEnv, exists: (file: string) => boolean): string | null {
+  const local = env.OVERCLI_PLAYWRIGHT_MCP?.trim();
+  return local && path.isAbsolute(local) && /\.(?:c|m)?js$/.test(local) && exists(local) ? local : null;
+}
+
+/// Start Playwright MCP, as `playwrightCommand` says, behind its own proxy
+/// (browserProxy.ts): the apps in `systems` may be private, nothing else.
+export async function startPlaywright(outputDir: string, systems: () => TestSystem[], alsoAllowed: string[] = []): Promise<BrowserChild> {
   const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === 'string' && !e[0].startsWith('OVERCLI_TS_')));
-  const transport = new StdioClientTransport({
-    ...playwrightCommand(outputDir),
-    env,
-    stderr: 'ignore',
-  });
-  const client = new Client({ name: 'overcli-test-systems', version: '1' });
-  await client.connect(transport);
-  return {
-    listTools: async () => (await client.listTools()).tools.map((t) => ({ name: t.name, ...(t.description ? { description: t.description } : {}), inputSchema: t.inputSchema as Record<string, unknown> })),
-    callTool: async (name, args) => (await client.callTool({ name, arguments: args })) as ToolResult,
-    close: () => client.close(),
-  };
+  const exists = (f: string) => fs.existsSync(f);
+  const needsLocked = !exists(VENDORED_PLAYWRIGHT_MCP) && !localOverride(process.env, exists);
+  const locked = needsLocked ? await lockedPlaywright() : null;
+  const proxy = await startBrowserProxy({ systems, alsoAllowed });
+  try {
+    const transport = new StdioClientTransport({
+      ...playwrightCommand(outputDir, { proxy: proxy.url, locked }),
+      env,
+      stderr: 'ignore',
+    });
+    const client = new Client({ name: 'overcli-test-systems', version: '1' });
+    await client.connect(transport);
+    return {
+      listTools: async () => (await client.listTools()).tools.map((t) => ({ name: t.name, ...(t.description ? { description: t.description } : {}), inputSchema: t.inputSchema as Record<string, unknown> })),
+      callTool: async (name, args) => (await client.callTool({ name, arguments: args })) as ToolResult,
+      close: async () => {
+        await client.close().catch(() => {});
+        await proxy.close();
+      },
+    };
+  } catch (err) {
+    await proxy.close();
+    throw err;
+  }
 }
 
 export function readSystemsFile(file: string): TestSystem[] {
@@ -107,7 +190,7 @@ export async function checkSystem(system: TestSystem, environment: string | unde
   const session = new TestSystemsSession({
     systems: () => [system],
     secret: (name) => secrets[name],
-    startBrowser: () => startPlaywright(dir),
+    startBrowser: () => startPlaywright(dir, () => [system]),
     tempDir: () => dir,
   });
   try {
@@ -147,7 +230,8 @@ export async function discoverSystem(address: string, username?: string): Promis
   let child: BrowserChild | null = null;
   try {
     const health = findHealth(start.origin);
-    child = await startPlaywright(dir);
+    // The address being read may be private: it is about to be an app.
+    child = await startPlaywright(dir, () => [], [start.origin]);
     let res = await child.callTool('browser_run_code_unsafe', { code: discoverScript(start.href, username?.trim() || 'qa@example.com') });
     const said = res.content.map((c) => c.text ?? '').join(' ');
     if (res.isError && browserMissing(said)) {
@@ -182,7 +266,7 @@ async function main(): Promise<void> {
     ...(process.env.OVERCLI_WORKER ? { worker: process.env.OVERCLI_WORKER } : {}),
     ...(process.env.OVERCLI_WORKER_FORMER ? { formerNames: process.env.OVERCLI_WORKER_FORMER.split('\n').filter(Boolean) } : {}),
     ...(process.env.OVERCLI_RUN_FILES ? { filesDir: process.env.OVERCLI_RUN_FILES } : {}),
-    startBrowser: () => startPlaywright(dir),
+    startBrowser: () => startPlaywright(dir, () => readSystemsFile(file)),
     tempDir: () => dir,
   });
   const server = new Server({ name: 'test-systems', version: '1' }, { capabilities: { tools: {} } });

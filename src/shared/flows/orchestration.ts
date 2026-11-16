@@ -132,6 +132,14 @@ export interface OrchestrationItem {
   finishedAt?: number;
 }
 
+/// A pull request by where it lives: owner (GitHub) or workspace
+/// (Bitbucket), repo, and number.
+export interface PrTarget {
+  owner: string;
+  repo: string;
+  number: number;
+}
+
 export interface Orchestration {
   id: UUID;
   /// Human title for the batch — defaults to the producer prompt's gist.
@@ -246,6 +254,13 @@ export interface Orchestration {
         /// so the desk says which. Absent on ones started before it was
         /// recorded, which carry FOLLOW_UP_NOTE on their one candidate instead.
         followUp?: 'ci' | 'ticket' | 'replies';
+        /// On a `replies` follow-up: the pull requests its fixes were pushed
+        /// to, from the lander's own links. The only ones its comment calls
+        /// are let through onto (prReplies.ts repliesCallAllowed). Saved with
+        /// the batch before it launches, so it holds from the first call and
+        /// across a restart; never read from the run's prompt, which quotes
+        /// the pull request's own text.
+        prTargets?: PrTarget[];
         /// Set on the batch that runs a worker's wrap-up flow: the id of the
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.

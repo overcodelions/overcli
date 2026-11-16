@@ -624,6 +624,16 @@ describe('WorkerEngine on-demand workers', () => {
       expect(prompt).toContain('THE WORK\nOn ACME-1: move it to Code Review.');
     });
 
+    it('saves a replies follow-up’s pull requests with its batch, and only a replies one’s', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      h.engine.start();
+      const prTargets = [{ owner: 'acme', repo: 'web', number: 42 }];
+      await h.engine.followUp('worker-1', { title: 'PR #42: reply', prompt: 'Say what was fixed.', flowId: 'org-pr-replies-bitbucket', kind: 'replies', prTargets });
+      expect(h.direct[0].origin).toMatchObject({ kind: 'worker', followUp: 'replies', prTargets });
+      await h.engine.followUp('worker-1', { title: 'CI', prompt: 'Fix the red build.', flowId: 'fix-it', kind: 'ci', prTargets });
+      expect(h.direct[1].origin).not.toHaveProperty('prTargets');
+    });
+
     it('leaves a CI fix’s prompt as it was given', async () => {
       const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
       h.engine.start();
