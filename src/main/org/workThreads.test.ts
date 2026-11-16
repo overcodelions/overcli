@@ -84,6 +84,20 @@ describe('work threads', () => {
     });
   });
 
+  it('links the pull requests a follow-up is about, and only web links', () => {
+    const replies = {
+      ...batch('r1', 1_000, [], 'errand', 'PR #42 acme-app: fix totals: reply on the pull request'),
+      origin: {
+        kind: 'worker', workerId: 'w', workerName: 'Marta', task: 'errand', errand: 'PR #42 acme-app: fix totals: reply on the pull request', followUp: 'replies',
+        prLinks: [{ repo: 'acme-app', url: 'https://git.example.com/acme/acme-app/pull/42' }, { repo: 'acme-app', url: 'javascript:alert(1)' }],
+      },
+    } as Orchestration;
+    const plain = batch('p1', 1_100, [], 'errand', 'Look at the pricing page');
+    const threads = buildThreads(input({ batches: [replies, plain] }));
+    expect(threads.find((t) => t.id === 'batch:r1')?.pullRequests).toEqual([{ repo: 'acme-app', url: 'https://git.example.com/acme/acme-app/pull/42', state: 'linked' }]);
+    expect(threads.find((t) => t.id === 'batch:p1')?.pullRequests).toBeUndefined();
+  });
+
   it('finds the errand of a turn overcli asked for itself by its prompt, so it hangs on its question', () => {
     const asked = ask({ id: 'a1', text: 'Add Introw to the weekly check too', at: 1_000, doneAt: 1_500 });
     const finishing = ask({ id: 'a2', text: 'Finishing up now that "Introw baseline" is done', prompt: 'The work you handed off for Pat\'s request has finished: Introw baseline.', replyTo: 'ask:a1', at: 5_000, doneAt: 5_400 });

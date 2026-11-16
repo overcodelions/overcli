@@ -98,6 +98,37 @@ describe('the MCP tools the designer can grant', () => {
     await draftFlowFromPrompt({ description: 'Plan my trips' }, claudeDeps());
     expect(mockQuery.mock.calls[0][0].options.systemPrompt).not.toContain('MCP TOOLS THE USER HAS');
   });
+
+  it('tells a worker’s drafter how to post to Slack, and keeps a step that does', async () => {
+    const notifyYaml = validYaml().replace(
+      '    output: plan.md\n```',
+      [
+        '    output: plan.md',
+        '  - id: post',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: custom',
+        '    system_prompt: Post the top 10 to channel C0123ABCD with notify.',
+        '    inputs: [plan.md]',
+        '    tools: [Read, mcp__overgo__notify]',
+        '    effect: external',
+        '    output: posted.md',
+        '```',
+      ].join('\n'),
+    );
+    mockQuery.mockReturnValue(claudeStream(notifyYaml));
+    const out = await reviseFlowFromPrompt({ yaml: 'name: x\ninput: user_prompt\nsteps: []', instruction: 'post the top 10 to C0123ABCD' }, { ...claudeDeps(), serverTool: true });
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(prompt).toContain('TELLING PEOPLE (worker flows)');
+    expect(prompt).toContain('mcp__overgo__notify');
+    if (!out.ok) throw new Error(out.error);
+    expect(out.ok && out.flow.steps.find((s) => s.id === 'post')?.tools).toEqual(['Read', 'mcp__overgo__notify']);
+  });
+
+  it('says nothing of notify to a flow that is not a worker’s', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+    await draftFlowFromPrompt({ description: 'Plan my trips' }, claudeDeps());
+    expect(mockQuery.mock.calls[0][0].options.systemPrompt).not.toContain('TELLING PEOPLE (worker flows)');
+  });
 });
 
 describe('draftFlowFromPrompt', () => {

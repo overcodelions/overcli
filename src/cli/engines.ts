@@ -150,6 +150,12 @@ export interface DaemonEngines extends HeadlessEngines {
 /// straight in the user's checked-out tree, which is exactly what picking a
 /// worktree is supposed to prevent. Copied from index.ts:385-391, and shared by
 /// the worker engine and the scheduler so the two cannot disagree.
+/// The pull requests a landing went to, once each, for a follow-up's thread.
+function prLinksOf(landed: Array<{ repo: string; url?: string; pr?: string; updated?: true; existed?: true }>): Array<{ repo: string; url: string }> {
+  const seen = new Set<string>();
+  return landed.flatMap((l) => (l.url && (l.pr || l.updated || l.existed) && !seen.has(l.url) && seen.add(l.url) ? [{ repo: l.repo, url: l.url }] : []));
+}
+
 function isGitRepoOrWorkspace(projectPath: string): boolean {
   return (
     currentBranch(projectPath).isRepo ||
@@ -746,7 +752,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     repo: (name) => connectedRepos().find((r) => r.name === name),
     env: (name) => process.env[name],
     rounds: () => org.ciRounds(),
-    followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId, kind: 'ci' }),
+    followUp: ({ workerId, flowId, title, prompt, prLinks }) => workerEngine.followUp(workerId, { title, prompt, flowId, kind: 'ci', ...(prLinks?.length ? { prLinks } : {}) }),
     tail: (args) => tailRun(args),
     tell: tellManager,
     attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
@@ -762,7 +768,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     busy: (workerId) => !!workerEngine.planning(workerId) || flowRuntime.listRuns().some((r) => r.workerId === workerId && r.state.kind === 'running'),
     host: (repo) => prHostFor(repo, { env: (n) => process.env[n], git: gitCode }),
     ownPush: (repo, branch, head) => !!head && ci.list().some((w) => w.repo === repo.name && w.branch === branch && (w.sha.startsWith(head) || head.startsWith(w.sha))),
-    wake: (workerId, text) => workerEngine.runErrand(workerId, text),
+    wake: (workerId, text, prs) => workerEngine.runErrand(workerId, text, undefined, { prLinks: prs }),
     log: (message) => log('info', 'org.prs', message),
   });
   prWatch.start();
@@ -782,7 +788,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         continue;
       }
       if (!l.branch) continue;
-      ci.watch({ runId: run.id, workerId: w.id, workerName: w.name, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim() });
+      ci.watch({ runId: run.id, workerId: w.id, workerName: w.name, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim(), ...(l.url && (l.pr || l.updated || l.existed) ? { prUrl: l.url } : {}) });
     }
   };
   // The replies on a pull request's comments, once its fixes are pushed (prReplies.ts).
@@ -799,7 +805,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     );
     // The pull requests the fixes went to: the only ones its posts may land on.
     const targets = withCommits.filter((l) => l.updated).map((l) => prTargetOf(l.url)).filter((t): t is PrTarget => !!t);
-    const res = await workerEngine.followUp(workerId, { title: `${flowRunTitle(run)}: reply on the pull request`, prompt: repliesPrompt(run, withCommits), flowId: flow.id, kind: 'replies', prTargets: targets });
+    const res = await workerEngine.followUp(workerId, { title: `${flowRunTitle(run)}: reply on the pull request`, prompt: repliesPrompt(run, withCommits), flowId: flow.id, kind: 'replies', prTargets: targets, prLinks: prLinksOf(withCommits) });
     if (!res.ok) log('warn', 'org.repos', `Couldn't start the pull request replies: ${res.error}`);
   };
   const lander = new BranchLander({
@@ -837,7 +843,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const saved = flow ? saveFlow({ flow, target: 'user' }) : { ok: false as const, error: 'the flow did not parse' };
       if (!flow || !saved.ok) return log('warn', 'org.repos', `Couldn't set up the ticket update for ${ticket}: ${saved.ok ? '' : saved.error}`);
       const status = org.ticketStatus();
-      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to ${status ?? 'review'}`, prompt: ticketPrompt(run, ticket, landed, status), flowId: flow.id, kind: 'ticket' }).then((res) => {
+      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to ${status ?? 'review'}`, prompt: ticketPrompt(run, ticket, landed, status), flowId: flow.id, kind: 'ticket', prLinks: prLinksOf(landed) }).then((res) => {
         if (!res.ok) log('warn', 'org.repos', `Couldn't start the ticket update for ${ticket}: ${res.error}`);
       });
     },

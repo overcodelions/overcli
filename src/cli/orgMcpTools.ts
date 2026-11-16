@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { OrgService } from '../main/org/orgService';
 import type { AccessService } from '../main/org/accessService';
 import { parseAudience, type Audience, type OrgCaller } from '../shared/org/policy';
+import { SERVER_TOOL } from '../shared/org/roleTools';
 
 function json(value: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -86,7 +87,8 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     {
       description:
         "One worker in full: its job, what it delivered this month and how it was rated, the questions it asked and who " +
-        'answered, what it has learned, and whether its record has earned more trust.',
+        'answered, what it has learned, and whether its record has earned more trust. ' +
+        `Its tools list leaves out the server's own ${SERVER_TOOL} tool, which every worker has without an install: its notify call posts to a person or a Slack channel (C…) the bot is in.`,
       inputSchema: { worker: z.string().describe('Worker name or id.') },
     },
     async ({ worker }) => out(org.workerDetail(caller, worker)),
@@ -127,7 +129,8 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     {
       description:
         "The tools (MCP servers) installed on this org server, which workers use each, and any a worker names that is not installed — " +
-        'the usual reason a worker cannot reach Jira, a CRM or the like. Admins install them on the console\'s Tools page.',
+        'the usual reason a worker cannot reach Jira, a CRM or the like. Admins install them on the console\'s Tools page. ' +
+        `Not listed: the server's own ${SERVER_TOOL} tool, which every worker has. Its notify call sends Slack messages to people or channels, so posting results never needs a Slack tool installed.`,
       inputSchema: {},
     },
     async () => out(org.tools(caller)),
@@ -169,6 +172,17 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       inputSchema: { worker: z.string(), repo: z.string() },
     },
     async ({ worker, repo }) => out(org.letWorkOnRepo(caller, worker, repo)),
+  );
+
+  tool(
+    'stop_worker_changing_repo',
+    {
+      description:
+        'Undo let_worker_change_repo for a worker you manage: its flows that push branches are taken away, so it can no longer change code or open pull requests. ' +
+        'It keeps its other flows and its schedule, and still reads where it worked. For a worker whose job only reads.',
+      inputSchema: { worker: z.string() },
+    },
+    async ({ worker }) => out(org.stopWorkOnRepo(caller, worker)),
   );
 
   tool(

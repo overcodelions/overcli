@@ -40,7 +40,7 @@ import {
 } from '../../shared/responseDirectives';
 import type { NotifyArgs } from '../host';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
-import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem, type PrTarget } from '../../shared/flows/orchestration';
+import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem, type PrLink, type PrTarget } from '../../shared/flows/orchestration';
 import { flowRunTitle, type AdoptedWorktrees, type FlowRun } from '../../shared/flows/schema';
 import {
   evaluateSchedule,
@@ -1611,7 +1611,8 @@ export class WorkerEngine {
     /// reads; what it proposes starts as its manager's ask would.
     /// `atDesk`: its owner, typing at the desktop app's own desk, where a
     /// question's investigation starts as soon as it's drafted.
-    opts: { conversation?: string; untrusted?: boolean; mayLaunch?: boolean; atDesk?: boolean } = {},
+    /// `prLinks`: the pull requests it's about, for its thread (PrLink).
+    opts: { conversation?: string; untrusted?: boolean; mayLaunch?: boolean; atDesk?: boolean; prLinks?: PrLink[] } = {},
   ): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
@@ -1633,6 +1634,7 @@ export class WorkerEngine {
       ...(opts.untrusted ? { untrusted: true } : {}),
       ...(opts.mayLaunch ? { mayLaunch: true } : {}),
       ...(opts.atDesk ? { atDesk: true } : {}),
+      ...(opts.prLinks?.length ? { prLinks: opts.prLinks } : {}),
     });
     this.arm();
     if (!res.ok) return res;
@@ -1753,8 +1755,9 @@ export class WorkerEngine {
   /// often needs fields only the job says how to fill (a problem type, whether
   /// automation is required), and without it the move stops at "requires …".
   /// `prTargets`: for `replies`, the pull requests it may post on, saved
-  /// with its batch (Orchestration origin.prTargets).
-  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' | 'replies'; prTargets?: PrTarget[] }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+  /// with its batch (Orchestration origin.prTargets). `prLinks`: the pull
+  /// requests it's about, linked from its thread.
+  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' | 'replies'; prTargets?: PrTarget[]; prLinks?: PrLink[] }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
@@ -1763,6 +1766,7 @@ export class WorkerEngine {
         ...{ ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w) },
         followUp: args.kind,
         ...(args.kind === 'replies' && args.prTargets?.length ? { prTargets: args.prTargets.map((t) => ({ owner: t.owner, repo: t.repo, number: t.number })) } : {}),
+        ...(args.prLinks?.length ? { prLinks: args.prLinks.map((l) => ({ repo: l.repo, url: l.url })) } : {}),
       },
       projectPath: w.projectPath,
       prompt: args.kind !== 'ci' ? this.buildDirectPrompt(w, args.prompt, { files: false }) : args.prompt,
@@ -2085,6 +2089,7 @@ export class WorkerEngine {
       untrusted?: boolean;
       mayLaunch?: boolean;
       atDesk?: boolean;
+      prLinks?: PrLink[];
       /// Checked when the turn reaches the front of the queue: true means the
       /// caller has put the work back on hold, so skip it.
       deferIfAway?: () => boolean;
@@ -2140,6 +2145,7 @@ export class WorkerEngine {
       untrusted?: boolean;
       mayLaunch?: boolean;
       atDesk?: boolean;
+      prLinks?: PrLink[];
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
@@ -2203,7 +2209,7 @@ export class WorkerEngine {
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
-    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from, opts.conversation, opts.untrusted, opts.mayLaunch, opts.atDesk);
+    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from, opts.conversation, opts.untrusted, opts.mayLaunch, opts.atDesk, opts.prLinks);
 
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
@@ -2422,6 +2428,7 @@ export class WorkerEngine {
     untrusted?: boolean,
     mayLaunch?: boolean,
     atDesk?: boolean,
+    prLinks?: PrLink[],
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
     const at = this.now();
     const rejected = this.journal.rejectedTitles(w.id);
@@ -2456,7 +2463,7 @@ export class WorkerEngine {
     const fire = (resumeSessionId?: string) => {
       const warm = !!resumeSessionId;
       return this.deps.parker.parkProposal({
-        origin: { ...workerOrigin(this.judged(w), 'errand', errand, from), ...this.roleOrigin(w) },
+        origin: { ...workerOrigin(this.judged(w), 'errand', errand, from), ...this.roleOrigin(w), ...(prLinks?.length ? { prLinks } : {}) },
         projectPath: w.projectPath,
         // The pace directives lead every turn, warm or cold: they are two
         // lines, and a resumed session drifting back to essays because we

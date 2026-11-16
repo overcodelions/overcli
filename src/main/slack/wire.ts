@@ -967,6 +967,9 @@ export function createOrgControl(
         return null;
       }
     },
+    // Who a worker's reply can tag: everyone the org knows by a Slack id.
+    people: () =>
+      org.peopleDirectory().flatMap((p) => (p.slackUserId ? [{ name: p.name, slackUserId: p.slackUserId, ...(p.handle ? { handle: p.handle } : {}) }] : [])),
     store: jsonOrgStore<FrontDoorState>('front-door.json', () => ({ threads: [], follows: [] })),
     log: (message) => log('info', 'slack', message),
   });

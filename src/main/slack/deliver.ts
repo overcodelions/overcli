@@ -41,6 +41,71 @@ export interface DeliverIo {
   /// it is a folder inside that worker's own files. Each is still read through
   /// `workerFile`. Absent: a named folder stays text.
   workerFolder?(workerId: string, path: string): string[] | null;
+  /// People a reply may tag by writing "@Their Name". Absent: names stay text.
+  people?(): readonly Taggable[];
+}
+
+/// Someone a worker's reply can tag: a person the org knows by Slack id.
+export interface Taggable {
+  name: string;
+  slackUserId: string;
+  handle?: string;
+}
+
+/// The most people one message tags: a reply is model text, and must not be
+/// able to ping a whole channel's worth of people.
+export const MAX_TAGS = 5;
+
+const SLACK_MEMBER = /^[UW][A-Z0-9]{2,}$/;
+const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/// "@Priya Shah" (or "@handle") in Slack markup, as a mention of that
+/// person, so someone outside the thread hears about it. Only full names and
+/// handles the org knows, only where one person has that name, and never
+/// inside code or an email address. A worker has no other way to reach
+/// someone from a thread reply.
+export function tagPeople(markup: string, people: readonly Taggable[]): string {
+  const byKey = new Map<string, string | null>();
+  for (const p of people) {
+    if (!SLACK_MEMBER.test(p.slackUserId)) continue;
+    for (const raw of [p.name, p.handle]) {
+      const key = raw?.trim().replace(/^@/, '').toLowerCase();
+      if (!key || key.length < 2 || SLACK_MEMBER.test(raw!.trim())) continue;
+      const had = byKey.get(key);
+      // Two people under one name: tagging either would be a guess.
+      byKey.set(key, had === undefined || had === p.slackUserId ? p.slackUserId : null);
+    }
+  }
+  // A first name alone ("@Priya"), when only one person has it and no one's
+  // full name or handle is that word: what someone typing in a thread writes.
+  const firsts = new Map<string, Set<string>>();
+  for (const p of people) {
+    const words = p.name.trim().split(/\s+/);
+    if (!SLACK_MEMBER.test(p.slackUserId) || words.length < 2 || words[0].length < 2) continue;
+    const first = words[0].toLowerCase();
+    firsts.set(first, (firsts.get(first) ?? new Set()).add(p.slackUserId));
+  }
+  for (const [first, ids] of firsts) {
+    const [only] = ids;
+    if (ids.size === 1 && (!byKey.has(first) || byKey.get(first) === only)) byKey.set(first, only);
+  }
+  const keys = [...byKey].filter(([, id]) => id).map(([k]) => k).sort((a, b) => b.length - a.length);
+  if (!keys.length) return markup;
+  const re = new RegExp(`(?<![\\w@<.])@(${keys.map(reEscape).join('|')})(?![\\w@])`, 'gi');
+  const tagged = new Set<string>();
+  return markup
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part.replace(re, (whole, name: string) => {
+            const id = byKey.get(name.toLowerCase());
+            if (!id || (!tagged.has(id) && tagged.size >= MAX_TAGS)) return whole;
+            tagged.add(id);
+            return `<@${id}>`;
+          }),
+    )
+    .join('');
 }
 
 export function clip(text: string, max: number): string {
@@ -211,10 +276,12 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
   }
   for (const f of files) body = body.split(f.path).join(`${f.name} (attached)`);
   const lead = as ? '' : `*${workerName}:* `;
-  if (body.length <= SLACK_LONG_REPLY) await io.post(channel, `${lead}${slackMarkup(body)}`, threadTs, as);
-  else if (files.length) await io.post(channel, `${lead}${slackMarkup(clip(body, SLACK_LONG_REPLY))}\n\n_More in ${files.map((f) => f.name).join(', ')}._`, threadTs, as);
+  const people = io.people?.() ?? [];
+  const mark = (s: string) => tagPeople(slackMarkup(s), people);
+  if (body.length <= SLACK_LONG_REPLY) await io.post(channel, `${lead}${mark(body)}`, threadTs, as);
+  else if (files.length) await io.post(channel, `${lead}${mark(clip(body, SLACK_LONG_REPLY))}\n\n_More in ${files.map((f) => f.name).join(', ')}._`, threadTs, as);
   else {
-    await io.post(channel, `${lead}${slackMarkup(clip(body, 1200))}\n\n_The full answer is attached._`, threadTs, as);
+    await io.post(channel, `${lead}${mark(clip(body, 1200))}\n\n_The full answer is attached._`, threadTs, as);
     await io.upload(channel, threadTs, filename, Buffer.from(body, 'utf8'), as);
   }
   for (const f of files) await io.upload(channel, threadTs, f.name, f.bytes, as);

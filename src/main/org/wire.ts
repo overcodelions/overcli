@@ -351,7 +351,7 @@ export function createOrgService(
       const saved = saveFlow({ flow, target: 'generated' });
       return saved.ok ? { ok: true } : saved;
     },
-    reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, drafterDepsFor(runner)),
+    reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, { ...drafterDepsFor(runner), serverTool: true }),
     pickPicture: (worker, taken) =>
       pickPicture(
         (system, message) =>

@@ -106,7 +106,7 @@ export async function draftHire(
       interview: args.interview,
       polish: false,
     },
-    drafterDepsFor(args.runner),
+    { ...drafterDepsFor(args.runner), serverTool: true },
   );
   if (!drafted.ok) return drafted;
   if (!('contract' in drafted)) {

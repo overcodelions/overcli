@@ -5658,7 +5658,7 @@ export class OrgService {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     const all = this.threadsFor(caller, w, opts.before != null);
-    const limit = Number.isFinite(opts.limit) ? Math.min(100, Math.max(1, Math.floor(opts.limit!))) : 20;
+    const limit = Number.isFinite(opts.limit) ? Math.min(1000, Math.max(1, Math.floor(opts.limit!))) : 20;
     const page = opts.before != null && Number.isFinite(opts.before) ? all.filter((t) => t.lastAt < opts.before!) : all;
     const threads = page.slice(0, limit);
     return {
@@ -7131,6 +7131,25 @@ export class OrgService {
     if (!saved.ok) return saved;
     this.record(caller, `Let ${w.name} change ${repo ? repo.name : `the ${ws!.name} workspace (${ws!.repos.join(', ')})`}; its changes arrive as branches to open pull requests from.`);
     return { ok: true, worker: w.name, flow: flowId };
+  }
+
+  /// Undo letWorkOnRepo: it stops changing code. Its repo and workspace flows
+  /// go, so its planning can never launch a push; it keeps its place, to read
+  /// there. Its manager or an admin decides.
+  stopWorkOnRepo(caller: OrgCaller, idOrName: string): Result<{ worker: string; removed: string[] }> {
+    const w = this.resolve(caller, idOrName);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    if (!canManage(this.policy(), this.deps.workers.roster(), w.id, caller)) return { ok: false, error: `Only ${w.name}'s manager or an admin can do that.` };
+    const removed = w.flowIds.filter((id) => id.startsWith('org-pr-'));
+    if (!removed.length) return { ok: false, error: `${w.name} isn't changing code in a repo.` };
+    const flowIds = w.flowIds.filter((id) => !removed.includes(id));
+    if (!flowIds.length) return { ok: false, error: `That's the only way ${w.name} works, so it would have nothing to run. Give it another flow first, or retire it.` };
+    const next = { ...w, flowIds };
+    if (next.preferredFlowId && removed.includes(next.preferredFlowId)) delete next.preferredFlowId;
+    const saved = this.deps.workers.save(next);
+    if (!saved.ok) return saved;
+    this.record(caller, `Stopped ${w.name} changing code: it no longer pushes branches.`);
+    return { ok: true, worker: w.name, removed };
   }
 
   /// Rewrite the repo and workspace flows workers use from what this version

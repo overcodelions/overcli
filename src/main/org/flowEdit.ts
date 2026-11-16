@@ -7,6 +7,7 @@
 // saves.
 
 import type { Flow, FlowModelRef, FlowStep } from '../../shared/flows/schema';
+import { SERVER_TOOL } from '../../shared/org/roleTools';
 import { resolveStepEffect } from '../flows/stepEffect';
 
 /// More than any flow a manager would read as a list.
@@ -73,7 +74,10 @@ export function holdFlowEdit(before: Flow, after: Flow, opts: { admin: boolean; 
   const people = new Set(before.steps.flatMap((s) => s.handsOff ?? []));
   const participants = new Set(before.participants.map((p) => p.id));
   const primary = before.participants[0]?.id;
-  const servers = new Set(opts.servers ?? []);
+  // The server's own tool (notify, ask_desktop) comes with every worker's run,
+  // so nobody installs it: "post the top 10 to #triage" is a step it may add.
+  // Each call is still judged when it's made (toolGateway.ts, runtime.ts).
+  const servers = new Set([...(opts.servers ?? []), SERVER_TOOL]);
   // An MCP tool is `mcp__<server>__<tool>`; `mcp__<server>` alone is all of them.
   const held = (t: string) => [...servers].some((n) => t === `mcp__${n}` || t.startsWith(`mcp__${n}__`));
 

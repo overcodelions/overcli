@@ -168,7 +168,8 @@ export interface PrWatchDeps {
   ownPush(repo: ConnectedRepo, branch: string, head: string): boolean;
   /// Resolves false or `{ ok: false }` when the worker wasn't actually handed
   /// it (it refused, say on budget): then nothing counts as told.
-  wake(workerId: string, text: string): Promise<unknown>;
+  /// `prs`: the pull requests in `text`, by the host's own links, for its thread.
+  wake(workerId: string, text: string, prs: Array<{ repo: string; url: string }>): Promise<unknown>;
   /// Still on what it was last handed (planning, or its runs going): the next
   /// pull requests wait until it's free, rather than piling up behind it.
   busy?(workerId: string): boolean;
@@ -396,7 +397,7 @@ export class PrWatcher {
         if (!mine.length || this.deps.busy?.(w.workerId)) continue;
         const batch = mine.slice(0, Math.max(1, w.perWake ?? 3));
         this.deps.log(`${batch.length} pull request${batch.length === 1 ? '' : 's'} ready${mine.length > batch.length ? `, ${mine.length - batch.length} more waiting` : ''}; waking worker ${w.workerId}.`);
-        const woke = await Promise.resolve(this.deps.wake(w.workerId, wakeText(batch))).then(
+        const woke = await Promise.resolve(this.deps.wake(w.workerId, wakeText(batch), batch.map((c) => ({ repo: c.repo, url: c.pr.url })))).then(
           (res) => {
             if (delivered(res)) return true;
             const why = res && typeof res === 'object' && 'error' in res ? String((res as { error: unknown }).error) : 'it refused';

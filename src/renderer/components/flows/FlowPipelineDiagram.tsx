@@ -11,11 +11,11 @@
 //                                                                       ⏸  [push]
 //
 // Pauses are surfaced with a ⏸ glyph BEFORE the step. Steps with rebound
-// get a ↻ glyph. Steps with on_fail.goto get a small arrow back to the
-// target rendered as a colored chip below the row (kept simple — full
-// edge routing would be overkill for v1).
+// get a ↻ glyph. Steps with on_fail.goto get a dashed loop drawn from the
+// failing step back to its target, measured against the live layout so it
+// follows the pills when the row wraps.
 
-import { useMemo } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { resolveStepModel, type Flow, type FlowStep } from '@shared/flows/schema';
 import { modelTier } from '@shared/modelCatalog';
@@ -73,15 +73,19 @@ export function FlowPipelineDiagram({
   layout = 'wrap',
   chrome = true,
 }: PipelineDiagramProps) {
-  const retryEdges = useMemo(() => {
-    // For each step with on_fail.goto, capture (from, target) so we can
-    // render a sub-row of "retry" arrows below the main pipeline.
+  const retryEdges = useMemo<RetryEdge[]>(() => {
+    // For each step with on_fail.goto, capture (from, target) so the wrap
+    // layout can draw the loop back.
     return flow.steps
       .filter((s) => s.onFail?.action === 'goto' && s.onFail.target)
-      .map((s) => ({
-        from: s.id,
-        to: (s.onFail as { action: 'goto'; target: string }).target,
-      }));
+      .map((s) => {
+        const f = s.onFail as {
+          action: 'goto';
+          target: string;
+          maxRetries: number;
+        };
+        return { from: s.id, to: f.target, maxRetries: f.maxRetries };
+      });
   }, [flow.steps]);
 
   if (flow.steps.length === 0) {
@@ -100,38 +104,307 @@ export function FlowPipelineDiagram({
       {layout === 'stack' ? (
         <StepStack flow={flow} onStepClick={onStepClick} />
       ) : (
-        <div className="flex flex-wrap items-center gap-x-1 gap-y-3">
-          <PromptChip />
-          {flow.steps.map((step, idx) => (
-            <StepRowEntry
-              key={step.id}
-              flow={flow}
-              step={step}
-              isFirst={idx === 0}
-              isLast={idx === flow.steps.length - 1}
-              onClick={() => onStepClick?.(step.id)}
-            />
-          ))}
-        </div>
-      )}
-      {layout === 'wrap' && retryEdges.length > 0 && (
-        <div className="mt-3 pt-3">
-          <div className="text-xs text-ink-muted mb-1.5">Retry edges</div>
-          <div className="flex flex-wrap gap-2">
-            {retryEdges.map(({ from, to }, i) => (
-              <div
-                key={`${from}-${to}-${i}`}
-                className="text-[11px] px-2 py-1 rounded bg-amber-500/10 border border-amber-400/30 text-amber-700 dark:text-amber-200"
-              >
-                if <span className="font-semibold">{from}</span> fails → retry{' '}
-                <span className="font-semibold">{to}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        <StepRow flow={flow} onStepClick={onStepClick} retryEdges={retryEdges} />
       )}
     </div>
   );
+}
+
+interface RetryEdge {
+  from: string;
+  to: string;
+  maxRetries: number;
+}
+
+interface EdgeGeom {
+  key: string;
+  d: string;
+  labelX: number;
+  labelY: number;
+  label: string;
+}
+
+/// How far below a row the first loop runs, and how much further each
+/// extra loop drops so two loops never share a line.
+const LOOP_DEPTH = 24;
+const LOOP_STEP = 18;
+/// The loop's label sits just under its line, never on it — a dashed line
+/// through text reads as strikethrough.
+const LABEL_GAP = 10;
+/// The lane under a row's loops that carries the handoff from the end of
+/// one row to the start of the next. Below the loops rather than among
+/// them, so the bridge runs clear of every loop's label.
+const BRIDGE_ROOM = 20;
+
+interface BridgeGeom {
+  key: string;
+  d: string;
+}
+
+/// The wide layout: pills flowing left to right, with every on_fail.goto
+/// drawn as a dashed loop back to its target, and every wrap bridged by a
+/// line from the end of one row to the start of the next. Both are
+/// measured from the rendered pills rather than computed from indices,
+/// because the row wraps and only the browser knows where each pill landed.
+function StepRow({
+  flow,
+  onStepClick,
+  retryEdges,
+}: {
+  flow: Flow;
+  onStepClick?: (stepId: string) => void;
+  retryEdges: RetryEdge[];
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const pillRefs = useRef(new Map<string, HTMLButtonElement>());
+  const groupRefs = useRef(new Map<string, HTMLDivElement>());
+  const [edges, setEdges] = useState<EdgeGeom[]>([]);
+  const [bridges, setBridges] = useState<BridgeGeom[]>([]);
+  /// Steps whose outgoing arrow is replaced by a bridge. Their arrow is
+  /// hidden, not removed: removing it would narrow the row, which could
+  /// pull the next step back up, which would bring the arrow back.
+  const [bridged, setBridged] = useState<ReadonlySet<string>>(new Set());
+  const markerId = useId().replace(/:/g, '');
+
+  // Room under each row for its loops. Reserved from the edge count, not
+  // from the measurement, so the layout doesn't jump once it's measured.
+  const loopRoom = retryEdges.length
+    ? LOOP_DEPTH + (retryEdges.length - 1) * LOOP_STEP + LABEL_GAP + 14
+    : 0;
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const c = el.getBoundingClientRect();
+      const rel = (r: DOMRect) => ({
+        left: r.left - c.left,
+        right: r.right - c.left,
+        top: r.top - c.top,
+        bottom: r.bottom - c.top,
+        cx: r.left + r.width / 2 - c.left,
+        cy: r.top + r.height / 2 - c.top,
+      });
+      const pill = (id: string) => {
+        const n = pillRefs.current.get(id);
+        return n ? rel(n.getBoundingClientRect()) : null;
+      };
+
+      const nextBridges: BridgeGeom[] = [];
+      const nextBridged = new Set<string>();
+      for (let i = 0; i < flow.steps.length - 1; i++) {
+        const fromId = flow.steps[i].id;
+        const ga = groupRefs.current.get(fromId);
+        const gb = groupRefs.current.get(flow.steps[i + 1].id);
+        if (!ga || !gb) continue;
+        const A = rel(ga.getBoundingClientRect());
+        const B = rel(gb.getBoundingClientRect());
+        if (B.top < A.top + 4) continue; // same row — the arrow is enough
+        const line = ga.querySelector('[data-handoff-line]');
+        const L = line ? rel(line.getBoundingClientRect()) : null;
+        const sx = L ? L.left + 2 : A.right;
+        const sy = L ? L.cy : A.cy;
+        const dropX = A.right - 2;
+        const laneY = A.bottom + loopRoom + BRIDGE_ROOM / 2;
+        const entryX = B.left - 12;
+        nextBridges.push({
+          key: fromId,
+          d: roundedPath(
+            [
+              [sx, sy],
+              [dropX, sy],
+              [dropX, laneY],
+              [entryX, laneY],
+              [entryX, B.cy],
+              [B.left - 1, B.cy],
+            ],
+            8,
+          ),
+        });
+        nextBridged.add(fromId);
+      }
+
+      const nextEdges: EdgeGeom[] = [];
+      retryEdges.forEach((edge, i) => {
+        const a = pill(edge.from);
+        const b = pill(edge.to);
+        if (!a || !b) return;
+        const depth = LOOP_DEPTH + i * LOOP_STEP;
+        // Leave and arrive a little off-centre so a loop's two legs don't
+        // sit on top of another loop's legs at a shared pill.
+        const fx = a.cx + 8;
+        const tx = b.cx - 8;
+        let pts: [number, number][];
+        let y: number;
+        if (Math.abs(a.bottom - b.bottom) < 4) {
+          // Same row: drop under it, run across, come back up.
+          y = Math.max(a.bottom, b.bottom) + depth;
+          pts = [
+            [fx, a.bottom],
+            [fx, y],
+            [tx, y],
+            [tx, b.bottom + 2],
+          ];
+        } else if (a.bottom > b.bottom) {
+          // Target on an earlier row: rise into that row's loop lane.
+          y = b.bottom + depth;
+          pts = [
+            [fx, a.top],
+            [fx, y],
+            [tx, y],
+            [tx, b.bottom + 2],
+          ];
+        } else {
+          // Target on a later row: run in this row's loop lane, then down.
+          y = a.bottom + depth;
+          pts = [
+            [fx, a.bottom],
+            [fx, y],
+            [tx, y],
+            [tx, b.top - 2],
+          ];
+        }
+        nextEdges.push({
+          key: `${edge.from}-${edge.to}-${i}`,
+          d: roundedPath(pts, 8),
+          labelX: (fx + tx) / 2,
+          labelY: y + LABEL_GAP,
+          label: `if ${edge.from} fails → back to ${edge.to}, up to ${edge.maxRetries}×`,
+        });
+      });
+
+      setEdges(nextEdges);
+      setBridges(nextBridges);
+      setBridged((prev) =>
+        prev.size === nextBridged.size && [...prev].every((id) => nextBridged.has(id))
+          ? prev
+          : nextBridged,
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    groupRefs.current.forEach((g) => ro.observe(g));
+    return () => ro.disconnect();
+  }, [retryEdges, flow.steps, loopRoom]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative flex flex-wrap items-center gap-x-1"
+      style={{ rowGap: loopRoom + BRIDGE_ROOM, paddingBottom: loopRoom }}
+    >
+      <PromptChip />
+      {flow.steps.map((step, idx) => (
+        <StepRowEntry
+          key={step.id}
+          flow={flow}
+          step={step}
+          isFirst={idx === 0}
+          isLast={idx === flow.steps.length - 1}
+          bridged={bridged.has(step.id)}
+          onClick={() => onStepClick?.(step.id)}
+          groupRef={(node) => {
+            if (node) groupRefs.current.set(step.id, node);
+            else groupRefs.current.delete(step.id);
+          }}
+          pillRef={(node) => {
+            if (node) pillRefs.current.set(step.id, node);
+            else pillRefs.current.delete(step.id);
+          }}
+        />
+      ))}
+      {(edges.length > 0 || bridges.length > 0) && (
+        <svg
+          className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
+          aria-hidden
+        >
+          {/* A marker takes its colour from where it is defined, not from
+              the path using it — so each colour group defines its own. */}
+          <g className="text-ink-faint">
+            <defs>
+              <ArrowMarker id={`${markerId}-bridge`} />
+            </defs>
+            {bridges.map((b) => (
+              <path
+                key={b.key}
+                d={b.d}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                markerEnd={`url(#${markerId}-bridge)`}
+              />
+            ))}
+          </g>
+          <g className="text-amber-600 dark:text-amber-400">
+            <defs>
+              <ArrowMarker id={`${markerId}-loop`} />
+            </defs>
+            {edges.map((e) => (
+              <path
+                key={e.key}
+                d={e.d}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeDasharray="4 3"
+                markerEnd={`url(#${markerId}-loop)`}
+              />
+            ))}
+          </g>
+        </svg>
+      )}
+      {edges.map((e) => (
+        <span
+          key={`${e.key}-label`}
+          className="absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap px-1.5 text-[10px] leading-none text-amber-700 dark:text-amber-300 pointer-events-none"
+          style={{ left: e.labelX, top: e.labelY }}
+        >
+          {e.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ArrowMarker({ id }: { id: string }) {
+  return (
+    <marker
+      id={id}
+      viewBox="0 0 10 10"
+      refX="8"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto-start-reverse"
+    >
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </marker>
+  );
+}
+
+/// An orthogonal polyline with its corners rounded off.
+function roundedPath(pts: [number, number][], r: number): string {
+  let d = `M ${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [px, py] = pts[i - 1];
+    const [cx, cy] = pts[i];
+    const [nx, ny] = pts[i + 1];
+    const d1 = Math.hypot(cx - px, cy - py);
+    const d2 = Math.hypot(nx - cx, ny - cy);
+    if (d1 === 0 || d2 === 0) {
+      d += ` L ${cx} ${cy}`;
+      continue;
+    }
+    const rr = Math.min(r, d1 / 2, d2 / 2);
+    const ax = cx + ((px - cx) / d1) * rr;
+    const ay = cy + ((py - cy) / d1) * rr;
+    const bx = cx + ((nx - cx) / d2) * rr;
+    const by = cy + ((ny - cy) / d2) * rr;
+    d += ` L ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`;
+  }
+  const [lx, ly] = pts[pts.length - 1];
+  return `${d} L ${lx} ${ly}`;
 }
 
 function PromptChip() {
@@ -150,19 +423,29 @@ function StepRowEntry({
   step,
   isFirst,
   isLast,
+  bridged = false,
   onClick,
+  pillRef,
+  groupRef,
 }: {
   flow: Flow;
   step: FlowStep;
   isFirst: boolean;
   isLast: boolean;
+  /// The next step wrapped to a new row; a drawn bridge replaces the arrow.
+  bridged?: boolean;
   onClick: () => void;
+  pillRef?: (node: HTMLButtonElement | null) => void;
+  groupRef?: (node: HTMLDivElement | null) => void;
 }) {
   const tier = tierOf(flow, step);
   const model = compactModel(flow, step);
   const resolved = resolveStepModel(flow, step);
+  // One unit that never breaks inside: the pause, the pill and the arrow
+  // out of it. When the row wraps, whole steps move to the next line, so a
+  // line never opens on a stray arrow or an orphaned output chip.
   return (
-    <>
+    <div ref={groupRef} className="flex items-center gap-x-1 self-stretch">
       {step.pauseBefore && !isFirst && (
         <>
           <PauseGlyph />
@@ -170,6 +453,7 @@ function StepRowEntry({
         </>
       )}
       <button
+        ref={pillRef}
         onClick={onClick}
         className={
           'rounded-lg border px-3.5 py-2 text-xs shadow-sm hover:scale-[1.03] transition active:scale-100 min-w-[120px] ' +
@@ -186,9 +470,9 @@ function StepRowEntry({
       {/* Only show the artifact arrow when there's a NEXT step to flow into.
           The last step's output goes to the user, not another step — we
           render it as a labeled terminator instead. */}
-      {!isLast && <ArtifactArrow name={step.output} />}
+      {!isLast && <ArtifactArrow name={step.output} bridged={bridged} />}
       {isLast && <TerminatorArrow name={step.output} />}
-    </>
+    </div>
   );
 }
 
@@ -201,7 +485,7 @@ function Arrow() {
   );
 }
 
-function ArtifactArrow({ name }: { name: string }) {
+function ArtifactArrow({ name, bridged = false }: { name: string; bridged?: boolean }) {
   // Render as a small badge BELOW the arrow, vertically separated so it
   // can't visually bleed into the adjacent step pills. The arrow row
   // grows wide enough to fit typical artifact names (plan_review.md,
@@ -214,6 +498,8 @@ function ArtifactArrow({ name }: { name: string }) {
         viewBox="0 0 56 14"
         className="text-ink-faint"
         aria-hidden
+        data-handoff-line
+        style={bridged ? { visibility: 'hidden' } : undefined}
       >
         <path d="M2 7 H50" stroke="currentColor" strokeWidth="1.4" />
         <path d="M48 3 L52 7 L48 11" stroke="currentColor" strokeWidth="1.4" fill="none" />

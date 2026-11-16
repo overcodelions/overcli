@@ -1255,6 +1255,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         }),
     },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/run$/, handle: (c, _b, [id]) => org.runNow(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/stop-changing-code$/, handle: (c, _b, [id]) => org.stopWorkOnRepo(c, decodeURIComponent(id)) },
     {
       method: 'GET',
       path: /^\/api\/work$/,

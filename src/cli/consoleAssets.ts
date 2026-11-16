@@ -5561,12 +5561,15 @@ export const CONSOLE_JS = String.raw`
   /// The pull requests a run's landing opened or updated, each a link out,
   /// with where it stands: opened, a draft, updated, already open, or only a
   /// link for you to open it.
-  var PR_STATE = { open: ['ok', 'Opened'], draft: ['plain', 'Draft'], updated: ['working', 'Updated'], existing: ['plain', 'Already open'], unopened: ['waiting', 'Not opened yet'] };
+  var PR_STATE = { open: ['ok', 'Opened'], draft: ['plain', 'Draft'], updated: ['working', 'Updated'], existing: ['plain', 'Already open'], unopened: ['waiting', 'Not opened yet'], linked: ['', 'Open ↗'] };
   /// Every pull request a thread came to, its replies' runs too, once each
   /// (the last word on one wins: a later run that updated it says Updated).
+  /// The ones it was about come first, so work that pushed nothing (a reply,
+  /// a conflict looked at) still links its pull request.
   function prsOf(t) {
     var byUrl = {}, order = [];
     [t].concat(t.followUps || []).forEach(function (x) {
+      (x.pullRequests || []).forEach(function (p) { if (!byUrl[p.url]) { order.push(p.url); byUrl[p.url] = p; } });
       (x.runs || []).forEach(function (r) {
         (r.pullRequests || []).forEach(function (p) { if (!byUrl[p.url]) order.push(p.url); byUrl[p.url] = p; });
       });
@@ -6116,7 +6119,10 @@ export const CONSOLE_JS = String.raw`
     var chips = h('div', { class: 'row', role: 'group', 'aria-label': 'Show', style: 'gap:4px;flex-wrap:wrap' });
     var q = h('input', { type: 'search', placeholder: 'Search its work', 'aria-label': 'Search its work', style: 'width:170px;font-size:13px' });
     var more = h('button', { class: 'wl-more', text: 'Show older' });
-    more.onclick = function () { var l = liveFor(w.id); l.limit = (l.limit || 20) + 30; busy(more, 'Loading…'); livePoke(w.id, 0); };
+    // Put back by the next delivery: the button is kept across redraws, so
+    // left as it was it stayed "Loading…" and disabled after the first page.
+    var moreDone = null;
+    more.onclick = function () { var l = liveFor(w.id); l.limit = (l.limit || 20) + 30; moreDone = busy(more, 'Loading…'); livePoke(w.id, 0); };
 
     var titleOf = function (t) {
       // A title, not the whole request: the rest is in the thread.
@@ -6309,6 +6315,7 @@ export const CONSOLE_JS = String.raw`
     }
     liveSubscribe(w.id, Object.assign(function (x) {
       data = x;
+      if (moreDone) { moreDone(); moreDone = null; }
       // Opened from a row on the Runs tab: the thread that run belongs to.
       if (state.wlFindRun && state.wlFindRun.worker === w.id) {
         var hit = thoughtFor(x.threads, state.wlFindRun);
@@ -6628,7 +6635,21 @@ export const CONSOLE_JS = String.raw`
             !state.me.admin ? h('p', { class: 'faint', style: 'font-size:12.5px', text: 'Only an admin changes whose asks start straight away and who approves.' }) : null,
             othersNote], 'who'),
           group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
-            where ? h('div', { style: 'max-width:480px' }, where)
+            where ? h('div', { style: 'max-width:480px' }, where) : null,
+            // A worker whose job only reads shouldn't hold a flow that pushes.
+            where && flows.some(function (f) { return f.id.indexOf('org-pr-') === 0; }) ? h('div', { class: 'row', style: 'gap:10px;align-items:center' },
+              h('button', { class: 'btn small', text: 'Stop it changing code', onclick: function (e) {
+                if (!confirm(w.name + ' will no longer change code or push branches here. It keeps its other flows and still reads here.')) return;
+                var restore = busy(e.target, 'Saving…');
+                var note = notes.where;
+                api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/stop-changing-code', {}).then(function (m) {
+                  restore();
+                  if (note) { note.textContent = ''; note.className = ''; note.appendChild(msg(m, 'It reads here and changes nothing')); }
+                  if (m.ok !== false) setTimeout(render, 800);
+                });
+              } }),
+              h('span', { class: 'faint', style: 'font-size:12.5px', text: 'For a worker whose job only reads.' })) : null,
+            where ? null
               : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })], 'where'),
           group('Answering in Slack', 'How many people it answers at once, each in their own thread. Its desk here, and its shifts, still take one thing at a time; each answer counts against its budget.', [atOnce], 'slack'),
           usual ? group('How it works', 'The flow its work goes through, unless you name another of its flows when you ask (“use solve-ticket”).', [h('div', { style: 'max-width:480px' }, usual)], 'flow') : null,

@@ -55,6 +55,7 @@ import {
 import { healthyBackends } from '../health';
 import { flowHasCodeWritingStep, isGatingReviewerRole } from './runtime';
 import type { OneShotResult, RunnerManager } from '../runner';
+import { SERVER_TOOL } from '../../shared/org/roleTools';
 
 export interface DraftDeps {
   settings: AppSettings;
@@ -65,6 +66,27 @@ export interface DraftDeps {
   /// Every `mcp__<server>__<tool>` Claude has reported, so a step that must
   /// read a mailbox can be granted the exact tool. See mcpToolCache.
   mcpTools?: string[];
+  /// Drafting for a worker, whose runs get the server's own tool: so "post
+  /// it to the channel" becomes a notify step, not a Slack token to install.
+  serverTool?: boolean;
+}
+
+/// How a worker's flow posts to Slack: the server's own notify call. No
+/// token, no install, so a drafter that isn't told reaches for a Slack tool
+/// the org doesn't have and the step is refused.
+export function serverToolSection(): string[] {
+  const notify = `mcp__${SERVER_TOOL}__notify`;
+  return [
+    'TELLING PEOPLE (worker flows)',
+    '=============================',
+    `Every worker run has the server's own tool, ${SERVER_TOOL}, with no install and no token.`,
+    `  ${notify} — args { to, message }. "to" is "manager", a person's name or Slack member id`,
+    '    (U…), or a channel id (C…). Slack mrkdwn, at most 3000 characters, 5 calls a run.',
+    'When the job says to post, message, tell or send results to a person or a Slack channel, add a',
+    `last step for it: tools [Read, ${notify}], effect: external, inputs the report it sends. Its`,
+    'prompt says exactly who to send to and how to format it (bullets, not a markdown table), and',
+    'its output records what was sent. Never use a Slack MCP tool or the shell for this.',
+  ];
 }
 
 /// Which job the CLI is being asked to do. Both share the schema prompt and
@@ -105,6 +127,7 @@ function systemPrompt(
   modelDefaults?: FlowModelDefaults,
   provenFlows?: string,
   mcpTools?: string[],
+  serverTool?: boolean,
 ): string {
   const hints = drafterModelHints(backend, modelDefaults);
   const label = backendLabel(backend);
@@ -440,6 +463,7 @@ function systemPrompt(
       const lines = renderMcpToolsSection(mcpTools ?? []);
       return lines.length > 0 ? [...lines, ''] : [];
     })(),
+    ...(serverTool ? [...serverToolSection(), ''] : []),
     ...(mode === 'revise'
       ? [
           'REVISION RULES',
@@ -535,7 +559,7 @@ async function runDrafter(
 ): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
   return oneShotDraftText(deps, {
     buildSystemPrompt: (backend) =>
-      systemPrompt(backend, mode, deps.settings.flowModelDefaults, deps.provenFlows, deps.mcpTools),
+      systemPrompt(backend, mode, deps.settings.flowModelDefaults, deps.provenFlows, deps.mcpTools, deps.serverTool),
     userMessage,
     attachments,
     verb: mode === 'revise' ? 'edit' : 'draft',
