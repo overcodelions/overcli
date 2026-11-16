@@ -159,17 +159,17 @@ export async function startBrowserProxy(deps: BrowserProxyDeps): Promise<Browser
     try {
       target = new URL(req.url ?? '');
     } catch {
-      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }).end(`${REFUSED_MARK} not a proxy request.`);
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }).end(`${REFUSED_MARK} not a proxy request.`);
       return;
     }
     if (target.protocol !== 'http:') {
-      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }).end(`${REFUSED_MARK} only http is proxied this way.`);
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }).end(`${REFUSED_MARK} only http is proxied this way.`);
       return;
     }
     const port = Number(target.port) || 80;
     const verdict = await judge.judge(target.hostname, port);
     if (!verdict.ok) {
-      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end(`${REFUSED_MARK} ${verdict.why}`);
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }).end(`${REFUSED_MARK} ${verdict.why}`);
       return;
     }
     const headers: http.OutgoingHttpHeaders = {};
@@ -182,8 +182,10 @@ export async function startBrowserProxy(deps: BrowserProxyDeps): Promise<Browser
       up.pipe(res);
     });
     upstream.on('error', (err) => {
-      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end(`Couldn’t reach ${target.host}: ${err.message}`);
+      // Part of the page already went back: cut it off rather than add text
+      // to a response whose type the far end chose.
+      if (res.headersSent) return void res.destroy();
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }).end(`Couldn’t reach ${target.host}: ${err.message}`);
     });
     req.pipe(upstream);
   });
@@ -194,7 +196,7 @@ export async function startBrowserProxy(deps: BrowserProxyDeps): Promise<Browser
     const verdict = at ? await judge.judge(at.host, at.port) : ({ ok: false, why: 'not a host and port.' } as const);
     if (!at || !verdict.ok) {
       const body = `${REFUSED_MARK} ${verdict.ok ? '' : verdict.why}`;
-      client.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+      client.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
       return;
     }
     const upstream = (deps.connect ?? ((ip: string, port: number) => net.connect(port, ip)))(verdict.ip, at.port);

@@ -118,10 +118,19 @@ describe('the proxy itself', () => {
     });
 
   it('proxies plain http to an app’s own private address, and refuses anyone else’s with a page that says why', async () => {
-    const upPort = await listen(http.createServer((req, res) => res.end(`host=${req.headers.host} path=${req.url}`)));
+    // The far end notes what reached it and answers a fixed line: nothing it
+    // was sent is echoed back.
+    const seen: string[] = [];
+    const upPort = await listen(
+      http.createServer((req, res) => {
+        seen.push(`host=${req.headers.host} path=${req.url}`);
+        res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+      }),
+    );
     proxy = await startBrowserProxy({ systems: () => [app('http://app.qa.acme.test')], lookup });
     const ok = await get(proxy.port, `http://app.qa.acme.test:${upPort}/login?x=1`);
-    expect(ok).toEqual({ status: 200, body: `host=app.qa.acme.test:${upPort} path=/login?x=1` });
+    expect(ok).toEqual({ status: 200, body: 'ok' });
+    expect(seen).toEqual([`host=app.qa.acme.test:${upPort} path=/login?x=1`]);
     const refused = await get(proxy.port, `http://evil.example:${upPort}/`);
     expect(refused.status).toBe(403);
     expect(refused.body).toContain(REFUSED_MARK);
