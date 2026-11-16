@@ -73,7 +73,7 @@ import { loadOrgPolicy, orgDir, fileHandbook, jsonOrgStore } from '../main/org/o
 import { CiWatcher, continueBranchOf, readFailure, type CiWatch } from '../main/org/ciWatch';
 import { continueBranchFor } from '../main/org/continueBranch';
 import { findOpenPullRequest, openPullRequest } from '../main/org/prOpen';
-import { gitHostOf, repliesFlowId, repliesFlowYaml, repliesPrompt } from '../main/org/prReplies';
+import { gitHostOf, repliesCallAllowed, repliesFlowId, repliesFlowYaml, repliesPrompt } from '../main/org/prReplies';
 import { PrWatcher, prHostFor, type PrWatchState } from '../main/org/prWatch';
 import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
@@ -386,6 +386,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
 
   // A worker's tool scopes, enforced on its runs (toolScope.ts).
   flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine.get(id)?.toolScopes, loadOrgPolicy().policy.toolDefaults));
+  flowRuntime.setCallGuard(repliesCallAllowed);
   workerEngine.handbook = () => fileHandbook.read();
   flowRuntime.skipsCheckpoints = (id) => workerEngine.get(id)?.caps.skipCheckpoints === true;
   // Judged by the folder the run works in (a team piece runs in the team's

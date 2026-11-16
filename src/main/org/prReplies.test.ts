@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 import { parseFlowYaml } from '../../shared/flows/yaml';
-import { gitHostOf, replyTools, repliesFlowId, repliesFlowYaml, repliesPrompt } from './prReplies';
+import { gitHostOf, replyTools, repliesCallAllowed, repliesFlowId, repliesFlowYaml, repliesPrompt } from './prReplies';
 
 describe('pull request replies', () => {
   it('finds the git host among its tools', () => {
@@ -35,7 +35,7 @@ describe('pull request replies', () => {
     expect(flow?.steps[0]).toMatchObject({
       id: 'pr-replies',
       effect: 'external',
-      tools: ['mcp__bitbucket__addPullRequestComment', 'mcp__bitbucket__getPullRequest', 'mcp__bitbucket__getPullRequestComments'],
+      tools: ['mcp__bitbucket__addPullRequestComment', 'mcp__bitbucket__bb_get', 'mcp__bitbucket__bb_post', 'mcp__bitbucket__getPullRequest', 'mcp__bitbucket__getPullRequestComments'],
     });
     expect(flow?.steps[0].tools).not.toContain('mcp__bitbucket');
   });
@@ -48,9 +48,30 @@ describe('pull request replies', () => {
     const flow = parseFlowYaml({ yaml: repliesFlowYaml('github', []), id: repliesFlowId('github'), source: 'user', filePath: '' });
     expect(flow?.steps[0].tools).toEqual(['mcp__github__add_issue_comment', 'mcp__github__add_reply_to_pull_request_comment', 'mcp__github__get_pull_request', 'mcp__github__get_pull_request_comments']);
     // Only the reads seen so far: the posting call is still there.
-    expect(replyTools('bitbucket', ['mcp__bitbucket__getPullRequest'])).toEqual(['mcp__bitbucket__addPullRequestComment', 'mcp__bitbucket__getPullRequest', 'mcp__bitbucket__getPullRequestComments']);
+    expect(replyTools('bitbucket', ['mcp__bitbucket__getPullRequest'])).toEqual(['mcp__bitbucket__addPullRequestComment', 'mcp__bitbucket__bb_get', 'mcp__bitbucket__bb_post', 'mcp__bitbucket__getPullRequest', 'mcp__bitbucket__getPullRequestComments']);
     // A host it doesn't know, with nothing seen: nothing approved ahead.
     expect(replyTools('gitlab', [])).toEqual([]);
+  });
+
+  it('lists Bitbucket’s generic GET and POST, never its PUT, PATCH or DELETE', () => {
+    const seen = ['get', 'post', 'put', 'patch', 'delete', 'clone'].map((m) => `mcp__bitbucket__bb_${m}`);
+    const tools = replyTools('bitbucket', seen);
+    expect(tools).toContain('mcp__bitbucket__bb_get');
+    expect(tools).toContain('mcp__bitbucket__bb_post');
+    for (const m of ['put', 'patch', 'delete', 'clone']) expect(tools).not.toContain(`mcp__bitbucket__bb_${m}`);
+  });
+
+  it('holds the generic POST to a pull request’s comments', () => {
+    const call = (path: unknown, stepId = 'pr-replies', tool = 'mcp__bitbucket__bb_post') => repliesCallAllowed({ stepId, tool, input: JSON.stringify({ path }) });
+    expect(call('/repositories/acme/web/pullrequests/42/comments')).toBe(true);
+    expect(call('/2.0/repositories/acme/web/pullrequests/42/comments/')).toBe(true);
+    for (const bad of ['/repositories/acme/web/pullrequests/42/approve', '/repositories/acme/web/pullrequests/42/merge', '/repositories/acme/web/pullrequests/42/request-changes', '/repositories/acme/web/pullrequests/42/comments/../merge', '/repositories/acme/web/pullrequests/42/comments?x=1', 'https://elsewhere.example/comments', undefined, 42]) {
+      expect(call(bad)).toBe(false);
+    }
+    expect(repliesCallAllowed({ stepId: 'pr-replies', tool: 'mcp__bitbucket__bb_post', input: 'not json' })).toBe(false);
+    // Other steps, and other tools, are left to their grant.
+    expect(call('/repositories/acme/web/pullrequests/42/merge', 'ship')).toBeUndefined();
+    expect(call('/repositories/acme/web/pullrequests/42/merge', 'pr-replies', 'mcp__bitbucket__bb_get')).toBeUndefined();
   });
 
   it('hands the ask and what it changed over as untrusted data', () => {
