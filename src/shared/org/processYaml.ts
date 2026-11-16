@@ -105,7 +105,13 @@ export function processFromYaml(source: string, names: ProcessYamlNames): { ok: 
   const ids = rows.map((r, i) => {
     const stageName = text(r.name);
     const kept = names.existingStages?.find((e) => same(e.name, stageName))?.id;
-    const made = kept && !used.has(kept) ? kept : `s${i + 1}-${stageName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'stage'}`;
+    let made = kept && !used.has(kept) ? kept : '';
+    if (!made) {
+      // A made-up id can land on one an earlier stage kept from the server.
+      const slug = stageName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'stage';
+      made = `s${i + 1}-${slug}`;
+      for (let n = 2; used.has(made); n++) made = `s${i + 1}-${slug}-${n}`;
+    }
     used.add(made);
     return made;
   });

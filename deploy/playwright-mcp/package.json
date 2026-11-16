@@ -1,0 +1,9 @@
+{
+  "name": "overcli-playwright-mcp",
+  "private": true,
+  "description": "The Playwright MCP the test-systems tool drives, vendored into the server image with a lockfile (src/main/org/testSystemsServer.ts).",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@playwright/mcp": "0.0.84"
+  }
+}

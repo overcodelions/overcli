@@ -783,7 +783,9 @@ export class ProcessService {
     const stage = def.stages[item.stageIndex];
     const yes = OK_ONLY.test(said) && !OBJECTION.test(said);
     if (item.status === 'active') {
-      if ((stage?.kind === 'worker' && item.ownerTurn === 'approval') || (stage?.kind === 'people' && this.decides(caller, def, item))) {
+      // Only someone who decides at this stage approves or sends it back;
+      // anyone else who can see it is heard as a note, not refused.
+      if (this.decides(caller, def, item)) {
         const res = this.act(caller, item.id, yes ? 'approve' : 'sendBack', { note: said, ...(stage.kind === 'worker' && !yes ? { stageIndex: item.stageIndex } : {}) });
         if (!res.ok) return res;
         const now = def.stages[res.item.stageIndex];

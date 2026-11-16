@@ -16,6 +16,19 @@ export interface DirectoryPerson {
   aliases?: string[];
 }
 
+/// An address that reads as an email.
+const EMAILISH = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/// The directory as someone who isn't an admin sees it: names, handles and
+/// Slack ids, but no work emails, as `email` or among the aliases. Who
+/// someone's sign-in email belongs to is for admins (Setup → People).
+export function withoutEmails(people: readonly DirectoryPerson[]): DirectoryPerson[] {
+  return people.map(({ email: _email, aliases, ...rest }) => {
+    const kept = (aliases ?? []).filter((a) => !EMAILISH.test(a.trim()));
+    return { ...rest, ...(kept.length ? { aliases: kept } : {}) };
+  });
+}
+
 /// Somewhere a person was written down: a sign-in, a manager, an asker.
 export interface PersonSighting {
   name?: string;

@@ -1313,6 +1313,8 @@ export class RunnerManager {
   /// the gap between the old proc exiting and the new one spawning gets
   /// its optimistic "Thinking…" strip clobbered.
   private claudeSendPending = new Set<UUID>();
+  /// Conversations whose worktree is being released (see `holdTurns`).
+  private turnHolds = new Map<UUID, number>();
   /// Conversations that fell back to the SDK transport after the CLI's
   /// permission-prompt-tool failed to load (broker server didn't register
   /// among a crowded set of MCP servers). Sticky for the conversation's
@@ -2403,6 +2405,9 @@ export class RunnerManager {
       };
     }
     const convId = args.conversationId;
+    if (this.turnHolds.has(convId)) {
+      return { ok: false, error: 'Its worktree is being tidied away. Send again in a moment.' };
+    }
     // Hidden one-shot turns have no transcript to show a diff in.
     if (!this.oneShotWaiters.has(convId)) this.commandChanges.beginTurn(convId, args.cwd);
     // Switching backends mid-conversation tears down whatever runtime was
@@ -2517,6 +2522,7 @@ export class RunnerManager {
   /// (HTTP, no process at all) are skipped.
   prewarm(args: SendArgs): void {
     const convId = args.conversationId;
+    if (this.turnHolds.has(convId)) return;
     // A runtime already here means there is nothing to warm — including a
     // live prewarm, since `spawnFor` sets `procs` synchronously.
     const eligible = canPrewarm({
@@ -2588,6 +2594,21 @@ export class RunnerManager {
       sendPending: this.claudeSendPending.has(conversationId),
       turnInFlight: this.procs.get(conversationId)?.turnInFlight,
     });
+  }
+
+  /// Refuse new turns on a conversation while its worktree is being
+  /// released (git.ts `releaseWorktree`), so one can't start in a directory
+  /// that's about to go. Returns the function that lets them through again.
+  holdTurns(conversationId: UUID): () => void {
+    this.turnHolds.set(conversationId, (this.turnHolds.get(conversationId) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const n = (this.turnHolds.get(conversationId) ?? 1) - 1;
+      if (n > 0) this.turnHolds.set(conversationId, n);
+      else this.turnHolds.delete(conversationId);
+    };
   }
 
   dropIfPrewarmed(conversationId: UUID): void {

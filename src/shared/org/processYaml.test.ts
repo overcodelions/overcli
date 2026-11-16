@@ -124,6 +124,15 @@ stages:
     expect(draft.stages[0].id).not.toBe('old-arch');
   });
 
+  it('never makes up an id an earlier stage kept', () => {
+    // Build moved up from second place, so it keeps `s2-build`; a second
+    // Build, now second, would make up the same id.
+    const { draft } = read('name: X\nstages:\n  - name: Build\n    team: Design Team\n  - name: Build\n    team: Design Team\n', { ...names, existingStages: [{ id: 's2-build', name: 'Build' }] });
+    expect(draft.stages[0].id).toBe('s2-build');
+    expect(draft.stages[1].id).not.toBe('s2-build');
+    expect(new Set(draft.stages.map((s) => s.id)).size).toBe(2);
+  });
+
   it('reads who can start it in a form the server accepts', () => {
     const { draft } = read('name: X\naccess: { who: people, people: [Sam], groups: [Leads] }\nstages:\n  - name: A\n    team: Design Team\n');
     expect(parseProcessAccess(draft.access)).toEqual({ who: 'people', groups: [{ id: 'team:Leads', name: 'Leads' }], people: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }] });

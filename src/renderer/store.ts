@@ -2800,6 +2800,10 @@ export const useStore = create<StoreState>((set, get) => ({
       ...(opts?.unattended ? { unattended: true, conversationId: id } : {}),
     });
     if (!res.ok) {
+      // A `kept:` answer is a deliberate refusal (its chat is running, or it
+      // has new changes): the tree is fine and still in use, so leave the row
+      // as it is.
+      if (res.error?.startsWith('kept:')) return res;
       // Same reasoning as `removeAgent`: a tree we failed to remove must stay
       // reachable, so the row keeps its worktree fields and is flagged.
       mutateConversation(set, get, id, (c) => ({ ...c, orphaned: true }));

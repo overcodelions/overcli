@@ -10,9 +10,10 @@
 #     worker's group, and the server keeps only the capabilities it needs to
 #     launch workers, look after what they write and stop them: setuid,
 #     setgid, dac_override and kill. Workers get none. They have to be
-#     ambient for node to keep them across exec, so every child would inherit them: the server
-#     starts everything else through setpriv, which drops them
-#     (src/main/org/childCaps.ts), and won't start holding them without it.
+#     ambient for node to keep them across exec, so every child would
+#     inherit them: the server starts everything else through setpriv,
+#     which drops them (src/main/org/childCaps.ts), and won't start holding
+#     them without it.
 #   Started as root, with only OVERCLI_TEST_UID: repo tests run as that user;
 #     the server keeps setuid, setgid and kill (to stop a test that runs over).
 set -eu

@@ -689,6 +689,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       // Still there on origin, and not merged yet: worth building on.
       mayContinueOpenPrs: (workerId) => workerEngine.get(workerId)?.caps.continueOpenPrs === true,
       hasOpenPr: async (repo, branch) => !!(await findOpenPullRequest(repo, branch, { env: (n) => process.env[n] })),
+      // A branch an open pull request merges into (develop, a release): never a fix's home.
+      isPrTarget: (repo, branch) => prWatch.isPrTarget(repo.name, branch),
       open: async (repo, branch) => {
         await serverGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo.path);
         const there = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], repo.path);

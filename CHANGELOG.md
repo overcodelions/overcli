@@ -4,6 +4,70 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Upgrading
+- **The server now limits how much runs at once.** Answers are capped by memory (two per GiB above 2 GiB, between 4 and 64) and code runs in their own checkout at one per CPU, on top of each worker's own limits. Work over a limit waits its turn, oldest first, and nothing fails. Change them on Setup → Capacity, or fix one from the environment with `OVERCLI_ANSWERS_AT_ONCE` / `OVERCLI_CODE_RUNS_AT_ONCE` (`0` for no limit). A busy server that ran everything at once before may now queue work.
+- **`/api/directory` is open to anyone signed in,** so the console can show people as names. Only admins see email addresses in it.
+- **The server only pushes and fetches at the addresses it connected.** With `OVERCLI_WORKER_UID` set, a repo whose `remote.<name>.url` isn't a connected repo's address, or that sets a `pushurl`, has its network git commands refused. A worker that cloned a repo of its own can no longer fetch or push it with the server's credentials; connect the repo on Setup → Repos instead.
+- **The Docker image vendors Playwright MCP from a lockfile** (`deploy/playwright-mcp`), and its Chromium comes from that copy. The `PLAYWRIGHT_VERSION` build setting is gone and is ignored if passed. `OVERCLI_PLAYWRIGHT_MCP` now takes only an absolute path to a `.js` file, never a package name.
+
+### Added
+- **Workers can look after the team's open pull requests.** An admin turns on **continueOpenPrs** for a worker, optionally narrowed to some authors (`prAuthors`), with review comments handled only for some (`prCommentAuthors`). The server checks open pull requests every few minutes, with no model in the loop, and wakes the worker when one settles with a red build, a merge conflict or new review comments. Wakes are capped at three a day per pull request, and review comments at three rounds per pull request for as long as it's open. The run gets why the build failed, starts the merge of the default branch when the pull request no longer merges, and a small replies run posts under each fixed comment naming the commit. The lander refuses to push a change that still has conflict markers.
+- **PR Fixer and Test Automation starter roles.** A catalog role can carry `teamPullRequests`, so hiring from it switches on the team's open pull requests. Only an admin adds a role, so only an admin grants it.
+- **Workers can take work from others.** Under **Who can ask it**, an admin sets who a worker **Starts work for** and who **Approves the rest**. Every approver gets the proposal as a Slack DM and in the console; the first to decide settles it, and every card then says who did.
+- **Setup → Capacity.** Once a minute the server notes answers and code runs going and waiting, and CPU and memory against cgroup limits where present, keeping a fortnight by the hour. From the last week it says **needs a bigger box**, **work is waiting**, **could use less** or **about right**, with each day's busiest moment. Readiness shows the same verdict. New `overcli_answers_*`, `overcli_code_runs_in_progress` and `overcli_pool_limit` metrics.
+- **Conversations are named from what they're about.** After a reply, a fast model names the chat and refreshes it as the chat moves on. Ticket keys and PR numbers lead the name (`ACME-412 · Fix login retry`) and come from the text, not the model. A typed name sticks; rename inline from the row, or turn it off in Settings.
+- **Process items work in their Slack thread.** An item put in from Slack posts each stage's updates there. Replying OKs a step or sends it back with your words; on a finished item a reply sends it back to its last stage or the one it names.
+- **overapi publishes to the org.** An environment dropped into `~/.overcli/inbox/apis` is sent to the server with only its tools, base URL, sign-in method and variable names. An admin approves it under Setup → APIs, picks read-only or writes, and types in the secrets. A re-publish that changes the base URL or sign-in method drops the kept secrets.
+- **Spend by day:** a chart on the spend page with 7/30/90-day, this-month and custom ranges and a one-worker filter, scoped like the page.
+- **`/worker <name> watch <what to catch>`** works out a search, tries it, and a DM card turns it into a watch trigger.
+- **Teams can refresh what they know daily.**
+- **A `scope` tool-health kind** for a key that signs in but lacks a permission. It names the missing scopes and needs a run of failures before it alerts.
+- **Claude Fable 5.2** is the frontier default; Fable 5.1 stays one click behind.
+- **The README has an overgo section,** and every screenshot is regenerated.
+
+### Changed
+- **The console feels substantial.** Inbox has figures with trends and a rail; Library has a filter sidebar, ranges and CSV export; Workers show last run, success and spend against budget; Teams, Processes and Reports have per-period figures; Readiness puts problems first with one action each. Pages stay up until the next is ready, people show as names, and finished work leads with its outcome.
+- **"What's the latest" questions are answered from fresh work,** not saved work or team knowledge more than a day old.
+- **A worker stage that proposes and asks for an OK stops for the stage owner's approval,** instead of passing the proposal on as finished work.
+- **A worker's PR scope goes into every prompt,** and a red build on a branch that's only behind merges the default branch in first.
+- **The PR watcher reports a token the host refuses** (401/403/429) once, with what to fix, and says when checks work again.
+- **A worker whose tracker is read only loses its "Ticket actions" flow.**
+- **Services:** a leftover copy of the same service on its port is stopped without asking, other holders get an 8s grace period, exit 143/130 reads as stopped, and restarting a group restarts only running services.
+- **The sidebar** sorts places by your last prompt, interleaves conversations and runs, and only a change of order slides.
+- **People lives in Setup,** and the top search finds Setup pages.
+- **File tree header:** Refresh, Terminal and Reveal are labelled buttons, and Refresh spins while it works.
+- The catalog's Bitbucket MCP package is pinned to `@3.1.0`.
+
+### Security
+- **A worker on the team's pull requests can't push onto a shared line.** `[continue-branch]` refuses the default branch, `main`, `master`, `develop`, `release/*`, `hotfix/*` and similar, and any branch an open pull request merges into.
+- **The pull-request replies step can only read and post comments.** It no longer gets the whole git-host tool, so it can't approve, merge or decline, and pull-request titles, comments and the ask reach it marked as untrusted text.
+- **A repo's config can't redirect the server's push.** `remote.*.url` and `remote.*.pushurl` are checked like the other steering keys.
+- **The test-systems browser stays off private addresses.** It refuses loopback, private, link-local and metadata addresses, and anything not http(s), except the apps to test's own environments, and checks again wherever a page ends up.
+- **Untrusted text can't close its own wrapper** with spaces, look-alike brackets, full-width letters or invisible characters, and a handed-back answer is wrapped again after it's unescaped.
+- **`/api/directory` shows email addresses to admins only.**
+- **Playwright MCP is installed from a lockfile in the image,** so nothing under it is resolved from the registry at run time.
+
+### Fixed
+- A slash command with images attached reaches the CLI first, so it still expands.
+- The server's Workers folder isn't counted as a repo in Readiness.
+- **The PR watcher:**
+  - A wake the worker refused (over budget, say) no longer counts as delivered, so the red build or comments aren't dropped and no round is spent.
+  - A pull request toggled to draft, or missing from one listing, keeps its comment-round count. A Bitbucket listing with a page that can't be read fails as a whole.
+  - With two watchers on a pull request, each clears and counts only the news it took.
+  - GitHub listings follow every page, so repos with more than 100 open pull requests, or pull requests with more than 100 comments, are fully watched.
+  - Each target branch is fetched once per check, and a conflict git couldn't decide isn't tried again until a commit moves.
+- **Setup → Capacity no longer says "needs a bigger box" because of file cache.** Reclaimable page cache is left out of a container's memory use.
+- **A conversation title starting with "Keep"** ("Keep-alive timeout…") is used, not taken as an instruction to keep the old one.
+- **A note from someone who doesn't decide a process stage** is recorded as a note instead of being refused and lost.
+- **Auto-tidy and Clean up:**
+  - An orphaned worktree that gained changes after the scan is kept, not force-removed.
+  - A deliberate keep no longer marks the conversation orphaned.
+  - A branch that couldn't be deleted keeps its name on the conversation.
+  - A turn can't start in a worktree while it's being removed.
+- **An imported process can't end up with two stages of the same id.**
+- **A Slack message's files are capped at 50 MB in all,** and each download stops as soon as it passes its share, so one message can no longer hold hundreds of megabytes.
+- **Run activity is written in order,** so a restart reads back every line.
+
 ## [0.25.0] - 2026-11-07
 
 ### Upgrading

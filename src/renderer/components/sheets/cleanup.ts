@@ -321,6 +321,9 @@ export interface CleanupPlan {
     worktreePath: string;
     branchName: string | null;
     baseBranch: string;
+    /// What the person was shown: a tree with changes they still chose is
+    /// forced; one that gains changes after the scan is kept.
+    dirtyAtScan: number;
   }>;
   /// Selected but refused, with the reason to show.
   skipped: Array<{ entry: WorktreeSweepEntry; reason: 'busy' | 'foreign' }>;
@@ -427,6 +430,7 @@ export function planCleanup(
       worktreePath: entry.worktreePath,
       branchName: entry.branchName,
       baseBranch: entry.baseBranch,
+      dirtyAtScan: entry.dirtyFiles,
     });
   }
   return plan;

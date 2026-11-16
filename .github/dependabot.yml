@@ -31,3 +31,8 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
+  - package-ecosystem: npm
+    directory: "/deploy/playwright-mcp"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2

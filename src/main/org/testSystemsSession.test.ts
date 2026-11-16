@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { credentialEnv, extraEnv, type TestSystem } from '../../shared/testSystems';
-import { BLANK_RETRY_MS, LIKELY_BLANK_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
+import { BLANK_RETRY_MS, blockedAddress, LIKELY_BLANK_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
 
 const billing: TestSystem = {
   id: 'billing',
@@ -36,13 +36,15 @@ function fakeBrowser(onCall: (name: string, args: Record<string, unknown>) => To
   return { child, calls };
 }
 
-function session(systems: TestSystem[], browser: BrowserChild, more: { worker?: string; fetch?: typeof fetch; now?: () => number } = {}) {
+function session(systems: TestSystem[], browser: BrowserChild, more: { worker?: string; fetch?: typeof fetch; now?: () => number; lookup?: (host: string) => Promise<string[]> } = {}) {
   return new TestSystemsSession({
     systems: () => systems,
     secret: (n) => SECRETS[n],
     startBrowser: async () => browser,
     tempDir: () => path.join(os.tmpdir(), 'overcli-ts-test'),
     sleep: async () => {},
+    // Every name is public unless a test says otherwise.
+    lookup: async () => ['203.0.113.10'],
     ...more,
   });
 }
@@ -218,6 +220,48 @@ describe('the test-systems tool', () => {
     const res = await session([billing], child).call('browser_snapshot', {});
     expect(JSON.stringify(res)).not.toContain('hunter2-secret');
     expect(JSON.stringify(res)).toContain('[hidden]');
+  });
+});
+
+describe('where the browser may go', () => {
+  const internal: TestSystem = { ...billing, id: 'admin', name: 'Admin', url: 'http://10.1.2.3:8080', envPattern: 'http://{env}.qa.acme.internal', signIn: { kind: 'none' }, workers: [] };
+  const lookup = async (host: string) => ({ 'docs.acme.dev': ['203.0.113.7'], 'rebind.acme.dev': ['203.0.113.8', '127.0.0.1'], 'meta.acme.dev': ['169.254.169.254'], 'v6.acme.dev': ['::ffff:a9fe:a9fe'] } as Record<string, string[]>)[host] ?? [];
+
+  it('refuses loopback, private, link-local and metadata addresses, and names that resolve to them', async () => {
+    const { child, calls } = fakeBrowser((_n, args) => page(String(args.url)));
+    const s = session([internal], child, { lookup });
+    for (const url of ['http://127.0.0.1:9464/metrics', 'http://localhost:3000', 'http://app.localhost', 'http://169.254.169.254/latest/', 'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://[::ffff:a9fe:a9fe]/', 'http://192.168.1.1', 'http://172.20.0.5', 'http://100.100.100.100', 'http://0.0.0.0:8080', 'http://2130706433/', 'http://meta.acme.dev/', 'http://rebind.acme.dev/', 'http://v6.acme.dev/', 'http://nowhere.acme.dev/']) {
+      const res = await s.call('browser_navigate', { url });
+      expect(res.isError, url).toBe(true);
+    }
+    expect((await s.call('browser_tabs', { action: 'new', url: 'http://169.254.169.254/' })).isError).toBe(true);
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,hi', 'chrome://settings', 'not a url']) expect((await s.call('browser_navigate', { url })).isError, url).toBe(true);
+    // Nothing refused ever reached the browser.
+    expect(calls).toEqual([]);
+  });
+
+  it('lets the apps’ own environments be private, and the public internet through', async () => {
+    const { child, calls } = fakeBrowser((_n, args) => page(String(args.url)));
+    const s = session([internal], child, { lookup });
+    for (const url of ['http://10.1.2.3:8080/users', 'http://bill-7.qa.acme.internal/', 'https://docs.acme.dev/guide', 'about:blank']) expect((await s.call('browser_navigate', { url })).isError, url).toBeUndefined();
+    expect(calls.map((c) => c.args.url)).toEqual(['http://10.1.2.3:8080/users', 'http://bill-7.qa.acme.internal/', 'https://docs.acme.dev/guide', 'about:blank']);
+    // The same private address on another port isn't the app.
+    expect((await s.call('browser_navigate', { url: 'http://10.1.2.3:22/' })).isError).toBe(true);
+  });
+
+  it('takes the browser off a private page it was sent to, and doesn’t show it', async () => {
+    const { child, calls } = fakeBrowser((name, args) => (name === 'browser_click' ? page('http://169.254.169.254/latest/meta-data/', 'secret-role-name') : page(String(args.url))));
+    const s = session([internal], child, { lookup });
+    await s.call('browser_navigate', { url: 'https://docs.acme.dev/' });
+    const res = await s.call('browser_click', { ref: 'e3' });
+    expect(res.isError).toBe(true);
+    expect(JSON.stringify(res)).not.toContain('secret-role-name');
+    expect(calls.at(-1)).toEqual({ name: 'browser_navigate', args: { url: 'about:blank' } });
+  });
+
+  it('judges addresses, IPv4 hidden in IPv6 included', () => {
+    for (const ip of ['127.0.0.1', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.0.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::', 'fe80::1', 'fd00::1', 'fc00::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '::7f00:1', '64:ff9b::a9fe:a9fe', 'ff02::1', 'nonsense']) expect(blockedAddress(ip), ip).toBe(true);
+    for (const ip of ['203.0.113.10', '8.8.8.8', '172.32.0.1', '100.128.0.1', '2606:4700::1111', '::ffff:8.8.8.8', '[2001:db8::1]']) expect(blockedAddress(ip), ip).toBe(false);
   });
 });
 

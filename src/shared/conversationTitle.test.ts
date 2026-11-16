@@ -57,6 +57,11 @@ describe('readTitleReply', () => {
   });
   it('recognises KEEP', () => {
     expect(readTitleReply('KEEP')).toBe('keep');
+    expect(readTitleReply('Keep.')).toBe('keep');
+  });
+  it('reads a title that only starts with Keep as a title', () => {
+    expect(readTitleReply('Keep-alive timeout in websocket client')).toBe('Keep-alive timeout in websocket client');
+    expect(readTitleReply('Keep session after login')).toBe('Keep session after login');
   });
   it('cuts long replies at a word', () => {
     const t = readTitleReply('word '.repeat(30)) as string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPeopleDirectory } from './peopleDirectory';
+import { buildPeopleDirectory, withoutEmails } from './peopleDirectory';
 
 describe('buildPeopleDirectory', () => {
   it('folds every name a person was recorded under into one entry, by their Slack name', () => {
@@ -42,5 +42,21 @@ describe('buildPeopleDirectory', () => {
 
   it('leaves out ids nobody has named, and the system’s own callers', () => {
     expect(buildPeopleDirectory({ seen: [{ slackUserId: 'U0ACMENOBODY' }, { name: 'overgo' }, { name: 'U0ACMEBARE' }] })).toEqual([]);
+  });
+});
+
+describe('withoutEmails', () => {
+  it('drops the email and email-shaped aliases, and keeps everything else', () => {
+    expect(
+      withoutEmails([
+        { id: 'U1', name: 'Sam Rivera', slackUserId: 'U1', handle: 'samr', email: 'sam@acme.example', aliases: ['Sam browser', ' sam.r@acme.example '] },
+        { id: 'name:Lee', name: 'Lee', aliases: ['lee@acme.example'] },
+        { id: 'U2', name: 'Pat' },
+      ]),
+    ).toEqual([
+      { id: 'U1', name: 'Sam Rivera', slackUserId: 'U1', handle: 'samr', aliases: ['Sam browser'] },
+      { id: 'name:Lee', name: 'Lee' },
+      { id: 'U2', name: 'Pat' },
+    ]);
   });
 });

@@ -781,4 +781,23 @@ describe('the people directory', () => {
       plane.close();
     }
   });
+
+  it('gives work emails to admins only', async () => {
+    const o = {
+      peopleDirectory: () => [{ id: 'U0ACMESAM', name: 'Sam Rivera', slackUserId: 'U0ACMESAM', handle: 'samr', email: 'sam@acme.example', aliases: ['Sam browser', 'sam.r@acme.example'] }],
+      directory: () => ({ people: [], groups: [] }),
+    } as unknown as OrgService;
+    const plane = createControlPlane({ org: o, log: () => {}, authenticate: (t) => (t === 'ocli_admin' ? { slackUserId: 'U0ACMEADM', name: 'Ada', admin: true } : t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(plane, { host: '127.0.0.1', port: 0 });
+    const at = `http://127.0.0.1:${(plane.address() as AddressInfo).port}`;
+    try {
+      const member = (await (await fetch(`${at}/api/directory`, { headers: { Authorization: 'Bearer ocli_good' } })).json()) as { people: unknown[] };
+      expect(member.people).toEqual([{ id: 'U0ACMESAM', name: 'Sam Rivera', slackUserId: 'U0ACMESAM', handle: 'samr', aliases: ['Sam browser'] }]);
+      expect(JSON.stringify(member)).not.toContain('@acme.example');
+      const admin = (await (await fetch(`${at}/api/directory`, { headers: { Authorization: 'Bearer ocli_admin' } })).json()) as { people: unknown[] };
+      expect(admin.people[0]).toMatchObject({ email: 'sam@acme.example', aliases: ['Sam browser', 'sam.r@acme.example'] });
+    } finally {
+      plane.close();
+    }
+  });
 });

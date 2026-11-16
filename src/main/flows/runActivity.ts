@@ -91,6 +91,8 @@ export class RunActivity {
   private byRun = new Map<string, RunActivityItem[]>();
   private madeDir = false;
   private convRun = new Map<string, string>();
+  /// Each run's appends, chained so they land in order and can be awaited.
+  private writes = new Map<string, Promise<void>>();
 
   constructor(
     private runFor: (conversationId: string) => string | undefined,
@@ -127,6 +129,11 @@ export class RunActivity {
       }
     }
     return gone;
+  }
+
+  /// Resolves once every append started so far is on disk.
+  async flushed(): Promise<void> {
+    await Promise.all([...this.writes.values()]);
   }
 
   observe(event: MainToRendererEvent): void {
@@ -196,7 +203,15 @@ export class RunActivity {
     if (f) {
       try {
         if (!this.madeDir) { fs.mkdirSync(path.dirname(f), { recursive: true }); this.madeDir = true; }
-        fs.appendFile(f, `${JSON.stringify(item)}\n`, () => {});
+        const line = `${JSON.stringify(item)}\n`;
+        const prev = this.writes.get(runId) ?? Promise.resolve();
+        const next = prev.then(() => fs.promises.appendFile(f, line)).catch(() => {
+          // A full disk loses the log, not the run.
+        });
+        this.writes.set(runId, next);
+        void next.then(() => {
+          if (this.writes.get(runId) === next) this.writes.delete(runId);
+        });
       } catch {
         // A full disk loses the log, not the run.
       }

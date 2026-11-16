@@ -1785,6 +1785,7 @@ export function registerIpc(): void {
   // Release: drop the tree, keep the conversation (git.ts releaseWorktree).
   ipcMain.handle('git:releaseWorktree', (_e, args) => releaseWorktree(args, {
     turnPending: (id) => runner?.isTurnPending(id) ?? false,
+    holdTurns: (id) => runner?.holdTurns(id) ?? (() => {}),
     migrateSession: migrateClaudeSessionCwd,
   }));
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
