@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-11-16
+
 ### Added
 - **An Org tab in the desktop app** beside Local workers, for one or more overgo servers. Tokens are kept in the keychain and only the main process sees them.
 - **overgo's tools in Claude, Codex and Gemini chats.** Every change a chat asks for is put to you in a dialog first. The tools now cover runs, PR watch, tuning, flow changes, people, and every worker setting.
@@ -1389,7 +1391,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/overcodelions/overcli/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/overcodelions/overcli/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/overcodelions/overcli/compare/v0.24.5...v0.25.0
 [0.24.5]: https://github.com/overcodelions/overcli/compare/v0.24.4...v0.24.5
