@@ -364,6 +364,25 @@ describe('the store and the log', () => {
     expect(h.all().filter((w) => w.status === 'passed')).toHaveLength(1);
   });
 
+  it('keeps the lines that say what failed, however far above the end they are', async () => {
+    const big = `ERROR: src/app/app.routes.ts:1240:75 - no-invalid-template-strings\n${'WARNING: noise\n'.repeat(20_000)}1 error(s), 20000 warning(s)`;
+    const chunks = [big.slice(0, 100_000), big.slice(100_000, 200_000), big.slice(200_000)].map((c) => new TextEncoder().encode(c));
+    const f = bitbucket(['FAILED']);
+    const streaming: typeof fetch = async (url, init) => {
+      if (!String(url).endsWith('/log')) return f(url, init);
+      let i = 0;
+      const body = new ReadableStream<Uint8Array>({ pull: (c) => (i < chunks.length ? c.enqueue(chunks[i++]) : c.close()) });
+      return new Response(body, { status: 200 });
+    };
+    const h = harness({ fetchImpl: streaming });
+    h.watch();
+    await h.ci.poll();
+    const prompt = h.asked[0].prompt;
+    expect(prompt).toContain('ERROR: src/app/app.routes.ts:1240:75 - no-invalid-template-strings');
+    expect(prompt).toContain('1 error(s), 20000 warning(s)');
+    expect(prompt.length).toBeLessThan(20_000);
+  });
+
   it('keeps only the end of a streamed CI log', async () => {
     const big = `${'x'.repeat(200_000)}\nFAILED: the last line`;
     const chunks = [big.slice(0, 70_000), big.slice(70_000, 140_000), big.slice(140_000)].map((c) => new TextEncoder().encode(c));

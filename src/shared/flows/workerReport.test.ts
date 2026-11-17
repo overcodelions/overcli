@@ -349,3 +349,27 @@ describe('rollUpWorkerReport', () => {
     expect(none.daily).toHaveLength(axis.length);
   });
 });
+
+describe('buildWorkerReport · pruned batches', () => {
+  it('still counts the jobs of batches the store pruned, once each, and their shifts as working', () => {
+    const r = buildWorkerReport({
+      workers: [makeWorker()],
+      journal: () => [makeShiftEntry({ orchestrationId: 'gone', at: 2000 })],
+      orchestrations: [makeBatch({ id: 'live', items: [makeItem({ finishedAt: 3000 })] })],
+      pruned: [
+        // Pruned, then (say) restored: the live copy is the one counted.
+        { id: 'live', workerId: 'worker-1', createdAt: 1, items: [{ status: 'done', finishedAt: 3000 }, { status: 'done', finishedAt: 3000 }] },
+        { id: 'gone', workerId: 'worker-1', createdAt: 2000, items: [{ status: 'done', finishedAt: 2500 }, { status: 'failed', finishedAt: 2600 }] },
+        // Before the window.
+        { id: 'older', workerId: 'worker-1', createdAt: 100, items: [{ status: 'done', finishedAt: 200 }] },
+      ],
+      runs: [],
+      sinceMs: 1000,
+      generatedAt: 5000,
+    });
+    const row = r.byWorker[0];
+    expect(row.itemsDone).toBe(2);
+    expect(row.itemsFailed).toBe(1);
+    expect(row.workingShifts).toBe(1);
+  });
+});

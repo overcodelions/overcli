@@ -19,7 +19,7 @@ const ROUTES: Array<{ method: 'GET' | 'POST'; path: RegExp }> = [
   { method: 'POST', path: new RegExp(`^/api/proposals/${ID}$`) },
   ...['stop', 'resume', 'push'].map((p) => ({ method: 'POST' as const, path: new RegExp(`^/api/runs/${ID}/${p}$`) })),
   // Managing one worker: the server checks who may do each.
-  ...['paused', 'trust', 'update', 'run', 'retire', 'journal', 'journal/forget', 'triggers', 'suggest-job', 'restore', 'review', 'tuning/try', 'how-it-works', 'how-it-works/suggest'].map((p) => ({ method: 'POST' as const, path: new RegExp(`^/api/workers/${ID}/${p}$`) })),
+  ...['paused', 'trust', 'update', 'run', 'retire', 'journal', 'journal/forget', 'triggers', 'suggest-job', 'revise', 'restore', 'review', 'tuning/try', 'how-it-works', 'how-it-works/suggest'].map((p) => ({ method: 'POST' as const, path: new RegExp(`^/api/workers/${ID}/${p}$`) })),
   { method: 'POST', path: new RegExp(`^/api/triggers/${ID}$`) },
   // Tasks workers handed to this desktop.
   { method: 'GET', path: /^\/api\/desktop\/tasks$/ },
@@ -35,7 +35,7 @@ const ROUTES: Array<{ method: 'GET' | 'POST'; path: RegExp }> = [
 /// Calls where the server has its model write something (a rewritten job,
 /// a flow change, a review of a worker's work, a trial run): a minute or
 /// two, not the seconds every other call gets.
-const SLOW = /^\/api\/workers\/[^/?#]+\/(suggest-job|review|how-it-works\/suggest|tuning\/try)$/;
+const SLOW = /^\/api\/workers\/[^/?#]+\/(suggest-job|revise|review|how-it-works\/suggest|tuning\/try)$/;
 export const ORG_TAB_SLOW_MS = 5 * 60_000;
 
 /// How long main waits for this call: longer for the ones a model writes.

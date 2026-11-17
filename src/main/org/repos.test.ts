@@ -492,11 +492,75 @@ describe('the server pushing a single-repo run', () => {
       log: () => {},
     });
     const landed = await lander.land({
-      id: '999888777', flowId: 'org-pr-app', projectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Say more in the README',
+      // As the runtime records it: projectPath is the worktree, the repo is sourceProjectPath.
+      id: '999888777', flowId: 'org-pr-app', projectPath: path.join(root, 'wt'), sourceProjectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Say more in the README',
       artifacts: {},
     } as unknown as FlowRun);
     expect(landed).toEqual([{ repo: 'app', branch: 'overcli/say-more-in-the-readme-999888', url: 'https://bitbucket.org/acme/app/pull-requests/new?source=overcli/say-more-in-the-readme-999888&dest=trunk' }]);
     expect(run(['log', '-1', '--format=%s', 'overcli/say-more-in-the-readme-999888'], path.join(root, 'app.git')).trim()).toBe('Say more in the README');
+  });
+});
+
+describe('the server pushing a run whose worktree is named for its ticket', () => {
+  it('finds the connected repo from sourceProjectPath, so it tests, opens the pull request and names the repo', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-land3-'));
+    dirs.push(root);
+    const run = (args: string[], cwd: string) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@acme.example', ...args], { cwd, stdio: 'pipe' }).toString();
+    run(['init', '-q', '--bare', '-b', 'trunk', 'app.git'], root);
+    run(['clone', '-q', 'app.git', 'app'], root);
+    const app = path.join(root, 'app');
+    fs.writeFileSync(path.join(app, 'README.md'), '# app\n');
+    run(['checkout', '-q', '-b', 'trunk'], app);
+    run(['add', '-A'], app);
+    run(['commit', '-qm', 'init'], app);
+    run(['push', '-q', 'origin', 'trunk'], app);
+    const wt = path.join(root, 'worktrees', 'app', 'ACME-7884');
+    run(['worktree', 'add', '-q', '-b', 'agent/acme', wt, 'trunk'], app);
+    fs.appendFileSync(path.join(wt, 'README.md'), 'More.\n');
+    const opened: Array<{ repo: string; branch: string; title: string }> = [];
+    const tested: string[] = [];
+    const logs: string[] = [];
+    const lander = new BranchLander({
+      git: async (args, cwd) => {
+        try {
+          return { ok: true, stdout: execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@acme.example', ...args], { cwd, stdio: 'pipe' }).toString() };
+        } catch (err) {
+          return { ok: false, error: String((err as { stderr?: Buffer }).stderr ?? err) };
+        }
+      },
+      repos: () => [{ name: 'app', url: 'git@bitbucket.org:acme/app.git', path: app, defaultBranch: 'trunk', testCommand: 'true', addedBy: 'Bo', at: 0 }],
+      test: async (command) => {
+        tested.push(command);
+        return { ok: true };
+      },
+      openPr: async (repo, branch, title) => {
+        opened.push({ repo: repo.name, branch, title });
+        return { url: 'https://bitbucket.org/acme/app/pull-requests/7', draft: true };
+      },
+      attach: () => {},
+      log: (m) => logs.push(m),
+    });
+    const landed = await lander.land({
+      id: '777666555', flowId: 'org-pr-app', projectPath: wt, sourceProjectPath: app, worktreePath: wt, userPrompt: 'Add a README line',
+      artifacts: {},
+    } as unknown as FlowRun);
+    expect(tested).toEqual(['true']);
+    expect(opened).toEqual([{ repo: 'app', branch: 'overcli/add-a-readme-line-777666', title: 'Add a README line' }]);
+    expect(landed).toEqual([{ repo: 'app', branch: 'overcli/add-a-readme-line-777666', url: 'https://bitbucket.org/acme/app/pull-requests/7', pr: 'draft' }]);
+    expect(describeLanded(landed)).toBe('- Opened a draft pull request for app: https://bitbucket.org/acme/app/pull-requests/7 (branch overcli/add-a-readme-line-777666)');
+    expect(logs).toEqual([]);
+  });
+
+  it('says so when the run is not in a connected repo, instead of staying quiet', async () => {
+    const logs: string[] = [];
+    const lander = new BranchLander({
+      git: async () => ({ ok: false, error: 'no git here' }),
+      repos: () => [],
+      attach: () => {},
+      log: (m) => logs.push(m),
+    });
+    await lander.land({ id: 'r1', flowId: 'org-pr-app', projectPath: '/wt/x', sourceProjectPath: '/repos/gone', worktreePath: '/wt/x', userPrompt: 'x', artifacts: {} } as unknown as FlowRun);
+    expect(logs[0]).toContain("/repos/gone isn't a connected repo");
   });
 });
 
@@ -534,7 +598,7 @@ describe('the server pushing a follow-up', () => {
       attach: () => {},
       log: () => {},
     });
-    const followUp = { id: '222333444', flowId: 'org-pr-app', projectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Soften the wording', artifacts: {}, continues: 'overcli/first-change-111111' } as unknown as FlowRun;
+    const followUp = { id: '222333444', flowId: 'org-pr-app', projectPath: path.join(root, 'wt'), sourceProjectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Soften the wording', artifacts: {}, continues: 'overcli/first-change-111111' } as unknown as FlowRun;
     return { root, app, run, lander, followUp };
   }
 
@@ -594,16 +658,34 @@ describe('the server pushing a follow-up', () => {
     expect(landedBranches('- app: not pushed — its tests failed')).toEqual([]);
   });
 
-  it('pushes a branch of its own when the one it was built on has moved, never forcing it', async () => {
+  it('merges in what was pushed to its branch meanwhile and adds to it, never opening a second pull request', async () => {
+    const { root, app, run, lander, followUp } = setUp();
+    run(['checkout', '-q', 'first'], app);
+    fs.writeFileSync(path.join(app, 'NOTES.md'), 'Someone else.\n');
+    run(['add', '-A'], app);
+    run(['commit', '-qm', 'Pushed meanwhile'], app);
+    run(['push', '-q', 'origin', 'HEAD:refs/heads/overcli/first-change-111111'], app);
+    const landed = await lander.land(followUp);
+    expect(landed).toEqual([{ repo: 'app', branch: 'overcli/first-change-111111', updated: true }]);
+    const log = run(['log', '--format=%s', 'overcli/first-change-111111'], path.join(root, 'app.git'));
+    expect(log).toContain('Pushed meanwhile');
+    expect(log).toContain('Soften the wording');
+    expect(run(['branch', '--list'], path.join(root, 'app.git'))).not.toContain('soften');
+  });
+
+  it('pushes nothing when what was pushed meanwhile conflicts, and opens no second pull request, never forcing it', async () => {
     const { root, app, run, lander, followUp } = setUp();
     run(['checkout', '-q', 'first'], app);
     fs.appendFileSync(path.join(app, 'README.md'), 'Someone else.\n');
     run(['commit', '-qam', 'Pushed meanwhile'], app);
     run(['push', '-q', 'origin', 'HEAD:refs/heads/overcli/first-change-111111'], app);
-    const landed = await lander.land(followUp);
-    expect(landed).toEqual([{ repo: 'app', branch: 'overcli/soften-the-wording-222333', url: 'https://bitbucket.org/acme/app/pull-requests/new?source=overcli/soften-the-wording-222333&dest=trunk' }]);
+    const [landed] = await lander.land(followUp);
+    expect(landed.repo).toBe('app');
+    expect(landed.skipped).toContain('conflict');
+    expect(landed.branch).toBeUndefined();
     expect(run(['log', '-1', '--format=%s', 'overcli/first-change-111111'], path.join(root, 'app.git')).trim()).toBe('Pushed meanwhile');
-    expect(landedBranches(describeLanded(landed))).toEqual(['overcli/soften-the-wording-222333']);
+    expect(run(['branch', '--list'], path.join(root, 'app.git'))).not.toContain('soften');
+    expect(run(['status', '--porcelain'], path.join(root, 'wt'))).not.toContain('UU');
   });
 });
 

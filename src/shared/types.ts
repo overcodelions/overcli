@@ -3545,8 +3545,13 @@ export interface IPCInvokeMap {
     command?: string;
   }) =>
     /// `command` is a start command the answer proposes, when it proposes one.
-    | { ok: true; backend: Backend; text: string; command?: string }
+    /// `run` is what to run once before starting again, in order.
+    | { ok: true; backend: Backend; text: string; command?: string; run?: string[] }
     | { ok: false; error: string };
+  /// Open one of those `run` steps in a terminal, in the service's folder.
+  'services:runInTerminal': (args: { workspaceId: string; serviceId: string; command: string }) =>
+    | { ok: true }
+    | { ok: false; error: string; command?: string };
   'services:cancelAskAi': (args: { workspaceId: string; serviceId: string }) => boolean;
   /// Stop whatever is listening on a port. For the service overcli started
   /// that outlived the app, and now cannot have its port back. Never

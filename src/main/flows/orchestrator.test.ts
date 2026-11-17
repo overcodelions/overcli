@@ -57,6 +57,7 @@ function makeHarness(opts: {
     worktreeName?: string;
     adoptWorktrees?: unknown;
     mergeWhenBehind?: boolean;
+    mergeRepos?: string[];
     workerId?: string;
     workerName?: string;
     allowExternalActions?: boolean;
@@ -102,6 +103,7 @@ function makeHarness(opts: {
         worktreeName: args.worktreeName,
         adoptWorktrees: args.adoptWorktrees,
         mergeWhenBehind: args.mergeWhenBehind,
+        mergeRepos: args.mergeRepos,
         workerId: args.workerId,
         workerName: args.workerName,
         allowExternalActions: args.allowExternalActions,
@@ -790,6 +792,25 @@ describe('OrchestratorImpl runIn', () => {
     expect(h.started[0].prompt).toContain('SortTest.sortsByDate');
     // The host built it merged with its target: the run starts from that too.
     expect(h.started[0].mergeWhenBehind).toBe(true);
+  });
+
+  it('names only the continued pull request’s repos for the default-branch merge', async () => {
+    const h = makeHarness();
+    h.engine.continueBranch = async () => 'feature/ACME-9-sort';
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      origin: {
+        kind: 'worker',
+        workerId: 'w1',
+        workerName: 'Mario',
+        prTargets: [{ owner: 'acme', repo: 'acme-web', number: 42 }],
+        prLinks: [{ repo: 'acme-web', url: 'https://bitbucket.org/acme/acme-web/pull-requests/42' }],
+      },
+      items: [{ candidate: { id: 'c0', title: 'PR #42 acme-web: reply on the pull request', prompt: 'reply' }, flowId: 'flow-a' }],
+    });
+    expect(h.started[0].mergeRepos).toEqual(['acme-web']);
   });
 
   it('launches cwd items in the project tree, with no base branch to fork from', async () => {

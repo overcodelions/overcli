@@ -290,3 +290,30 @@ describe('copiesOf', () => {
     expect(copiesOf(specs, 'proc-procs')).toEqual([]);
   });
 });
+
+describe('options on a command that runs through sh -c', () => {
+  it('go inside the script, onto its last step, not after it where sh ignores them', async () => {
+    const { appendArgs } = await import('./options');
+    const spec = {
+      id: 'api',
+      name: 'acme-api',
+      runner: 'gradle',
+      command: ['sh', '-c', './gradlew :acme-common:clean && ./gradlew :acme-api:bootRun'],
+    } as unknown as Parameters<typeof buildCommand>[0];
+    const argv = buildCommand(spec, [
+      { key: '-Ddatabase.ip', value: 'localhost', origin: 'own' },
+      { key: '-Dgreeting', value: "it's here", origin: 'own' },
+    ] as unknown as Parameters<typeof buildCommand>[1]);
+    expect(argv).toHaveLength(3);
+    expect(argv[2]).toBe(
+      "./gradlew :acme-common:clean && ./gradlew :acme-api:bootRun '-PjvmArgs=-Ddatabase.ip=localhost -Dgreeting=it'\\''s here'",
+    );
+    // A plain command is untouched by any of this.
+    expect(appendArgs(['./gradlew', 'bootRun'], ['-I', '/tmp/init.gradle'])).toEqual([
+      './gradlew',
+      'bootRun',
+      '-I',
+      '/tmp/init.gradle',
+    ]);
+  });
+});

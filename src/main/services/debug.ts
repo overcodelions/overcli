@@ -1,6 +1,7 @@
 // Runner-specific debug launches. Overcli exposes a standard attach endpoint;
 // breakpoints, stacks and variables stay in the developer's editor.
 
+import { appendArgs } from './options';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -46,14 +47,14 @@ export function debugLaunch(
     if (spec.runner === 'gradle') {
       if (!gradleInitPath) return { command: [...command], env: { ...env } };
       return {
-        command: [...command, '-I', gradleInitPath],
+        command: appendArgs(command, ['-I', gradleInitPath]),
         env: { ...env, OVERCLI_DEBUG_PORT: String(port) },
         kind,
         port,
       };
     }
     return {
-      command: [...command, `-Dspring-boot.run.jvmArguments=${agent}`],
+      command: appendArgs(command, [`-Dspring-boot.run.jvmArguments=${agent}`]),
       env: { ...env },
       kind,
       port,

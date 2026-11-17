@@ -14,11 +14,12 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { collapseCarriageReturns, parseAnsi } from '../ansi';
-import { countLevels, describeFilter, filterLog, highlightRuns, parsedLine, type LogLevel } from '../logFilter';
+import { countLevels, describeFilter, filterLog, highlightRuns, parsedLine, type FilteredLine, type LogLevel } from '../logFilter';
 import { exceptionMessage, groupLog, isTraceHeader } from '../stackFrames';
 import { listExceptions, type CaughtException, type ExceptionLog } from '@shared/exceptions';
 import { summarizeLong, type Level, type ParsedLogLine } from '../logLine';
-import { firstLine, LOG_WINDOW_STEP, windowStart } from '../logWindow';
+import { firstLine, LOG_WINDOW_STEP, windowStart, type WindowItem } from '../logWindow';
+import { parseEnd, parseStart, splitRuns, type Run, type RunEnd, type RunStart } from '@shared/logRuns';
 import { SelectionMenu } from './SelectionMenu';
 import { useDividerDragging } from './ResizableDivider';
 
@@ -88,15 +89,57 @@ export function LogView({
   const caught = useMemo(() => (exceptions ? listExceptions(exceptions) : []), [exceptions]);
   const scroller = useRef<HTMLDivElement>(null);
 
-  const shown = useMemo(
-    () => filterLog(lines, { query, level, hidden }),
-    [lines, query, level, hidden],
-  );
-  const levelCounts = useMemo(() => countLevels(lines), [lines]);
-  // Forty lines of `at org.springframework…` around one sentence is a needle in
-  // its own haystack. Folded by default; never while searching, since the
-  // match may well be inside a frame.
-  const items = useMemo(() => groupLog(shown, { collapse: query.trim() === '' }), [shown, query]);
+  // Each start writes a divider, so the log is a list of runs. Every run but
+  // the newest is folded to one row unless opened: what was wrong last time is
+  // a click away, and a day of restarts costs one row each instead of being
+  // filtered, grouped and drawn on every new line. Search looks through every
+  // run — a match in a folded one should not be missed.
+  const runs = useMemo(() => splitRuns(lines), [lines]);
+  const [opened, setOpened] = useState<ReadonlySet<number>>(new Set());
+  if (lines.length === 0 && opened.size > 0) setOpened(new Set());
+  const searching = query.trim() !== '';
+  const folded = (i: number) => !searching && i < runs.length - 1 && !opened.has(runs[i].from);
+
+  const view = useMemo(() => {
+    const shown: FilteredLine[] = [];
+    const items: WindowItem[] = [];
+    const visible: string[] = [];
+    const starts = new Map<number, { start: RunStart; foldable: boolean }>();
+    const ends = new Map<number, { end: RunEnd; firstProblem?: number }>();
+    const folds = new Map<number, Run>();
+    runs.forEach((run, i) => {
+      if (folded(i)) {
+        items.push({ kind: 'run', index: run.from });
+        folds.set(run.from, run);
+        return;
+      }
+      const slice = lines.slice(run.from, run.to);
+      for (const l of slice) visible.push(l);
+      const part = filterLog(slice, { query, level, hidden }).map((l) => ({ ...l, index: l.index + run.from }));
+      let firstProblem: number | undefined;
+      for (const l of part) {
+        shown.push(l);
+        const raw = lines[l.index];
+        if (!raw.startsWith('── ')) {
+          if (firstProblem === undefined && l.problem) firstProblem = l.index;
+          continue;
+        }
+        const start = parseStart(raw);
+        if (start) starts.set(l.index, { start, foldable: i < runs.length - 1 && !searching });
+        const end = parseEnd(raw);
+        if (end) ends.set(l.index, { end, firstProblem });
+      }
+      // Forty lines of `at org.springframework…` around one sentence is a
+      // needle in its own haystack. Folded by default; never while searching,
+      // since the match may well be inside a frame.
+      items.push(...groupLog(part, { collapse: !searching }));
+    });
+    return { shown, items, visible, starts, ends, folds };
+    // `folded` reads runs, opened and searching, all listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs, lines, opened, query, level, hidden, searching]);
+  const { shown, items } = view;
+  const levelCounts = useMemo(() => countLevels(view.visible), [view.visible]);
   const byIndex = useMemo(() => new Map(shown.map((l) => [l.index, l])), [shown]);
   // Only a stretch of the rows is drawn (see `logWindow`). `from` anchors it
   // to a line while the reader is scrolled up; null follows the newest.
@@ -127,8 +170,34 @@ export function LogView({
     // Only on the change of mode; `items` moving underneath is the point.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinned]);
-  const summary = describeFilter(lines.length, shown.length);
-  const problems = useMemo(() => filterLog(lines, { level: 'problems' }).length, [lines]);
+  const summary = describeFilter(view.visible.length, shown.length);
+  const problems = useMemo(() => filterLog(view.visible, { level: 'problems' }).length, [view.visible]);
+
+  // A run's "first error": scroll the line into the middle of the pane. The
+  // window is anchored there first, since the line may be above what is drawn.
+  const [jump, setJump] = useState<{ line: number; seq: number } | null>(null);
+  const jumpTo = (line: number) => {
+    setPinned(false);
+    setFrom(line);
+    setJump((j) => ({ line, seq: (j?.seq ?? 0) + 1 }));
+  };
+  useLayoutEffect(() => {
+    if (!jump || !scroller.current) return;
+    // The line itself, or the folded trace it sits in.
+    let target: HTMLElement | null = null;
+    for (const el of scroller.current.querySelectorAll<HTMLElement>('[data-line]')) {
+      if (Number(el.dataset.line) > jump.line) break;
+      target = el;
+    }
+    target?.scrollIntoView({ block: 'center' });
+  }, [jump]);
+  const toggleRun = (from: number) =>
+    setOpened((o) => {
+      const next = new Set(o);
+      if (next.has(from)) next.delete(from);
+      else next.add(from);
+      return next;
+    });
 
   // The rows themselves, memoised: this component re-renders whenever anything
   // around it does, and handing React the same element array lets it skip
@@ -137,7 +206,22 @@ export function LogView({
   const rows = useMemo(
     () =>
       drawn.map((item) =>
-        item.kind === 'frames' ? (
+        item.kind === 'run' ? (
+          <div key={`run-${item.index}`} data-line={item.index}>
+            <RunFold run={view.folds.get(item.index)!} onOpen={() => toggleRun(item.index)} />
+          </div>
+        ) : item.kind === 'line' && view.starts.has(item.index) ? (
+          <div key={item.index} data-line={item.index}>
+            <StartDivider
+              {...view.starts.get(item.index)!}
+              onFold={() => toggleRun(item.index)}
+            />
+          </div>
+        ) : item.kind === 'line' && view.ends.has(item.index) ? (
+          <div key={item.index} data-line={item.index}>
+            <EndDivider {...view.ends.get(item.index)!} onJump={jumpTo} />
+          </div>
+        ) : item.kind === 'frames' ? (
           <div
             key={`frames-${item.indices[0]}`}
             data-line={item.indices[0]}
@@ -157,7 +241,9 @@ export function LogView({
           </div>
         ),
       ),
-    [drawn, byIndex, lines, wrap, formatted],
+    // toggleRun and jumpTo only call setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [drawn, byIndex, lines, wrap, formatted, view],
   );
 
   // Follow the output, but stop the moment someone scrolls up: nothing is
@@ -177,13 +263,26 @@ export function LogView({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <button
-          className={level === 'problems' ? 'svc-btn-primary' : 'svc-btn'}
-          onClick={() => setLevel((l) => (l === 'problems' ? 'all' : 'problems'))}
-          title="Only lines that look like a failure"
-        >
-          Problems{problems > 0 && <span className="text-ink-faint">{problems}</span>}
-        </button>
+        <div role="group" aria-label="Show" className="inline-flex h-6 overflow-hidden rounded-[5px] border border-card-strong">
+          <button
+            aria-pressed={level === 'all'}
+            className={`px-2 text-[11.5px] font-medium ${level === 'all' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink'}`}
+            onClick={() => setLevel('all')}
+          >
+            All
+          </button>
+          <button
+            aria-pressed={level === 'problems'}
+            className={`inline-flex items-center gap-1 border-l border-card-strong px-2 text-[11.5px] font-medium ${
+              level === 'problems' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink'
+            }`}
+            onClick={() => setLevel('problems')}
+            title="Only lines that look like a failure"
+          >
+            Problems
+            {problems > 0 && <span className="text-red-600 dark:text-red-300">{problems.toLocaleString()}</span>}
+          </button>
+        </div>
         {/* One toggle per level that actually occurs, each with its count —
             DEBUG off is the usual first move on a Spring log, and the count
             says how much that hides before anyone commits to it. */}
@@ -212,8 +311,11 @@ export function LogView({
             </button>
           );
         })}
-        {summary && <span className="text-[10px] text-ink-faint">{summary}</span>}
         <div className="flex-1" />
+        <span className="text-[10.5px] text-ink-faint">
+          {summary ?? `${view.visible.length.toLocaleString()} lines`}
+        </span>
+        <span aria-hidden className="mx-1 h-4 w-px bg-card-border-strong" />
         {!pinned && (
           <button className="svc-btn" onClick={() => setPinned(true)}>
             Follow
@@ -268,7 +370,6 @@ export function LogView({
             Clear
           </button>
         )}
-        <span className="text-[10px] text-ink-faint">{lines.length.toLocaleString()} lines</span>
       </div>
       {showExceptions && caught.length > 0 && <ExceptionsPanel items={caught} onAsk={selection?.onAsk} />}
 
@@ -385,6 +486,95 @@ function Frames({
       <span className="text-[10.5px]">▸ {indices.length} frames</span>
       <span className="min-w-0 flex-1 truncate text-[10.5px] opacity-70">{first}</span>
     </button>
+  );
+}
+
+/// How a run ended, in words: "exited 1 after 16s".
+function outcome(end: RunEnd): string {
+  const verb =
+    end.status === 'stopped'
+      ? 'Stopped'
+      : end.status === 'done'
+        ? 'Finished'
+        : end.exitCode !== undefined
+          ? `Exited ${end.exitCode}`
+          : 'Failed';
+  return [verb, end.duration ? `after ${end.duration}` : ''].filter(Boolean).join(' ');
+}
+
+const END_TONE: Record<RunEnd['status'], string> = {
+  failed: 'text-red-600 dark:text-red-300',
+  stopped: 'text-ink-faint',
+  done: 'text-green-700 dark:text-green-300',
+};
+
+/// An earlier run, folded to one row. Opens in place.
+function RunFold({ run, onOpen }: { run: Run; onOpen: () => void }) {
+  const lines = run.to - run.from;
+  return (
+    <button
+      className="mb-2 flex w-full items-center gap-2 rounded-[5px] border border-card-strong bg-card px-2.5 py-1 text-left text-ink-muted hover:text-ink"
+      onClick={onOpen}
+      title={run.start ? `$ ${run.start.command}` : 'Output from before the runs were marked'}
+    >
+      <span aria-hidden>▸</span>
+      <span className="min-w-0 flex-1 truncate">
+        {run.start ? `Run at ${run.start.time ?? '—'} · ${run.start.ref}` : 'Earlier output'} · {lines.toLocaleString()}{' '}
+        {lines === 1 ? 'line' : 'lines'}
+      </span>
+      {run.end && <span className={END_TONE[run.end.status]}>{outcome(run.end)}</span>}
+    </button>
+  );
+}
+
+/// Where a run begins, and what it ran — the line that answers "what did that
+/// restart actually do".
+function StartDivider({ start, foldable, onFold }: { start: RunStart; foldable: boolean; onFold: () => void }) {
+  return (
+    <div className="mb-1.5 mt-3 first:mt-0">
+      <div className="flex items-center gap-2.5 text-accent">
+        <span className="whitespace-nowrap">
+          {start.time ? `Run at ${start.time}` : 'Run'} · {start.ref}
+        </span>
+        <span aria-hidden className="h-px flex-1 bg-accent/25" />
+        {foldable && (
+          <button className="text-[10.5px] text-ink-faint hover:text-ink" onClick={onFold}>
+            Fold
+          </button>
+        )}
+      </div>
+      <div className="break-all text-ink-faint" title={start.cwd}>
+        $ {start.command}
+      </div>
+    </div>
+  );
+}
+
+/// Where a run ended, and how. A failed one offers its first error, which in a
+/// three-thousand-line build is otherwise a long scroll up.
+function EndDivider({
+  end,
+  firstProblem,
+  onJump,
+}: {
+  end: RunEnd;
+  firstProblem?: number;
+  onJump: (line: number) => void;
+}) {
+  return (
+    <div className={`mb-1 mt-2.5 flex items-center gap-2.5 ${END_TONE[end.status]}`}>
+      <span className="whitespace-nowrap">{outcome(end)}</span>
+      {end.error && <span className="min-w-0 truncate text-ink-muted">{end.error}</span>}
+      <span aria-hidden className="h-px min-w-[24px] flex-1 bg-current opacity-30" />
+      {end.status === 'failed' && firstProblem !== undefined && (
+        <button
+          className="whitespace-nowrap font-sans text-[11px] underline decoration-dotted underline-offset-2 hover:no-underline"
+          onClick={() => onJump(firstProblem)}
+        >
+          First error
+        </button>
+      )}
+    </div>
   );
 }
 

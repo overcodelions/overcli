@@ -2401,8 +2401,19 @@ export function registerIpc(): void {
       cancelKey: `services:askAi:${workspaceId}:${serviceId}`,
     });
     if (!result.ok) return { ok: false as const, error: result.error };
-    const { text, command: suggested } = splitSuggestedCommand(result.text);
-    return { ok: true as const, backend, text: tidySuggestion(text), command: suggested };
+    const { text, command: suggested, run } = splitSuggestedCommand(result.text);
+    return { ok: true as const, backend, text: tidySuggestion(text), command: suggested, run };
+  });
+  // A step from an answer, run where the user can watch it and answer any
+  // prompt: the built-in terminal, else a Terminal window. The folder comes
+  // from the service, and the line is refused if it carries shell syntax.
+  ipcMain.handle('services:runInTerminal', async (_e, { workspaceId, serviceId, command }) => {
+    const cwd = services().runFolder(workspaceId, serviceId);
+    if (!cwd) return { ok: false as const, error: 'That service has no checkout to run in.' };
+    if (typeof command !== 'string' || command.trim() === '') {
+      return { ok: false as const, error: 'Nothing to run.' };
+    }
+    return openTerminalAt(cwd, command.trim(), 'service-fix');
   });
   ipcMain.handle('services:cancelAskAi', (_e, { workspaceId, serviceId }) =>
     runner!.cancelOneShot(`services:askAi:${workspaceId}:${serviceId}`),

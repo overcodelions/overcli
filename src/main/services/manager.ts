@@ -893,6 +893,17 @@ export class ServicesManager {
     };
   }
 
+  /// Where a service's own commands run: its checkout, or the subfolder of it
+  /// the service lives in. Worked out here, never taken from the renderer, so
+  /// a fix command can only ever open in a folder a service is bound to.
+  runFolder(workspaceId: string, serviceId: string): string | undefined {
+    const stack = this.stack(workspaceId);
+    const spec = stack.services.find((s) => s.id === serviceId);
+    const binding = stack.bindings.find((b) => b.serviceId === serviceId);
+    if (!spec || !binding) return undefined;
+    return spec.subpath ? path.join(binding.path, spec.subpath) : binding.path;
+  }
+
   /// What a model needs to propose a start command for a service that has
   /// none, and the checkout to read while it works one out.
   commandPrompt(workspaceId: string, serviceId: string): { prompt: string; cwd: string } | undefined {

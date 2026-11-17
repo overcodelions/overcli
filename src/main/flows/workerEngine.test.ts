@@ -56,7 +56,7 @@ vi.mock('./workerFiles', async (importOriginal) => ({
   fileWorkerDeliverable: fileDeliverableMock,
 }));
 
-import { WorkerEngine, defaultFlowOf, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
+import { WorkerEngine, defaultFlowOf, parseFlowRequest, type WorkerEngineDeps, type WorkerParker, type WorkerReferralEvent } from './workerEngine';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
 import type { HeldHandoff, Worker, WorkerJournalEntry, WorkersAway } from '../../shared/flows/worker';
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
@@ -1260,6 +1260,43 @@ describe('WorkerEngine errands', () => {
     // And no replay: the replayed thread exists only for a thread we cannot
     // resume, and re-sending it reads as the manager repeating themselves.
     expect(h.parked[1].priorTurns).toBeUndefined();
+  });
+
+  it('tells its planner its tools work in every flow, so it never asks for a flow just to use one', async () => {
+    const h = makeHarness({ seed: [seedWorker({ mcpServers: ['test-systems'] })] });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'Take a screenshot of the admin app.');
+    expect(h.parked[0].prompt).toContain('YOUR TOOLS — in every step of every run of your flows');
+    expect(h.parked[0].prompt).toContain('test-systems');
+    expect(h.parked[0].prompt).toContain('Never ask for a new flow just to use a tool');
+
+    const bare = makeHarness({ seed: [seedWorker()] });
+    bare.engine.start();
+    await bare.engine.runErrand('worker-1', 'What changed?');
+    expect(bare.parked[0].prompt).not.toContain('YOUR TOOLS —');
+  });
+
+  it('tells a resumed desk thread when its tools changed, once', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'Take a screenshot of the admin app.');
+    await h.engine.runErrand('worker-1', 'Try again.');
+    expect(h.parked[1].resumeSessionId).toBe('sess-a');
+    expect(h.parked[1].prompt).not.toContain('YOUR TOOLS CHANGED');
+
+    // Its manager gives it the tool between messages.
+    const w = h.engine.get('worker-1')!;
+    w.mcpServers = [...(w.mcpServers ?? []), 'test-systems'];
+    await h.engine.runErrand('worker-1', 'Try again, you should have access.');
+    expect(h.parked[2].resumeSessionId).toBe('sess-a');
+    expect(h.parked[2].prompt).toContain('YOUR TOOLS CHANGED');
+    expect(h.parked[2].prompt).toContain('test-systems');
+    expect(h.parked[2].prompt).toContain('do not repeat it');
+
+    // Said once: the thread now knows.
+    await h.engine.runErrand('worker-1', 'And one more page.');
+    expect(h.parked[3].prompt).not.toContain('YOUR TOOLS CHANGED');
   });
 
   it('holds one conversation per Slack thread, apart from the desk and from each other, across days', async () => {
@@ -2853,6 +2890,30 @@ describe('WorkerEngine delegation', () => {
 
     const sent = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.from);
     expect(sent?.origin).toMatchObject({ workerId: 'triage', errand: 'Look at XYZ-6814.' });
+  });
+
+  it('tells the conversation a handoff came from that it was sent, and how it ended', async () => {
+    const h = delegationHarness();
+    seedErrandReply(h, 'Tell Triage about XYZ-6814', 'Passing it on. <handoff to="Triage">Look at XYZ-6814.</handoff>');
+    const heard: WorkerReferralEvent[] = [];
+    h.engine.onReferral((e) => heard.push(e));
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Tell Triage about XYZ-6814', undefined, { conversation: 'slack:C0ACME:1.0' });
+    for (let i = 0; i < 5; i++) await h.flush();
+
+    expect(heard[0]).toMatchObject({ phase: 'sent', conversation: 'slack:C0ACME:1.0', from: { workerId: CHIEF }, to: { workerId: 'triage' }, instruction: 'Look at XYZ-6814.' });
+    expect(heard.map((e) => e.phase)).toEqual(['sent', 'done']);
+  });
+
+  it('says nothing about a handoff made outside a conversation', async () => {
+    const h = delegationHarness();
+    seedErrandReply(h, 'Tell Triage about XYZ-6814', 'Passing it on. <handoff to="Triage">Look at XYZ-6814.</handoff>');
+    const heard: WorkerReferralEvent[] = [];
+    h.engine.onReferral((e) => heard.push(e));
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Tell Triage about XYZ-6814');
+    for (let i = 0; i < 5; i++) await h.flush();
+    expect(heard).toEqual([]);
   });
 
   it('holds a dated handoff until its day, then sends it', async () => {

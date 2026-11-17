@@ -10,7 +10,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/overcli-test' } }));
 vi.mock('../diagnostics', () => ({ log: () => {} }));
 
-import { settleItemOnLoad } from './orchestrationsStore';
+import { prunePlan, prunedRecord, settleItemOnLoad } from './orchestrationsStore';
+import type { Orchestration } from '../../shared/flows/orchestration';
 
 import type { OrchestrationItem } from '../../shared/flows/orchestration';
 
@@ -120,5 +121,30 @@ describe('settleItemOnLoad', () => {
       expect(settleItemOnLoad(it_, GONE, NOW)).toBe(false);
       expect(it_.status).toBe(status);
     }
+  });
+});
+
+describe('prunePlan', () => {
+  const batch = (id: string, over: Partial<Orchestration> = {}): Orchestration =>
+    ({ id, title: id, projectPath: '/p', maxConcurrent: 1, createdAt: 0, items: [item({ status: 'done' })], origin: { kind: 'worker', workerId: 'w', workerName: 'W' }, ...over }) as Orchestration;
+
+  it('evicts a desk turn that proposed nothing, not only stamped batches, so they cannot hold the cap', () => {
+    const all = [
+      batch('new', { completedAt: 1 }),
+      batch('empty', { items: [] }),
+      batch('open', { items: [item({ status: 'proposed' })] }),
+      batch('old', { completedAt: 1 }),
+    ];
+    const { kept, gone } = prunePlan(all, 1);
+    expect(kept.map((o) => o.id)).toEqual(['new', 'open']);
+    expect(gone.map((o) => o.id)).toEqual(['empty', 'old']);
+  });
+
+  it('logs a worker batch with work in it, and nothing else', () => {
+    expect(prunedRecord(batch('b', { createdAt: 5, items: [item({ status: 'done', finishedAt: 9 }), item({ status: 'failed' })] }))).toEqual({
+      id: 'b', workerId: 'w', createdAt: 5, items: [{ status: 'done', finishedAt: 9 }, { status: 'failed' }],
+    });
+    expect(prunedRecord(batch('e', { items: [] }))).toBeNull();
+    expect(prunedRecord(batch('s', { origin: undefined }))).toBeNull();
   });
 });

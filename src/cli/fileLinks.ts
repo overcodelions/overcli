@@ -97,13 +97,14 @@ const TYPES: Record<string, string> = {
   gif: 'image/gif',
   webp: 'image/webp',
   pdf: 'application/pdf',
+  webm: 'video/webm',
   csv: 'text/csv; charset=utf-8',
   json: 'application/json; charset=utf-8',
 };
 
 /// How to send a run's file: an HTML report as a page of its own, on an
 /// opaque origin (the CSP sandbox) so its scripts run but cannot reach the
-/// console or its token; images and PDFs as themselves; anything else
+/// console or its token; images, PDFs and a test's video as themselves; anything else
 /// (an SVG included: it can carry script) as plain text.
 export function fileHeaders(name: string, download: boolean): Record<string, string> {
   const ext = (/\.([A-Za-z0-9]+)$/.exec(name)?.[1] ?? '').toLowerCase();

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
+import type { PrunedWorkerBatch } from '../../shared/flows/workerReport';
 
 import { runExists } from './runsStore';
 
@@ -191,22 +192,78 @@ export function loadAllOrchestrations(): Orchestration[] {
   return pruneOrchestrations(out);
 }
 
-/// Evict completed batches past `MAX_RETAINED_ORCHESTRATIONS`, oldest first.
+/// Which batches past the cap go, given newest first. A batch goes once it is
+/// finished: stamped complete, or a worker's desk turn that proposed nothing
+/// (written only after its turn ended, and never stamped, since nothing in it
+/// ever settles). Those used to be kept forever, so hundreds of them held the
+/// cap's slots while finished work behind them was deleted on every boot.
+export function prunePlan(all: Orchestration[], cap = MAX_RETAINED_ORCHESTRATIONS): { kept: Orchestration[]; gone: Orchestration[] } {
+  const kept: Orchestration[] = [];
+  const gone: Orchestration[] = [];
+  if (all.length <= cap) return { kept: all, gone };
+  all.forEach((o, index) => (index < cap || !(o.completedAt || o.items.length === 0) ? kept : gone).push(o));
+  return { kept, gone };
+}
+
+/// Evict finished batches past `MAX_RETAINED_ORCHESTRATIONS`, oldest first.
 /// Never evicts a batch still holding proposals or live items. Shared by the
 /// loader (every boot) and `saveOrchestration` (every write, throttled), so a
-/// session that never restarts still gets bounded.
+/// session that never restarts still gets bounded. A worker's batch with work
+/// in it goes into the all-time log first, so the Reports page still counts
+/// its jobs.
 export function pruneOrchestrations(all: Orchestration[]): Orchestration[] {
-  if (all.length <= MAX_RETAINED_ORCHESTRATIONS) return all;
-  const kept: Orchestration[] = [];
-  all.forEach((o, index) => {
-    if (index < MAX_RETAINED_ORCHESTRATIONS || !o.completedAt) {
-      kept.push(o);
-      return;
-    }
-    deleteOrchestration(o.id);
-  });
-  log('info', 'orchestrations', `Pruned ${all.length - kept.length} completed batches`);
+  const { kept, gone } = prunePlan(all);
+  if (!gone.length) return kept;
+  appendPrunedBatches(gone.flatMap((o) => prunedRecord(o) ?? []));
+  for (const o of gone) deleteOrchestration(o.id);
+  log('info', 'orchestrations', `Pruned ${gone.length} finished batches`);
   return kept;
+}
+
+/// What the all-time log keeps of a worker batch: its items' outcomes.
+/// Nothing for another kind of batch, or one that launched nothing.
+export function prunedRecord(o: Orchestration): PrunedWorkerBatch | null {
+  if (o.origin?.kind !== 'worker' || !o.items.length) return null;
+  return {
+    id: o.id,
+    workerId: o.origin.workerId,
+    createdAt: o.createdAt,
+    items: o.items.map((i) => ({ status: i.status, ...(i.finishedAt ? { finishedAt: i.finishedAt } : {}) })),
+  };
+}
+
+function prunedLogPath(): string {
+  return path.join(host().dataDir(), 'worker-batches.jsonl');
+}
+
+function appendPrunedBatches(records: PrunedWorkerBatch[]): void {
+  if (!records.length) return;
+  try {
+    fs.appendFileSync(prunedLogPath(), records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  } catch (err) {
+    log('warn', 'orchestrations', `Failed to log pruned batches: ${String(err)}`);
+  }
+}
+
+/// Every worker batch ever pruned, one per id (the last line wins).
+export function loadPrunedBatches(): PrunedWorkerBatch[] {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(prunedLogPath(), 'utf8');
+  } catch {
+    return [];
+  }
+  const byId = new Map<string, PrunedWorkerBatch>();
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    try {
+      const r = JSON.parse(line) as PrunedWorkerBatch;
+      if (r && typeof r.id === 'string' && typeof r.workerId === 'string' && Array.isArray(r.items)) byId.set(r.id, r);
+    } catch {
+      // a torn line from a crash mid-append: skip it
+    }
+  }
+  return [...byId.values()];
 }
 
 export function deleteOrchestration(id: string): void {

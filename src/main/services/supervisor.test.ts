@@ -1366,6 +1366,8 @@ describe('an adopted pid', () => {
 
       expect(sup.runtime('jobs')).toMatchObject({ status: 'stopped', adopted: undefined, pid: undefined });
       expect(sup.log('jobs').join('\n')).toMatch(/adopted process, pid 779, has exited/);
+    // Found, not started: how long it ran is unknown, so the end line says nothing of it.
+    expect(sup.log('jobs').filter((l) => /^── (stopped|failed)/.test(l)).every((l) => !l.includes('after'))).toBe(true);
       // Nothing left to poll: the timer is not re-armed for a row that is gone.
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -1559,6 +1561,25 @@ describe('task drift notes', () => {
     await sup.start('api');
 
     expect(new Set(heads)).toEqual(new Set(['/repos/lib', '/repos/api']));
+  });
+});
+
+describe('Supervisor start line', () => {
+  it('shows each run\'s command in the pane, not only in the log file', async () => {
+    const { deps, procs } = harness();
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+    procs[0].emitExit(1);
+    await sup.start('api');
+
+    const starts = sup.log('api').filter((l) => l.startsWith('── start '));
+    expect(starts).toHaveLength(2);
+    expect(starts[1]).toContain(spec({ id: 'api' }).command.join(' '));
+    // The first run's end is in the pane too, between the two.
+    const log = sup.log('api');
+    const end = log.findIndex((l) => l.startsWith('── failed · exit 1'));
+    expect(end).toBeGreaterThan(log.indexOf(starts[0]));
+    expect(end).toBeLessThan(log.lastIndexOf(starts[1]));
   });
 });
 

@@ -16,9 +16,12 @@ export const LOG_WINDOW_STEP = 1000;
 
 /// The line a row starts at — what a window is anchored to, since a line index
 /// survives a new filter and a row position does not.
-export function firstLine(item: LogItem): number {
-  return item.kind === 'line' ? item.index : item.indices[0];
+export function firstLine(item: WindowItem): number {
+  return item.kind === 'frames' ? item.indices[0] : item.index;
 }
+
+/// A row of the pane: a line, a folded trace, or a folded earlier run.
+export type WindowItem = LogItem | { kind: 'run'; index: number };
 
 /// Where the drawn rows begin. `from` is the line the reader's window starts
 /// at, or null while following, when it is simply the newest `size` rows.
@@ -26,7 +29,7 @@ export function firstLine(item: LogItem): number {
 /// A window never holds fewer than `size` rows when the log has them: an
 /// anchor past the end — the output was cleared, or its oldest lines dropped —
 /// falls back to the tail rather than drawing an empty pane.
-export function windowStart(items: readonly LogItem[], from: number | null, size = LOG_WINDOW): number {
+export function windowStart(items: readonly WindowItem[], from: number | null, size = LOG_WINDOW): number {
   const tail = Math.max(0, items.length - size);
   if (from === null) return tail;
   // Rows are in line order, so the first at or past the anchor is a search.

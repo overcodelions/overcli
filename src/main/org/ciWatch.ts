@@ -119,6 +119,24 @@ export const continueBranchOf = (prompt: string): string | null => /\[continue-b
 
 const tail = (s: string, n = LOG_TAIL) => (s.length > n ? `…${s.slice(-n)}` : s);
 
+/// A line that says what failed: a linter's `ERROR:`, a test runner's
+/// `FAILED`, a compiler's `error TS…`. A long log's end is mostly progress
+/// and warnings, and the one line that matters can sit far above it.
+const FLAGGED = /(?:^|[\s[])(?:ERROR|FAILED|FAIL)(?:[\]:]|\s|$)|\berror TS\d+|\berror:|\bError:/;
+const FLAGGED_MAX = 30;
+
+/// The flagged lines of a log the tail doesn't already show, at most FLAGGED_MAX.
+function flaggedAbove(lines: string[], shown: string): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || !FLAGGED.test(t) || shown.includes(t) || out.includes(t.slice(0, 300))) continue;
+    out.push(t.slice(0, 300));
+    if (out.length >= FLAGGED_MAX) break;
+  }
+  return out;
+}
+
 // ---- reading a host's verdict -----------------------------------------------
 
 export function authFor(repo: ConnectedRepo, env: (n: string) => string | undefined): Record<string, string> | null {
@@ -176,11 +194,28 @@ export function cantRead(repo: ConnectedRepo, env: (n: string) => string | undef
 async function getTail(fetchImpl: Fetch, url: string, headers: Record<string, string>, n = LOG_TAIL): Promise<string> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), LOG_READ_MS);
+  // Lines that say what failed, from anywhere in the log: kept as it streams,
+  // since the tail alone can start after the one that matters.
+  const flagged: string[] = [];
+  let partial = '';
+  const scan = (text: string, final = false) => {
+    const lines = (partial + text).split('\n');
+    partial = final ? '' : lines.pop() ?? '';
+    for (const line of lines) if (flagged.length < FLAGGED_MAX * 4 && FLAGGED.test(line)) flagged.push(line);
+  };
+  const withFlagged = (end: string) => {
+    const above = flaggedAbove(flagged, end);
+    return above.length ? `Lines that say what failed, from the whole log:\n${above.join('\n')}\n\n${end}` : end;
+  };
   try {
     const res = await fetchImpl(url, { headers, redirect: 'follow', signal: ctl.signal });
     if (!res.ok) return '';
     const body = res.body as { getReader?: () => ReadableStreamDefaultReader<Uint8Array> } | null;
-    if (!body || typeof body.getReader !== 'function') return tail(await res.text(), n);
+    if (!body || typeof body.getReader !== 'function') {
+      const whole = await res.text();
+      scan(whole, true);
+      return withFlagged(tail(whole, n));
+    }
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let kept = '';
@@ -189,18 +224,23 @@ async function getTail(fetchImpl: Fetch, url: string, headers: Record<string, st
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        kept += decoder.decode(value, { stream: true });
+        const text = decoder.decode(value, { stream: true });
+        scan(text);
+        kept += text;
         if (kept.length > n * 2) {
           kept = kept.slice(-n);
           cut = true;
         }
       }
-      kept += decoder.decode();
+      const rest = decoder.decode();
+      scan(rest, true);
+      kept += rest;
     } catch {
       // Cut off (the timer) or dropped mid-way: what came is kept.
+      scan('', true);
       cut = true;
     }
-    return cut || kept.length > n ? `…${kept.slice(-n)}` : kept;
+    return withFlagged(cut || kept.length > n ? `…${kept.slice(-n)}` : kept);
   } catch {
     return '';
   } finally {

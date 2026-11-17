@@ -15,7 +15,7 @@
 // repo, the same every time.
 
 import path from 'node:path';
-import type { FlowRun } from '../../shared/flows/schema';
+import { flowRunOwnerPath, type FlowRun } from '../../shared/flows/schema';
 import { newPullRequestLink, type ConnectedRepo } from './repos';
 import { ticketOf } from './ticketFollowUp';
 import { withoutPreface } from './askPreface';
@@ -123,16 +123,19 @@ export class BranchLander {
     // one change when the task does, not one branch per piece.
     if (!run.workerId || run.team) return false;
     const repos = new Set(this.deps.repos().map((r) => r.path));
-    const places = run.workspaceWorktrees?.length ? run.workspaceWorktrees.map((m) => m.projectPath) : run.worktreePath ? [run.projectPath] : [];
+    const places = run.workspaceWorktrees?.length ? run.workspaceWorktrees.map((m) => m.projectPath) : run.worktreePath ? [flowRunOwnerPath(run)] : [];
     return places.some((p) => repos.has(p));
   }
 
+  /// A single-repo run's `projectPath` is its worktree; the repo it was
+  /// forked from is `sourceProjectPath`. Matching on the worktree found no
+  /// connected repo, so nothing was opened, tested or watched.
   private placesOf(run: FlowRun): Array<{ name: string; projectPath: string; worktreePath: string }> {
-    return run.workspaceWorktrees?.length
-      ? run.workspaceWorktrees.map((m) => ({ name: m.name, projectPath: m.projectPath, worktreePath: m.worktreePath }))
-      : run.worktreePath
-        ? [{ name: path.basename(run.projectPath), projectPath: run.projectPath, worktreePath: run.worktreePath }]
-        : [];
+    if (run.workspaceWorktrees?.length) return run.workspaceWorktrees.map((m) => ({ name: m.name, projectPath: m.projectPath, worktreePath: m.worktreePath }));
+    if (!run.worktreePath) return [];
+    const projectPath = flowRunOwnerPath(run);
+    const repo = this.deps.repos().find((r) => r.path === projectPath);
+    return [{ name: repo?.name ?? path.basename(projectPath), projectPath, worktreePath: run.worktreePath }];
   }
 
   /// A landed run carried on in its own checkout (a CI fix): what that turn
@@ -167,6 +170,8 @@ export class BranchLander {
     const out: Landed[] = [];
     for (const place of places) {
       const repo = this.deps.repos().find((r) => r.path === place.projectPath);
+      // Pushed, but with no repo there's no pull request, tests or CI: say so.
+      if (!repo) this.deps.log(`Run ${run.id}: ${place.projectPath} isn't a connected repo, so its pull request won't be opened or its CI watched.`);
       const baseline = run.workspaceWorktrees?.length ? run.baselineCommitsByMember?.[place.name]?.commit : run.baselineCommit;
       // One repo going wrong must not cost the others their links.
       out.push(
@@ -241,11 +246,29 @@ export class BranchLander {
     // sits on someone else's commits gets a branch of its own, or its work
     // lands in another ticket's pull request. Never forced: if the branch has
     // moved, or this repo doesn't have it, a branch of its own.
+    // Where this repo has that branch, the run's work goes there or nowhere:
+    // a branch of its own would open a second pull request against the
+    // default branch, carrying the whole feature, whose CI then fails on
+    // things this run never touched. Behind it (it moved, or the checkout
+    // started short of it), its commits are merged in first; only a merge
+    // that conflicts leaves it unpushed, and says so.
     if (continues) {
-      const on = await git(['merge-base', '--is-ancestor', `origin/${continues}`, 'HEAD']);
-      const added = on.ok ? await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${continues}`]) : on;
-      if (added.ok) return { repo: place.name, branch: continues, updated: true };
-      this.deps.log(`Could not add to ${continues}, so pushing a branch of its own: ${added.error.slice(-300)}`);
+      const theirs = `refs/remotes/origin/${continues}`;
+      await git(['fetch', '--quiet', 'origin', `+refs/heads/${continues}:${theirs}`]);
+      const has = await git(['rev-parse', '--verify', '--quiet', `${theirs}^{commit}`]);
+      if (has.ok) {
+        const on = await git(['merge-base', '--is-ancestor', theirs, 'HEAD']);
+        if (!on.ok) {
+          const merged = await git(['merge', '--no-edit', '--no-ff', '-m', `Merge ${continues} into ${title}`, theirs]);
+          if (!merged.ok) {
+            await git(['merge', '--abort']);
+            return { repo: place.name, skipped: `${continues} has commits this run's checkout lacks, and they conflict with its change, so nothing was pushed (and no second pull request opened)` };
+          }
+        }
+        const added = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${continues}`]);
+        if (added.ok) return { repo: place.name, branch: continues, updated: true };
+        return { repo: place.name, skipped: `couldn't add to ${continues}, so nothing was pushed (and no second pull request opened): ${added.error.slice(-300)}` };
+      }
     }
     const pushed = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`]);
     if (!pushed.ok) return { repo: place.name, error: pushed.error.slice(-800) };
@@ -327,6 +350,12 @@ export interface LandedPullRequest {
   /// existing: found open, left alone; unopened: only a link to open one;
   /// linked: what the work was about, not something it pushed (PrLink).
   state: 'open' | 'draft' | 'updated' | 'existing' | 'unopened' | 'linked';
+}
+
+/// How many pull requests a landing note says the run opened: new ones and
+/// drafts, not ones it only added to, found open, or left a link for.
+export function pullRequestsOpened(body: string): number {
+  return pullRequestsIn(body).filter((p) => p.state === 'open' || p.state === 'draft').length;
 }
 
 /// The pull requests in a landing note (describe()'s output), in order.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { roleNamed, roleRunNote, roleToolsFor } from './roleTools';
+import { roleNamed, roleRunNote, roleToolsFor, workerRunTools } from './roleTools';
 import { inToolScope } from '../flows/toolScope';
 
 const roles = [
@@ -16,6 +16,12 @@ describe('a worker’s role tools', () => {
     expect(roleToolsFor({ role: 'Astronaut' }, roles)).toEqual([]);
   });
 
+  it('join the tools its manager gave it, once each, for its runs', () => {
+    expect(workerRunTools(['test-systems', 'atlassian'], ['atlassian', 'bitbucket'])).toEqual(['test-systems', 'atlassian', 'bitbucket']);
+    expect(workerRunTools([], ['test-systems'])).toEqual(['test-systems']);
+    expect(workerRunTools([], undefined)).toEqual([]);
+  });
+
   it('can still be narrowed by the worker’s own scope', () => {
     const scopes = { 'test-systems': { mode: 'read' as const } };
     expect(inToolScope(scopes, 'mcp__test-systems__list_systems')).toBe(true);
@@ -29,7 +35,7 @@ describe('what a worker’s run is told', () => {
     expect(note).toContain('test-systems (open an app signed in');
     expect(note).toContain('custom-thing');
     expect(note).toContain('overgo tool’s notify call'.replace('’', "'"));
-    expect(roleRunNote([])).not.toContain("YOUR ROLE'S TOOLS");
+    expect(roleRunNote([])).not.toContain('YOUR TOOLS');
     expect(roleRunNote([])).toContain('never look for a token');
   });
 });

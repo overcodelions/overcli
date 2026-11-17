@@ -39,7 +39,9 @@ export const PLAYWRIGHT_FOR_MCP = '1.65.0-alpha-2026-10-30';
 
 /// How Playwright MCP starts: headless Chromium (Playwright's own, not Google
 /// Chrome, which a server seldom has), an in-memory profile per run, with
-/// the storage tools (for loading a session) and the test assertions on.
+/// the storage tools (for loading a session), the test assertions and the
+/// devtools (for recording a video of a test) on. devtools brings more than
+/// video; the session passes on only what SAFE_BROWSER_TOOLS names.
 /// Chromium's sandbox needs privileges a container's user lacks on Linux.
 /// With `proxy`, every request goes through it (browserProxy.ts), loopback
 /// too: Chromium skips a proxy for localhost unless told `<-loopback>`.
@@ -50,7 +52,7 @@ export function playwrightArgs(outputDir: string, platform: NodeJS.Platform = pr
     'chromium',
     ...(platform === 'linux' ? ['--no-sandbox'] : []),
     '--isolated',
-    '--caps=storage,testing',
+    '--caps=storage,testing,devtools',
     '--output-dir',
     outputDir,
     ...(proxy ? ['--proxy-server', proxy, '--proxy-bypass', '<-loopback>'] : []),

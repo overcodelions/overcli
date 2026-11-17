@@ -27,7 +27,7 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-export type KitId = 'java' | 'node' | 'python' | 'go' | 'custom';
+export type KitId = 'java' | 'node' | 'python' | 'go' | 'gradle' | 'custom';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 type Fetch = typeof fetch;
@@ -60,6 +60,9 @@ export const KITS: readonly KitDef[] = [
   { id: 'node', label: 'Node.js', source: 'nodejs.org', versions: ['18', '20', '22', '24', '26'], probe: { bin: 'node', args: ['--version'] } },
   { id: 'python', label: 'Python', source: 'python-build-standalone, through uv', versions: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14'], probe: { bin: 'python3', args: ['--version'] } },
   { id: 'go', label: 'Go', source: 'go.dev', versions: ['1.22', '1.23', '1.24', '1.25', '1.26'], homeVar: 'GOROOT', probe: { bin: 'go', args: ['version'] } },
+  // For repos without the wrapper: a repo with gradlew fetches its own
+  // Gradle into ~/.gradle and needs only Java. Runs on the installed Java.
+  { id: 'gradle', label: 'Gradle', source: 'services.gradle.org', versions: ['7', '8', '9'], homeVar: 'GRADLE_HOME', probe: { bin: 'gradle', args: ['--version'] } },
 ];
 
 const kitDef = (id: string): KitDef | undefined => KITS.find((k) => k.id === id);
@@ -133,9 +136,9 @@ function capped(max: number): Transform {
   });
 }
 
-const run = (file: string, args: string[], timeout = 5 * 60_000) =>
+const run = (file: string, args: string[], timeout = 5 * 60_000, env?: NodeJS.ProcessEnv) =>
   new Promise<string>((resolve, reject) =>
-    execFile(file, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => (err ? reject(new Error(`${stderr}`.trim() || err.message)) : resolve(`${stderr}${stdout}`))),
+    execFile(file, args, { timeout, maxBuffer: 8 * 1024 * 1024, ...(env ? { env } : {}) }, (err, stdout, stderr) => (err ? reject(new Error(`${stderr}`.trim() || err.message)) : resolve(`${stderr}${stdout}`))),
   );
 
 const sha256Of = async (file: string): Promise<string> => {
@@ -195,6 +198,15 @@ async function resolveDownload(kit: KitDef['id'], version: string, p: Platform, 
     if (!rel || !file) throw new Error(`go.dev has no Go ${version} build for ${os}/${cpu}.`);
     return { url: `https://go.dev/dl/${file.filename}`, sha256: file.sha256, label: rel.version };
   }
+  if (kit === 'gradle') {
+    // Newest first; the latest final release of that major.
+    const all = JSON.parse(await fetchText(fetchImpl, 'https://services.gradle.org/versions/all')) as Array<{ version: string; downloadUrl: string; checksumUrl: string; snapshot?: boolean; nightly?: boolean; broken?: boolean; rcFor?: string; milestoneFor?: string }>;
+    const rel = all.find((r) => !r.snapshot && !r.nightly && !r.broken && !r.rcFor && !r.milestoneFor && (r.version === version || r.version.startsWith(`${version}.`)));
+    if (!rel) throw new Error(`services.gradle.org has no Gradle ${version} release.`);
+    const sum = (await fetchText(fetchImpl, rel.checksumUrl).catch(() => '')).trim().split(/\s+/)[0];
+    if (!/^[a-f0-9]{64}$/i.test(sum)) throw new Error(`Couldn't get the checksum for Gradle ${rel.version}, so nothing was installed. Try again later.`);
+    return { url: rel.downloadUrl, sha256: sum.toLowerCase(), label: `Gradle ${rel.version}` };
+  }
   throw new Error(`${kit} isn't downloaded directly.`);
 }
 
@@ -232,7 +244,7 @@ export function versionsAskedIn(root: string): Partial<Record<KitId, string>> {
   }
   for (const f of ['.nvmrc', '.node-version']) {
     const v = read(f)?.trim();
-    if (v && !/^lts/i.test(v)) set('node', major(v));
+    if (v) set('node', /^lts\//i.test(v) ? NODE_LTS[v.slice(4).toLowerCase()] : major(v));
   }
   set('python', majorMinor(read('.python-version')?.split('\n')[0] ?? ''));
   const sdk = /^java=(.+)$/m.exec(read('.sdkmanrc') ?? '')?.[1];
@@ -240,7 +252,69 @@ export function versionsAskedIn(root: string): Partial<Record<KitId, string>> {
   const jv = read('.java-version')?.trim();
   if (jv) set('java', javaMajor(jv));
   set('go', /^go\s+(\d+\.\d+)/m.exec(read('go.mod') ?? '')?.[1]);
+  // Then what a build file or manifest says, when no version file did.
+  try {
+    const engines = (JSON.parse(read('package.json') ?? '{}') as { engines?: { node?: unknown } }).engines?.node;
+    if (typeof engines === 'string') set('node', /\d+/.exec(engines)?.[0]);
+  } catch {
+    // not JSON: nothing asked
+  }
+  const gradle = `${read('build.gradle') ?? ''}\n${read('build.gradle.kts') ?? ''}`;
+  const toolchain = /JavaLanguageVersion\.of\(\s*(\d+)\s*\)/.exec(gradle)?.[1];
+  const compat = /(?:sourceCompatibility|targetCompatibility)\s*=\s*(?:JavaVersion\.VERSION_)?['"]?(\d+(?:[._]\d+)?)/.exec(gradle)?.[1]?.replace('_', '.');
+  set('java', javaMajor(toolchain ?? compat ?? ''));
+  set('java', javaMajor(/<(?:maven\.compiler\.release|java\.version|maven\.compiler\.source|release)>\s*([\d.]+)\s*</.exec(read('pom.xml') ?? '')?.[1] ?? ''));
+  set('python', majorMinor(/requires-python\s*=\s*["'][^"']*?(\d+\.\d+)/.exec(read('pyproject.toml') ?? '')?.[1] ?? ''));
   return out;
+}
+
+/// `lts/<codename>` in an .nvmrc, to its major. `lts/*` names no one version.
+export const NODE_LTS: Record<string, string> = {
+  argon: '4', boron: '6', carbon: '8', dubnium: '10', erbium: '12', fermium: '14', gallium: '16', hydrogen: '18', iron: '20', jod: '22', krypton: '24',
+};
+
+/// The kits a repo builds with, from the files at its top, whether or not
+/// it says which version.
+export function kitsNeededIn(root: string): Set<Exclude<KitId, 'custom'>> {
+  const has = (f: string) => fs.existsSync(path.join(root, f));
+  const any = (fs_: string[]) => fs_.some(has);
+  const out = new Set<Exclude<KitId, 'custom'>>();
+  const gradleBuild = any(['build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts']);
+  if (any(['package.json', '.nvmrc', '.node-version'])) out.add('node');
+  if (gradleBuild || any(['pom.xml', '.java-version', '.sdkmanrc'])) out.add('java');
+  // The wrapper fetches its own Gradle; without one, Gradle must be here.
+  if (gradleBuild && !has('gradlew')) out.add('gradle');
+  if (any(['pyproject.toml', 'requirements.txt', 'setup.py', 'Pipfile', '.python-version'])) out.add('python');
+  if (has('go.mod')) out.add('go');
+  for (const k of Object.keys(versionsAskedIn(root)) as Array<Exclude<KitId, 'custom'>>) out.add(k);
+  return out;
+}
+
+/// One kit a repo builds with: what it asks for, what a run there gets, and
+/// what's wrong, if anything.
+export interface KitUse {
+  kit: Exclude<KitId, 'custom'>;
+  label: string;
+  asked?: string;
+  got?: string;
+  /// Where `got` came from: the admin's pick for the repo, the repo's own
+  /// files, or the server's default.
+  from?: 'pick' | 'repo' | 'default';
+  /// In words, when a run doesn't get what the repo needs.
+  gap?: string;
+  /// The catalog version that would close the gap.
+  install?: string;
+}
+
+/// What the worker is told about its build tools, from usesAt.
+export function toolchainNote(uses: KitUse[], where = ''): string[] {
+  const why = { pick: 'set for this repo', repo: 'as the repo asks', default: 'the server default' } as const;
+  const on = uses.filter((u) => u.got).map((u) => `${u.label} ${u.got} (${why[u.from!]})`);
+  const lines = [
+    `${on.length ? `Build tools on PATH${where}: ${on.join(', ')}. ` : ''}There is no nvm, sdkman or pyenv here, and none is needed; do not try to install toolchains.`,
+  ];
+  for (const u of uses.filter((x) => x.gap)) lines.push(`Missing${where}: ${u.gap}. If your change needs it, say so plainly in your reply: an admin installs it on Setup → Toolchains.`);
+  return lines;
 }
 
 // ---- custom kits -----------------------------------------------------------
@@ -382,7 +456,8 @@ export class ToolchainService {
           const got = await sha256Of(archive);
           if (got !== dl.sha256) throw new Error(`${dl.url} doesn't match its sha256 (expected ${dl.sha256}, got ${got}). Nothing was installed.`);
         }
-        await (this.deps.extract ?? ((a, d) => run('tar', ['xf', a, '-C', d]).then(() => undefined)))(archive, staging);
+        // Gradle ships only as a zip, which GNU tar can't read.
+        await (this.deps.extract ?? ((a, d) => (/\.zip$/i.test(dl.url) ? run('unzip', ['-q', a, '-d', d]) : run('tar', ['xf', a, '-C', d])).then(() => undefined)))(archive, staging);
       }
       if (fs.existsSync(dest)) fs.renameSync(dest, old);
       fs.renameSync(staging, dest);
@@ -391,7 +466,14 @@ export class ToolchainService {
       const bin = this.binOf({ ...t, home });
       if (!fs.existsSync(bin)) throw new Error(`There's no ${path.relative(dest, bin) || 'bin'} folder in what it unpacked.`);
       const def = kitDef(t.kit);
-      const said = def ? await (this.deps.probe ?? run)(path.join(bin, def.probe.bin), def.probe.args) : 'Installed';
+      // With the toolchains on PATH: Gradle runs on the installed Java.
+      const probe = this.deps.probe ?? ((b: string, a: string[]) => run(b, a, undefined, this.env(process.env)));
+      const said = def
+        ? await probe(path.join(bin, def.probe.bin), def.probe.args).catch((err: unknown) => {
+            const noJava = t.kit === 'gradle' && !this.load().toolchains.some((x) => x.kit === 'java' && x.status === 'ready');
+            throw noJava ? new Error('Gradle needs Java to run. Install a Java first, then Gradle again.') : err;
+          })
+        : 'Installed';
       return { home, detail: said.split('\n').map((l) => l.trim()).find(Boolean) ?? t.version };
     } catch (err) {
       if (swapped) fs.rmSync(dest, { recursive: true, force: true });
@@ -471,6 +553,49 @@ export class ToolchainService {
     return Object.fromEntries(this.deps.repos().map((r) => [r.name, versionsAskedIn(r.path)]));
   }
 
+  /// The version of a kit a run gets: the repo's pick, else what it asks
+  /// for when installed, else the default, else the first installed.
+  private pickFor(s: ToolchainState, kit: Exclude<KitId, 'custom'>, repo: string | undefined, asked: string | undefined): { t: Toolchain; from: 'pick' | 'repo' | 'default' } | undefined {
+    const picked = this.ready(s, kit, repo ? s.repoPicks[repo]?.[kit] : undefined);
+    if (picked) return { t: picked, from: 'pick' };
+    const theirs = this.ready(s, kit, asked);
+    if (theirs) return { t: theirs, from: 'repo' };
+    const fallback = this.ready(s, kit, s.defaults[kit]) ?? s.toolchains.find((t) => t.kit === kit && t.status === 'ready' && t.home);
+    return fallback ? { t: fallback, from: 'default' } : undefined;
+  }
+
+  /// The kits the checkout at `cwd` builds with and what each gets. Only
+  /// kits it uses; empty outside a connected repo.
+  usesAt(cwd: string | undefined): KitUse[] {
+    const at = this.repoAt(cwd);
+    if (!at) return [];
+    const s = this.load();
+    const asked = versionsAskedIn(at.root);
+    const needed = kitsNeededIn(at.root);
+    return KITS.filter((def) => needed.has(def.id)).map((def): KitUse => {
+      const a = asked[def.id];
+      const p = this.pickFor(s, def.id, at.name, a);
+      const offered = a !== undefined && def.versions.includes(a);
+      const use: KitUse = { kit: def.id, label: def.label, ...(a ? { asked: a } : {}), ...(p ? { got: p.t.version, from: p.from } : {}) };
+      if (!p) return { ...use, gap: a ? `${def.label} ${a} is needed and no ${def.label} is installed` : `${def.label} is needed and none is installed`, ...(offered ? { install: a } : {}) };
+      // An admin's pick for the repo is deliberate: not a gap.
+      if (a && p.from === 'default') {
+        return { ...use, gap: `the repo asks for ${def.label} ${a}${offered ? ', which isn’t installed' : ', which the catalog doesn’t offer'}, so runs get ${def.label} ${p.t.version}`, ...(offered ? { install: a } : {}) };
+      }
+      return use;
+    });
+  }
+
+  /// Per connected repo, the kits whose runs don't get what it needs.
+  gapsByRepo(): Record<string, KitUse[]> {
+    const out: Record<string, KitUse[]> = {};
+    for (const r of this.deps.repos()) {
+      const gaps = this.usesAt(r.path).filter((u) => u.gap);
+      if (gaps.length) out[r.name] = gaps;
+    }
+    return out;
+  }
+
   /// The connected repo a folder is in, and the top of its checkout there:
   /// the clone itself, or a worktree forked from it.
   repoAt(cwd: string | undefined): { name: string; root: string } | undefined {
@@ -519,13 +644,8 @@ export class ToolchainService {
     const out: NodeJS.ProcessEnv = { ...env };
     const bins: string[] = [];
     for (const def of KITS) {
-      const mine = ready.filter((t) => t.kit === def.id);
-      if (!mine.length) continue;
-      const pick =
-        this.ready(s, def.id, at ? s.repoPicks[at.name]?.[def.id] : undefined) ??
-        this.ready(s, def.id, asked[def.id]) ??
-        this.ready(s, def.id, s.defaults[def.id]) ??
-        mine[0];
+      const pick = this.pickFor(s, def.id, at?.name, asked[def.id])?.t;
+      if (!pick) continue;
       bins.push(this.binOf(pick));
       if (def.homeVar) out[def.homeVar] = pick.home;
     }

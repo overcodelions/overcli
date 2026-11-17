@@ -65,3 +65,40 @@ describe('createWorktree collision handling', () => {
     });
   });
 });
+
+describe('a continued run starts from origin', () => {
+  let sandbox: string;
+  let projectPath: string;
+  let homeSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-prefer-remote-'));
+    projectPath = path.join(sandbox, 'repo');
+    fs.mkdirSync(projectPath);
+    const commit = (m: string) => git(projectPath, ['-c', 'user.name=Overcli Test', '-c', 'user.email=test@overcli.local', 'commit', '--allow-empty', '-m', m]);
+    git(projectPath, ['init', '-b', 'main']);
+    commit('initial');
+    // A local copy an earlier run left behind, one commit short of origin's.
+    git(projectPath, ['branch', 'feature/x']);
+    git(projectPath, ['checkout', '-q', '-b', 'scratch']);
+    commit('pushed later');
+    git(projectPath, ['update-ref', 'refs/remotes/origin/feature/x', 'HEAD']);
+    git(projectPath, ['checkout', '-q', 'main']);
+    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(sandbox);
+  });
+
+  afterEach(() => {
+    homeSpy.mockRestore();
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it("starts from origin's copy of the branch, not a stale local one, when asked", async () => {
+    const remote = git(projectPath, ['rev-parse', 'refs/remotes/origin/feature/x']);
+    const local = git(projectPath, ['rev-parse', 'refs/heads/feature/x']);
+    const fresh = await createWorktreeAsync({ projectPath, agentName: 'fresh', baseBranch: 'feature/x', branchPrefix: 'agent/', preferRemote: true });
+    const stale = await createWorktreeAsync({ projectPath, agentName: 'stale', baseBranch: 'feature/x', branchPrefix: 'agent/' });
+    if (!fresh.ok || !stale.ok) throw new Error('worktree not created');
+    expect(git(fresh.worktreePath, ['rev-parse', 'HEAD'])).toBe(remote);
+    expect(git(stale.worktreePath, ['rev-parse', 'HEAD'])).toBe(local);
+  });
+});

@@ -11,6 +11,7 @@ const base: Form = {
   ask: 'org', audience: {}, start: 'manager', startAudience: {}, approve: 'manager', approvers: {}, trust: 'trusted',
   when: 'asked', time: '09:00', every: '60', budget: '50', role: '', tools: ['jira'], scopes: { jira: 'full' }, writesCode: 'flows', flow: '',
   answersAtOnce: '1', homeChannels: [], desktopHandOff: false, continueOpenPrs: false, prAuthors: '', prCommentAuthors: '', skipCheckpoints: false, alwaysAllow: ['explore/post'],
+  canDelegate: false, delegatesTo: [],
 };
 const edit = (over: Partial<Form>) => patchOf({ ...base, ...over }, base);
 
@@ -43,5 +44,11 @@ describe('patchOf', () => {
     });
     expect(edit({ trust: 'probation' })).toEqual({ patch: {}, trust: 'probation' });
     expect(edit({ desktopHandOff: true }).patch).toEqual({ desktopHandOff: true });
+  });
+
+  it('sends handing work on as canDelegate, and an emptied pick as null', () => {
+    expect(edit({ canDelegate: true }).patch).toEqual({ canDelegate: true });
+    expect(edit({ canDelegate: true, delegatesTo: ['w-joe'] }).patch).toEqual({ canDelegate: true, delegatesTo: ['w-joe'] });
+    expect(patchOf(base, { ...base, delegatesTo: ['w-joe'] }).patch).toEqual({ delegatesTo: null });
   });
 });

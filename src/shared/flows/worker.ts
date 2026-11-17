@@ -306,6 +306,10 @@ export interface Worker {
     /// The CLI session to resume. Absent until the first turn announces one,
     /// which is why the first message is always sent cold.
     sessionId?: string;
+    /// The tools it had when this thread last spoke (`toolsKey`). A resumed
+    /// turn re-sends none of the worker, so one given a tool at lunch kept
+    /// telling its manager it was blocked, from what it had said that morning.
+    tools?: string;
   };
   /// Point the cadence measures from when the worker has never worked a
   /// shift (or was re-enabled / had its cadence edited). Mirrors

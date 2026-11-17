@@ -19,6 +19,14 @@ export function roleToolsFor(w: { role?: string; roleToolsOff?: string[] }, role
   return role.tools.filter((t) => !off.has(t));
 }
 
+/// The tools a worker's runs may use without a step listing them: its role's,
+/// and the ones its manager gave it itself. A tool handed to a worker that its
+/// runs then refused, unless a flow's step also named it, read as broken: the
+/// worker was told it had the tool and couldn't use it.
+export function workerRunTools(roleTools: readonly string[], own: readonly string[] | undefined): string[] {
+  return [...new Set([...roleTools, ...(own ?? [])])];
+}
+
 /// The server's own tool on every worker run (the tool gateway's built-in):
 /// `notify`, a message to a person or channel through the server's Slack.
 export const SERVER_TOOL = 'overgo';
@@ -38,7 +46,7 @@ export function roleRunNote(roleTools: readonly string[]): string {
   const lines: string[] = [];
   if (roleTools.length) {
     lines.push(
-      `YOUR ROLE'S TOOLS. Your role gives you these in every step, whether or not the step lists them: ${roleTools
+      `YOUR TOOLS. You have these in every step, from your role or given to you, whether or not the step lists them: ${roleTools
         .map((t) => (ABOUT[t] ? `${t} (${ABOUT[t]})` : t))
         .join('; ')}. Use them where this step's work needs them, rather than working around them in the shell.`,
     );

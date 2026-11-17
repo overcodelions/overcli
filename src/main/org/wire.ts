@@ -35,6 +35,7 @@ import { reviewWork } from './workerReview';
 import { fileTuningWatchStart, fileWorkerReviewStore } from './orgStores';
 import { pickPicture } from './pickPicture';
 import { oneShotDraftText, reviseFlowFromPrompt } from '../flows/drafter';
+import { reviseWorkerFromPrompt } from '../flows/workerDrafter';
 import { resolveWorkPlace } from './defaultProject';
 import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templateFrom, toolTemplatesFile, uninstallTool, updateToolSettings, editTool } from './tools';
 import { host } from '../host';
@@ -47,7 +48,9 @@ import type { TriggerService } from './triggers';
 import type { PrWatchState } from './prWatch';
 import type { DesktopTask } from './desktopTasks';
 import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy, orgDir } from './orgStores';
-import { RepoService, credentialHelper, parseRepoUrl, serverGitNote, type RepoState } from './repos';
+import { RepoService, credentialHelper, parseRepoUrl, repoChecksNote, serverGitNote, type RepoState } from './repos';
+import { RepoSetup } from './repoSetup';
+import { createWorktreeAsync, removeWorktreeAsync } from '../git';
 import { useTrustedGitCredentials, useTrustedGitRemotes } from './serverGit';
 import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
@@ -59,14 +62,14 @@ import type { ConnectionsService } from './connections';
 import type { ToolSignIn } from './toolSignIn';
 import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import { execFile, spawnSync } from 'node:child_process';
-import { ToolchainService, type ToolchainState } from './toolchains';
+import { ToolchainService, toolchainNote, type ToolchainState } from './toolchains';
 import { addRunEnv } from '../runEnv';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export interface OrgEngines {
   runner: RunnerManager;
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'runNote' | 'chatWithRun' | 'runIdForConversation'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'afterFork' | 'runNote' | 'chatWithRun' | 'runIdForConversation'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem' | 'list' | 'approveBatch'>;
   workerEngine: WorkerEngine;
   /// A getter: the app builds teams after the plane.
@@ -190,7 +193,7 @@ function importSharedWorker(
 /// and a failed item cannot be rejected, so the journal would never learn the
 /// idea was turned down.
 export function rejectWorkerRun(
-  engines: { flowRuntime: Omit<OrgEngines['flowRuntime'], 'chatWithRun' | 'beforeFork' | 'runNote'>; orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'> },
+  engines: { flowRuntime: Omit<OrgEngines['flowRuntime'], 'chatWithRun' | 'beforeFork' | 'afterFork' | 'runNote'>; orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'> },
   runId: string,
 ): { ok: true } | { ok: false; error: string } {
   const { flowRuntime, orchestrator } = engines;
@@ -257,6 +260,21 @@ export function createOrgService(
   addRunEnv((env, cwd) => toolchains.env(env, cwd));
   // Runs on a connected repo start from its default branch as origin has it.
   flowRuntime.beforeFork = (paths) => repos.freshen(paths).then((problems) => problems.forEach((p) => log('warn', 'org.repos', p)));
+  // Each fresh checkout gets its repo's setup (`npm ci`) before the worker
+  // starts, so the checks it may run have their dependencies.
+  const repoSetup = new RepoSetup({
+    repos: () => repos.list(),
+    log: (message) => log('info', 'org.repos', message),
+    // A trial from the Repos page: a throwaway checkout of the default
+    // branch as origin has it, made and dropped the way a run's is.
+    fork: async (r) => {
+      await repos.freshen([r.path]);
+      const made = await createWorktreeAsync({ projectPath: r.path, agentName: `check-${Date.now().toString(36)}`, baseBranch: r.defaultBranch, branchPrefix: 'overcli-check/' });
+      if (!made.ok) return made;
+      return { ok: true, worktreePath: made.worktreePath, remove: () => removeWorktreeAsync({ projectPath: r.path, worktreePath: made.worktreePath, branchName: made.branchName }).then(() => undefined) };
+    },
+  });
+  flowRuntime.afterFork = (checkouts, progress) => repoSetup.prepare(checkouts, progress);
   // ...and every step of a worker's run there is told so, and not to fetch.
   flowRuntime.runNote = (run) => {
     if (!run.workerId) return undefined;
@@ -265,7 +283,14 @@ export function createOrgService(
     const ws = repo ? undefined : repos.workspaces().find((x) => x.rootPath === at);
     if (!repo && !ws) return undefined;
     const members = repo ? [repo] : repos.list().filter((r) => ws!.repos.includes(r.name));
-    return serverGitNote(members.filter((r) => r.testCommand).map((r) => (members.length > 1 ? `${r.testCommand} (in ${r.name})` : r.testCommand!)));
+    const checkouts = [...(run.worktreePath ? [run.worktreePath] : []), ...(run.workspaceWorktrees ?? []).map((m) => m.worktreePath)];
+    // Each repo's checkout, or its clone for a run working in place.
+    const checkoutOf = (r: { path: string }) => (repo ? run.worktreePath : run.workspaceWorktrees?.find((m) => m.projectPath === r.path)?.worktreePath) ?? r.path;
+    const tools = members.flatMap((r) => toolchainNote(toolchains.usesAt(checkoutOf(r)), members.length > 1 ? ` in ${r.name}` : ''));
+    return [
+      serverGitNote(members.filter((r) => r.testCommand).map((r) => (members.length > 1 ? `${r.testCommand} (in ${r.name})` : r.testCommand!))),
+      repoChecksNote(members, repoSetup.outcomesFor(checkouts), [...new Set(tools)]),
+    ].join('\n\n');
   };
   // The last storage measurement (storage.report).
   let storageCache: StorageReport | null = null;
@@ -287,7 +312,7 @@ export function createOrgService(
   setInterval(refresh, 60 * 60_000).unref?.();
   // Finished runs' checkouts, once nothing in them can be lost: the server
   // only. The desktop leaves them to Clean up.
-  scheduleCheckoutSweep(engines.sweepCheckouts, () => void sweepWorktrees(flowRuntime.listRuns(), (level, msg) => log(level, 'org.worktrees', msg)));
+  scheduleCheckoutSweep(engines.sweepCheckouts, () => void sweepWorktrees(flowRuntime.listRuns(), (level, msg) => log(level, 'org.worktrees', msg), Date.now(), path.join(os.homedir(), '.overcli', 'worktrees')));
   // Every tool call's outcome, from any run or answer: an expired key or a
   // retired API reaches the admins instead of hiding in run logs.
   const toolHealth = new ToolHealth({
@@ -332,6 +357,7 @@ export function createOrgService(
       resumeRun: (args) => flowRuntime.resumeRun(args),
       chatWithRun: (args) => flowRuntime.chatWithRun(args),
     },
+    runSummaries: () => loadRunSummaries(),
     rejectRun: (runId) => rejectWorkerRun(engines, runId),
     stopRun: (runId) => {
       const run = flowRuntime.getRun(runId);
@@ -351,6 +377,7 @@ export function createOrgService(
       const saved = saveFlow({ flow, target: 'generated' });
       return saved.ok ? { ok: true } : saved;
     },
+    reviseWorker: (args) => reviseWorkerFromPrompt(args, { ...drafterDepsFor(runner), serverTool: true }),
     reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, { ...drafterDepsFor(runner), serverTool: true }),
     pickPicture: (worker, taken) =>
       pickPicture(
@@ -508,6 +535,9 @@ export function createOrgService(
       ticketStatus: () => repos.ticketStatus(),
       setTicketStatus: (status) => repos.setTicketStatus(status),
       setCiRounds: (n) => repos.setCiRounds(n),
+      setChecks: (name, input) => repos.setChecks(name, input),
+      tryChecks: (name) => repoSetup.startTrial(name),
+      checkTrial: (name) => repoSetup.trial(name),
       branchPrefix: () => Store.load().settings.agentBranchPrefix || 'agent/',
       freshen: (paths) => repos.freshen(paths).then((problems) => { lastRefreshAt = Date.now(); return problems; }),
       lastRefreshed: () => lastRefreshAt,

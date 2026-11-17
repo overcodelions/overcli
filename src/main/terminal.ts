@@ -29,6 +29,7 @@ export type TerminalOrigin =
   | 'agent-launch'
   | 'aws-sso-login'
   | 'workspace-command'
+  | 'service-fix'
   | 'file-tree'
   | 'unknown';
 

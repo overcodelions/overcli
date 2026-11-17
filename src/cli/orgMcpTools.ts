@@ -385,6 +385,8 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
         'Admins only: anyoneMayStart (it starts work for anyone who may ask it), startAudience (it starts work for these), approvers (who else approves its work), ' +
         'continueOpenPrs (it looks after the team\'s open pull requests), prAuthors (whose pull requests; [] for everyone\'s), ' +
         'prCommentAuthors (whose review comments it answers; [] for none), skipCheckpoints (runs skip its flows\' checkpoints). ' +
+        'canDelegate: it may hand work to colleagues (shown in the Slack thread it was asked in). delegatesTo: exactly which colleagues, by name; null or [] for anyone working in the same place. ' +
+        'Adding a colleague someone else manages needs their manager or an admin, since it spends that colleague\'s budget. ' +
         'People are named by Slack member id: look them up with find_people first. Confirm the change with the person.',
       inputSchema: {
         worker: z.string(),
@@ -406,6 +408,8 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
         prAuthors: z.array(z.string()).optional(),
         prCommentAuthors: z.array(z.string()).optional(),
         skipCheckpoints: z.boolean().optional(),
+        canDelegate: z.boolean().optional(),
+        delegatesTo: z.array(z.string()).nullable().optional(),
       },
     },
     async ({ worker, audience, startAudience, approvers, ...rest }) => {

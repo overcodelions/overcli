@@ -98,6 +98,7 @@ vi.mock('./flows/workerEngine', () => ({
   WorkerEngine: class {
     start() {}
     observeEvent() {}
+    onReferral() {}
     workerIds() {
       return [];
     }

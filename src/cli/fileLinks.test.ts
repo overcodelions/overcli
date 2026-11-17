@@ -39,6 +39,7 @@ describe('fileHeaders', () => {
     expect(page['Content-Security-Policy']).toMatch(/^sandbox allow-scripts/);
     expect(page['Content-Security-Policy']).not.toMatch(/allow-same-origin/);
     expect(fileHeaders('chart.svg', false)['Content-Type']).toMatch(/^text\/plain/);
+    expect(fileHeaders('BILL-123-checkout.webm', false)['Content-Type']).toBe('video/webm');
     expect(fileHeaders('reports/a b".csv', true)['Content-Disposition']).toBe('attachment; filename="a_b_.csv"');
   });
 });

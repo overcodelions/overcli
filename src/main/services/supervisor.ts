@@ -39,6 +39,7 @@ import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './typ
 import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import { describeDrift, driftedTasks } from '../../shared/taskDrift';
 import { buildsOnJvm, defaultReadyTimeoutSec } from '../../shared/services';
+import { clockTime, endLine, formatDuration, startLine } from '../../shared/logRuns';
 import { isSecretName, missingMachineError, SECRET_MASK } from '../../shared/machineValues';
 import {
   emptyExceptionLog,
@@ -1045,9 +1046,13 @@ export class Supervisor {
       }
     }
 
-    // File only: the pane already shows the status, but a log read later by an
-    // agent needs to know where one run ends and the next begins.
-    this.writeLog(spec.id, `── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`);
+    // In the pane as well as the file. A restart appends to the last run's
+    // output, and without this line nothing says where the new run begins or
+    // what it ran. A log read later by an agent needs the same divider.
+    this.append(
+      spec.id,
+      startLine({ time: clockTime(Date.now()), ref: binding.ref, cwd, command: debug.command.join(' ') }),
+    );
     const proc = this.deps.spawn({ command: debug.command, cwd, env: { ...shell, ...debug.env } });
     this.procs.set(spec.id, proc);
 
@@ -1302,7 +1307,8 @@ export class Supervisor {
   }
 
   private setStatus(serviceId: string, patch: Partial<ServiceRuntime>): void {
-    const next = { ...this.runtime(serviceId), ...patch, serviceId };
+    const prev = this.runtime(serviceId);
+    const next = { ...prev, ...patch, serviceId };
     // Waiting is a kind of starting; any other status ends it.
     if (next.status !== 'starting') {
       next.waitingOn = undefined;
@@ -1319,11 +1325,24 @@ export class Supervisor {
     if (!next.adopted) this.forgetAdopted(serviceId);
     this.runtimes.set(serviceId, next);
     if (patch.status === 'failed' || patch.status === 'stopped' || patch.status === 'done') {
-      const detail = [
-        patch.exitCode !== undefined && patch.exitCode !== null ? `exit ${patch.exitCode}` : '',
-        patch.lastError ?? '',
-      ].filter(Boolean).join(' · ');
-      this.writeLog(serviceId, `── ${patch.status}${detail ? ` · ${detail}` : ''} ──`);
+      // The end of a run that was underway goes in the pane too, so the run
+      // reads as finished and the next start has something to sit under. A
+      // stop of something already stopped is no run ending: file only.
+      const ended = prev.status === 'starting' || prev.status === 'ready' || prev.status === 'unready';
+      const line = endLine({
+        status: patch.status,
+        exitCode: patch.exitCode ?? undefined,
+        // An adopted process's `startedAt` is when overcli found it, not when
+        // it started: "after 5s" for something up since this morning is wrong,
+        // so an adopted run says nothing about how long it ran.
+        duration:
+          ended && !prev.adopted && prev.startedAt !== undefined
+            ? formatDuration(this.deps.probe.now() - prev.startedAt)
+            : undefined,
+        error: patch.lastError,
+      });
+      if (ended) this.append(serviceId, line);
+      else this.writeLog(serviceId, line);
     }
     this.emit({ kind: 'status', serviceId, runtime: next });
   }
