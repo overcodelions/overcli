@@ -555,7 +555,9 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .sl-out.violet { background: var(--violet-soft); color: var(--violet); } .sl-out.violet .sl-badge { background: var(--violet); color: var(--panel); }
 .sl-out.need { background: var(--need-soft); color: var(--need); } .sl-out.need .sl-badge { background: var(--need); color: var(--panel); }
 .sl-out.big { padding: 3px 12px 3px 3px; font-size: 13px; } .sl-out.big .sl-badge { width: 22px; height: 22px; font-size: 11px; }
-.sl-more { margin-top: auto; display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
+/* The list's foot and the thread's foot share one height, so the line over
+   each runs straight across the panel, like the one under the heads. */
+.sl-more { margin-top: auto; display: flex; align-items: center; justify-content: center; height: 48px; padding: 0 8px; box-sizing: border-box; border-top: 1px solid var(--line); }
 .sl-more:has(> [hidden]) { display: none; }
 .sl-pane { flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .sl-pane-head { padding: 22px 28px 18px; border-bottom: 1px solid var(--line); min-height: 144px; box-sizing: border-box; }
@@ -563,7 +565,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .sl-pane-meta { font-size: 12.5px; color: var(--muted); } .sl-pane-meta b { color: var(--ink); font-weight: 600; }
 .sl-pane-q { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
 .sl-pane-body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 26px 28px 32px; }
-.sl-pane-foot { padding: 12px 28px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.sl-pane-foot { flex: none; display: flex; align-items: center; height: 48px; padding: 0 28px; box-sizing: border-box; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .sl-live-line { display: flex; align-items: center; gap: 8px; }
 .sl-live { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 @media (max-width: 880px) {
