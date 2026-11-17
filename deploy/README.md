@@ -312,6 +312,24 @@ Besides its job and flows, the file carries its triggers, how much of each tool 
 
 It still arrives as a hire, on probation, with no leave to act on its own. Left behind: secret values, DMs on its triggers, "starts on its own" on a trigger, and a tool scope wider than the new org's default, which an admin can widen again. A webhook trigger gets a new address, shown once on import.
 
+## Moving the whole org
+
+To take everything to a new server at once (from a trial on your laptop to the VPC, or from the overcli app to your first server), an admin exports the org and imports it on the other side:
+
+```
+overcli org export --from https://old.acme.internal --token $OLD_TOKEN
+overcli org import acme-org-2026-11-16.json --to https://new.acme.internal --token $NEW_TOKEN --dry-run
+overcli org import acme-org-2026-11-16.json --to https://new.acme.internal --token $NEW_TOKEN
+```
+
+From the app: Settings → Your org → **Move everything**. It shows the dry run first, then moves.
+
+The file holds every worker, with its triggers, tool scopes, what it knows, its notes and its journal; every team and process; and the org's setup: rules and budgets, role catalog, handbook, tools, repos, workspaces, databases and APIs. Rules and the handbook land straight away (same org only); tools, repos and workspaces wait on Setup → From desktops, and databases and APIs on their own pages, for an admin to add their keys. When the file comes from the same Slack workspace, each worker keeps its trust, its manager and who it reports to. A file that can't be matched by workspace (a personal install, or a server with none set) keeps them only when you vouch it is your own org: pass `--keep-trust`, or tick **This is our own org** in the console. The app's **Move everything** vouches on its own, since it sends its own org. From another workspace's org, each lands as a hire on probation with you as its manager, and only with the tools this org has cleared; its processes land with you owning and deciding every stage.
+
+Workers land paused, because the old copy is probably still running. Switch the old ones off, then resume these. Pass `--start`, or tick the box in the app, to land them running. Importing the same file again leaves what already came alone and fills in reporting lines an earlier run couldn't set, so a move that stopped halfway can be run again. It doesn't change trust on a worker already there: set any trust the first run reported as not coming on the worker's page.
+
+No secret is ever written to the file. Each tool arrives set up as it was, minus its keys, and waits on the Tools page. Its workers can't use it until the keys are in. Webhook triggers get new addresses, listed when they land. `org.json` isn't in the file: copy it across with your deploy files. Copying the `/data` volume still works too, and keeps everything, run history and secrets included.
+
 ## Inside a VPC or behind a VPN
 
 Slack needs no inbound route. The bridge uses Socket Mode, so the container dials out and Slack's events come back down that connection.

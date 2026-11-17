@@ -15,7 +15,9 @@ import path from 'node:path';
 import { Store, flushStoreSync } from '../main/store';
 import { ensureProject } from './engines';
 import type { OrgOptions, ProjectsOptions, TokensOptions, WorkersPushOptions } from './args';
-import { ORG_TOKEN_ENV, ORG_URL_ENV, normalizeOrgUrl, publishTeamToOrg, publishToOrg } from '../main/org/orgClient';
+import { ORG_TOKEN_ENV, ORG_URL_ENV, exportOrgFrom, importOrgTo, normalizeOrgUrl, publishTeamToOrg, publishToOrg } from '../main/org/orgClient';
+import { parseOrgBundle } from '../main/org/orgBundle';
+import { describeImport } from '../main/org/orgMigrate';
 import { shareForOrg, teamForOrg } from '../main/org/orgShare';
 import { loadAllTeams } from '../main/flows/teamsStore';
 import { loadAllWorkers } from '../main/flows/workersStore';
@@ -76,7 +78,9 @@ export function projectsCommand(opts: ProjectsOptions, deps: { out: (line: strin
 }
 
 /// `overcli org` — name the org this box serves, and see its rules.
-export function orgCommand(opts: OrgOptions, deps: { out: (line: string) => void; err: (line: string) => void }): number {
+export function orgCommand(opts: OrgOptions, deps: { out: (line: string) => void; err: (line: string) => void }): number | Promise<number> {
+  if (opts.action === 'export') return orgExportCommand(opts, deps);
+  if (opts.action === 'import') return orgImportCommand(opts, deps);
   setHost(nodeHost({ dataDir: opts.stateDir }));
   if (opts.action === 'init') {
     const res = initOrgConfig({
@@ -102,11 +106,60 @@ export function orgCommand(opts: OrgOptions, deps: { out: (line: string) => void
   return EXIT.OK;
 }
 
+/// `overcli org export` — the whole org from a server, into one file.
+async function orgExportCommand(opts: OrgOptions, deps: { out: (line: string) => void; err: (line: string) => void }): Promise<number> {
+  const target = orgTarget({ to: opts.server, token: opts.token }, deps.err, '--from');
+  if (!target) return EXIT.BAD_INPUT;
+  const res = await exportOrgFrom(target.url, target.token);
+  if (!res.ok) {
+    deps.err(res.error);
+    return EXIT.RUN_FAILED;
+  }
+  const file = opts.file ?? res.filename;
+  // Its journals and job descriptions are the org's own: readable by this user only.
+  fs.writeFileSync(file, JSON.stringify(res.bundle, null, 2), { mode: 0o600 });
+  const { workers, teams, processes } = res.bundle;
+  deps.out(`Wrote ${file}: ${workers.length} workers, ${teams.length} teams, ${processes.length} processes.`);
+  deps.out('Not in it:');
+  for (const l of res.left) deps.out(`  · ${l}`);
+  deps.out(`Next: overcli org import ${file} --to <new server> --dry-run`);
+  return EXIT.OK;
+}
+
+/// `overcli org import` — an org file onto a server, or with --dry-run,
+/// what would land.
+async function orgImportCommand(opts: OrgOptions, deps: { out: (line: string) => void; err: (line: string) => void }): Promise<number> {
+  const target = orgTarget({ to: opts.server, token: opts.token }, deps.err, '--to');
+  if (!target) return EXIT.BAD_INPUT;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(opts.file!, 'utf8'));
+  } catch (err) {
+    deps.err(`Could not read ${opts.file}: ${err instanceof Error ? err.message : String(err)}`);
+    return EXIT.BAD_INPUT;
+  }
+  const parsed = parseOrgBundle(raw);
+  if (!parsed.ok) {
+    deps.err(parsed.error);
+    return EXIT.BAD_INPUT;
+  }
+  const res = await importOrgTo(target.url, target.token, parsed.bundle, { dryRun: opts.dryRun, start: opts.start, keepTrust: opts.keepTrust });
+  if (!res.ok) {
+    deps.err(res.error);
+    return EXIT.RUN_FAILED;
+  }
+  for (const line of describeImport(res.report)) deps.out(line);
+  if (opts.dryRun) deps.out('\nLooks right? Run it again without --dry-run.');
+  const r = res.report;
+  const failed = r.workers.some((w) => w.status === 'failed') || r.teams.some((t) => t.status === 'failed') || r.processes.some((p) => p.status === 'failed');
+  return failed ? EXIT.RUN_FAILED : EXIT.OK;
+}
+
 /// Where to publish, from flags or the environment.
-function orgTarget(opts: WorkersPushOptions, err: (line: string) => void): { url: string; token: string } | null {
+function orgTarget(opts: Pick<WorkersPushOptions, 'to' | 'token'>, err: (line: string) => void, flag = '--to'): { url: string; token: string } | null {
   const rawUrl = opts.to ?? process.env[ORG_URL_ENV];
   if (!rawUrl) {
-    err(`Say where: --to https://overcli.acme.internal:7420, or set $${ORG_URL_ENV}.`);
+    err(`Say where: ${flag} https://overcli.acme.internal:7420, or set $${ORG_URL_ENV}.`);
     return null;
   }
   const url = normalizeOrgUrl(rawUrl);

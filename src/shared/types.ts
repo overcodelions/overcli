@@ -50,6 +50,7 @@ import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { Team, TeamHireRequest, TeamMember, TeamRosterDraft, TeamTask } from './flows/team';
 import type { ProcessDef, ProcessItem, ProcessSchedule, ProcessStage } from './org/process';
+import type { OrgImportReport } from './org/orgImport';
 import type { ScheduleTrigger } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
@@ -1627,6 +1628,10 @@ export interface IPCInvokeMap {
   /// A local process onto the org. Its teams have to be published first:
   /// the server finds each by the id it had here.
   'org:publishProcess': (args: { id: string; serverId?: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// Move everything on this desktop (workers, teams, processes) to an org
+  /// server. `dryRun` first: what would land, nothing changed. No secret
+  /// goes: tools arrive waiting for their keys.
+  'org:moveOrg': (args: { dryRun: boolean; start?: boolean; serverId?: string }) => { ok: true; server: string; report: OrgImportReport } | { ok: false; error: string; signIn?: true };
   /// What "Publish my setup" would send: tools (key names only), workspaces
   /// and projects. Nothing secret crosses to the renderer.
   'org:setupPreview': () =>

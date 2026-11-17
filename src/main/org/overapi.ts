@@ -15,7 +15,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { canHire, isAdmin, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
-import { API_PUSH_MAX_BYTES, overapiToolName, parseApiPush, pushEnv, type ApiPush, type OverapiEnv, type OverapiProject, type OverapiSafety } from '../../shared/overapiProject';
+import { API_PUSH_MAX_BYTES, overapiToolName, parseApiPush, pushEnv, type ApiPush, type OverapiEnv, type OverapiProject, type OverapiSafety, API_PUSH_VERSION, API_PUSH_KIND } from '../../shared/overapiProject';
 import type { ToolInput } from './tools';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -178,6 +178,23 @@ export class OverapiOrg {
         };
       }),
     };
+  }
+
+  /// Every API this server serves, as overapi would publish it: the project,
+  /// its environment, and the names of the variables its secrets go in.
+  /// Never a value. For moving the org (orgBundle.ts).
+  exportPushes(caller: OrgCaller): Result<{ pushes: ApiPush[] }> {
+    if (!isAdmin(this.host.policy(), caller)) return { ok: false, error: 'Only an admin can set up the server.' };
+    const pushes = this.loadApis().map((a) => ({
+      version: API_PUSH_VERSION,
+      kind: API_PUSH_KIND,
+      id: a.name,
+      createdAt: new Date(a.at).toISOString(),
+      env: a.env,
+      secrets: [...a.secrets],
+      project: structuredClone(a.project),
+    }) as ApiPush);
+    return { ok: true, pushes };
   }
 
   /// Finish a published API. Secrets only travel like a tool's keys do

@@ -15,12 +15,16 @@ import { templateFrom, type ToolTemplate } from './tools';
 /// pre-filled.
 export function shareForOrg(worker: Worker): { yaml: string; tools: ToolTemplate[]; missingFlowIds: string[] } {
   const share = buildWorkerShare({ worker, library: loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }) });
-  const tools = (worker.mcpServers ?? []).flatMap((name) => {
+  return { yaml: share.yaml, tools: toolTemplatesFor(worker.mcpServers ?? []), missingFlowIds: share.missingFlowIds };
+}
+
+/// How these tools are set up on this machine, minus every value.
+export function toolTemplatesFor(names: readonly string[]): ToolTemplate[] {
+  return names.flatMap((name) => {
     const config = readMcpServer('claude', name);
     const t = config ? templateFrom(name, config) : null;
     return t ? [t] : [];
   });
-  return { yaml: share.yaml, tools, missingFlowIds: share.missingFlowIds };
 }
 
 /// A team as it goes to the org, each member's share file inside.

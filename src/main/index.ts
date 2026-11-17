@@ -193,6 +193,7 @@ import {
   pollPairing,
   processPublishPayload,
   publishProcessToOrg,
+  importOrgTo,
   publishTeamToOrg,
   publishSetupToOrg,
   publishOverdbConnectionToOrg,
@@ -207,7 +208,8 @@ import { installOrgChatGuard, setOrgChatSource, type OrgChangeRequest } from './
 import { orgPicture } from './org/orgPictures';
 import { orgTabAllowed, orgTabTimeout } from './org/orgTabRoutes';
 import { chatToolNames, defaultServerId, forgetOrgServer, listOrgServers, onOrgServersChanged, orgServerAccess, orgTokenFor, orgTokenKey, rememberSignIn, saveOrgServers, tokenFromEnv, updateOrgServer } from './org/orgServers';
-import { shareForOrg, teamForOrg } from './org/orgShare';
+import { shareForOrg, teamForOrg, toolTemplatesFor } from './org/orgShare';
+import { exportOrgBundle } from './org/orgMigrate';
 import { gatherSetup, keyValuesFor } from './org/setupShare';
 import { readClaudeMcpServers } from './mcpConfig';
 import { draftHire, drafterDepsFor, hireDraftContext, saveDraftedHire } from './org/hireDraft';
@@ -1269,6 +1271,24 @@ export function registerIpc(): void {
     const built = processPublishPayload(got.process, got.teams, me);
     if (!built.ok) return built;
     return publishProcessToOrg(url.url, token, built.payload);
+  });
+  // Move everything here to an org server: one org file, built in memory and
+  // sent, never written to disk. Its tools go as setup minus every value.
+  ipcMain.handle('org:moveOrg', async (_e, { dryRun, start, serverId }) => {
+    const at = orgServerAccess(serverId);
+    if (!at.ok) return at;
+    if (!orgService) return { ok: false, error: 'The org layer is not running here.' };
+    const built = exportOrgBundle(orgService, processService ?? undefined, desktopCaller(), 'desktop');
+    if (!built.ok) return built;
+    const byId = new Map((workerEngine?.list() ?? []).map((row) => [row.worker.id, row.worker]));
+    for (const w of built.bundle.workers) {
+      const tools = toolTemplatesFor(byId.get(w.sourceId)?.mcpServers ?? []);
+      if (tools.length) w.tools = tools;
+    }
+    // Built here from this desktop's own org, not read from a file: the
+    // signed-in admin is vouching for it, so trust and managers come along.
+    const res = await importOrgTo(at.url, at.token, built.bundle, { dryRun: !!dryRun, start: !!start, keepTrust: true });
+    return res.ok ? { ok: true, server: at.url, report: res.report } : res;
   });
   // Publish my setup: what this desktop has, for the org server's admin to
   // install and connect. The renderer only ever sees key NAMES; values are

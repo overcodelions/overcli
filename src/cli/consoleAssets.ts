@@ -16097,7 +16097,8 @@ export const CONSOLE_JS = String.raw`
       ['people', 'People', 'Who can use the workers, their roles, invites and who is asking to join.'],
       ['teams', 'Groups', 'Groups of people. A worker set to "my team may ask it" is open to everyone who shares a team with its manager.'],
       ['signin', 'Sign-in', 'Let people sign in with the company account (Okta, Entra ID, Google — anything that speaks OpenID Connect).'],
-      ['records', 'Records', 'How long the decision log, finished runs and each run’s step-by-step activity are kept. Older ones are deleted each night. Left blank, records stay forever and run activity a week.']] },
+      ['records', 'Records', 'How long the decision log, finished runs and each run’s step-by-step activity are kept. Older ones are deleted each night. Left blank, records stay forever and run activity a week.'],
+      ['move', 'Move org', 'Take every worker, team and process to another server in one file, or bring them in from one. No keys go.']] },
     { group: 'Workers', pages: [
       ['hiring', 'Hiring', 'Who may hire, what their workers may cost before a hire needs approval, and who approves.'],
       ['roles', 'Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.'],
@@ -16121,7 +16122,7 @@ export const CONSOLE_JS = String.raw`
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
   var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, capacity: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', capacity: 'setup--capacity', people: 'people', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_LEARN = { move: 'setup--move-org', offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', capacity: 'setup--capacity', people: 'people', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
   /// Words people search for that a Setup page's own title and blurb don't
   /// say, so the finder takes "concurrency" to Capacity.
   var SETUP_WORDS = {
@@ -16130,6 +16131,7 @@ export const CONSOLE_JS = String.raw`
     teams: 'groups people members departments',
     signin: 'sso okta entra google oidc openid login single sign-on',
     records: 'retention history audit log delete keep days',
+    move: 'migrate migration export import transfer backup new server cloud bundle',
     hiring: 'hire approve approval allowance web pages fetch browsing urls',
     roles: 'roles catalog templates jobs starter',
     handbook: 'context instructions knowledge style guide prompt',
@@ -16201,11 +16203,117 @@ export const CONSOLE_JS = String.raw`
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), null);
     setChrome([['Setup', function () { go('setup', { setupTab: 'ready' }); }]].concat(group ? [[group]] : [], [[page[1]]]));
-    var body = tab === 'people' ? viewPeople() : tab === 'capacity' ? viewCapacity() : tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'people' ? viewPeople() : tab === 'move' ? viewMoveOrg() : tab === 'capacity' ? viewCapacity() : tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
       // People keeps its own heading, which carries Invite people.
       return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, tab === 'people' ? null : headNode, tab === 'ready' || tab === 'people' ? nodes : nodes.slice(1)))];
     });
+  }
+
+  /// Setup → Move org: the whole org out to a file, or a file from another
+  /// server in, for admins. An import shows its dry run first; nothing lands
+  /// until Import. No secret is ever in the file (orgBundle.ts).
+  function viewMoveOrg() {
+    var top = head('Move org');
+    if (!state.me || !state.me.admin) return Promise.resolve([top, emptyState('Only an admin can move the org.', 'Ask an admin to export it or import a file here.')]);
+    var plural = function (n, one, many) { return n + ' ' + (n === 1 ? one : many); };
+
+    // Export: download the file, then say what's in it and what isn't.
+    var exOut = h('div', { 'aria-live': 'polite' });
+    var exBtn = h('button', { class: 'btn go', text: 'Download the org file' });
+    exBtn.onclick = function () {
+      var restore = busy(exBtn, 'Exporting…');
+      api('GET', '/api/org/export').then(function (r) {
+        restore(); exOut.textContent = '';
+        if (r.ok === false) { exOut.appendChild(msg(r)); return; }
+        var a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(r.bundle, null, 2)], { type: 'application/json' })), download: r.filename });
+        document.body.appendChild(a); a.click(); a.remove();
+        var b = r.bundle;
+        append(exOut, [h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Downloaded ' + r.filename + ': ' + plural(b.workers.length, 'worker', 'workers') + ', ' + plural(b.teams.length, 'team', 'teams') + ', ' + plural(b.processes.length, 'process', 'processes') + '. On the new server, open Setup → Move org and import it. Keep the file safe: it holds every worker’s journal. Not in it:' }),
+          h('ul', { style: 'margin:4px 0 0;padding-left:18px;font-size:13px' }, r.left.map(function (l) { return h('li', { class: 'faint', text: l }); }))]);
+      });
+    };
+    var exportCard = h('section', { class: 'panel pad stack' },
+      h('h2', { class: 'section-title', style: 'margin:0', text: 'Export this org' }),
+      h('p', { class: 'hint', style: 'font-size:13px;margin:0', text: 'One file with every worker, team and process (each worker’s trust, manager, who it reports to, triggers, tool scopes, what it knows and its journal) and the org’s setup: its rules and budgets, role catalog, handbook, tools, repos, workspaces, databases and APIs. No key, token or password is ever written to it: each tool, database and API goes as its setup with the values removed, and waits on the new server for an admin to type them. Webhook triggers get new addresses there. Who the server is (its name, address, sign-in and admins) stays as it is.' }),
+      h('div', null, exBtn), exOut);
+
+    // Import: read the file, show the dry run, then import on a click.
+    var bundle = null;
+    var file = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': 'Org file to import', style: 'font-size:13px' });
+    var start = h('input', { type: 'checkbox' });
+    // Vouching: the admin says the file is their own org, so trust and
+    // managers come along without a matching Slack workspace.
+    var vouch = h('input', { type: 'checkbox' });
+    var imOut = h('div', { class: 'stack', 'aria-live': 'polite' });
+    var verbs = { added: ['go', 'Added'], updated: ['go', 'Updated'], alreadyHere: ['plain', 'Already here'], failed: ['bad', 'Can’t come'] };
+    var planned = { added: ['go', 'Will be added'], updated: ['go', 'Will be updated'], alreadyHere: ['plain', 'Already here'], failed: ['bad', 'Can’t come'] };
+    var report = function (r) {
+      var v = r.dryRun ? planned : verbs;
+      var tag = function (s) { return h('span', { class: 'tag ' + v[s][0], text: v[s][1] }); };
+      var rows = function (title, list, line) {
+        return list.length ? [h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: title + ' (' + list.length + ')' }))].concat(list.map(line)) : [];
+      };
+      return [h('p', { class: r.dryRun ? 'hint' : 'msg ok', style: 'font-size:13px;margin:0', text: (r.dryRun ? 'Nothing has changed yet. ' : '') + r.trustWhy })]
+        .concat(rows('Workers', r.workers, function (w) {
+          return h('div', { class: 'srow', style: 'align-items:flex-start' },
+            h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' }, h('b', { text: w.name }),
+              h('span', { class: 'faint', style: 'font-size:12.5px', text: w.status === 'failed' ? w.error : [w.trust, 'managed by ' + w.manager].concat(w.paused ? ['paused'] : []).join(' · ') }),
+              w.notes.length ? h('span', { class: 'faint', style: 'font-size:12.5px', text: w.notes.join(' ') }) : null),
+            tag(w.status));
+        }))
+        .concat(rows('Teams', r.teams, function (t) { return h('div', { class: 'srow' }, h('span', { text: t.name + (t.error ? ' — ' + t.error : '') }), tag(t.status)); }))
+        .concat(rows('Processes', r.processes, function (p) { return h('div', { class: 'srow' }, h('span', { text: p.name + (p.error ? ' — ' + p.error : '') }), tag(p.status)); }))
+        .concat(rows('Setup', r.setup || [], function (s) {
+          var said = r.dryRun
+            ? { added: ['go', 'Will be added'], updated: ['go', 'Will be updated'], alreadyHere: ['', 'Already here'], waiting: ['need', 'Will wait for keys'], skipped: ['', 'Left out'], failed: ['bad', 'Can’t come'] }
+            : { added: ['go', 'Added'], updated: ['go', 'Updated'], alreadyHere: ['', 'Already here'], waiting: ['need', 'Waiting for keys'], skipped: ['', 'Left out'], failed: ['bad', 'Failed'] };
+          var t = said[s.status] || ['', s.status];
+          var kinds = { rules: 'Rules', handbook: 'Handbook', tool: 'Tool', repo: 'Repo', workspace: 'Workspace', database: 'Database', api: 'API' };
+          return h('div', { class: 'srow', style: 'align-items:flex-start' },
+            h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' }, h('span', null, h('span', { class: 'faint', text: (kinds[s.kind] || s.kind) + ' · ' }), h('b', { text: s.name })),
+              s.note || s.where ? h('span', { class: 'faint', style: 'font-size:12.5px', text: [s.where ? 'On ' + s.where + '.' : '', s.note || ''].join(' ').trim() }) : null),
+            h('span', { class: 'tag ' + t[0], text: t[1] }));
+        }))
+        .concat(r.needsKeys.length ? [h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Tools that need their keys here' }))].concat(r.needsKeys.map(function (k) {
+          return h('div', { class: 'srow' }, h('span', { class: 'mono', text: k.tool }), h('span', { class: 'faint', style: 'font-size:12.5px', text: 'for ' + k.workers.join(', ') }));
+        })) : [])
+        .concat(r.notes.map(function (n) { return h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: n }); }));
+    };
+    var send = function (dryRun, btn) {
+      var restore = busy(btn, dryRun ? 'Checking…' : 'Importing…');
+      api('POST', '/api/org/import', { bundle: bundle, dryRun: dryRun, start: start.checked, keepTrust: vouch.checked }).then(function (r) {
+        restore(); imOut.textContent = '';
+        if (r.ok === false) { imOut.appendChild(msg(r)); return; }
+        append(imOut, report(r.report));
+        if (!dryRun) { bundle = null; file.value = ''; return; }
+        var todo = r.report.workers.concat(r.report.teams, r.report.processes, r.report.setup || []).filter(function (x) { return x.status === 'added' || x.status === 'updated' || x.status === 'waiting'; }).length;
+        var go_ = h('button', { class: 'btn go', text: todo ? 'Import' : 'Nothing new to import', disabled: !todo });
+        go_.onclick = function () { send(false, go_); };
+        vouch.onchange = function () { send(true, go_); };
+        append(imOut, [h('div', { class: 'stack', style: 'gap:10px;border-top:1px solid var(--line);padding-top:12px' },
+          !r.report.keepsTrust || vouch.checked ? h('label', { class: 'row', style: 'gap:8px;font-size:13.5px' }, vouch, 'This is our own org: keep each worker’s trust, manager and reporting line, and its rules. Only for a file you exported yourself.') : null,
+          h('label', { class: 'row', style: 'gap:8px;font-size:13.5px' }, start, 'Start them running here now. Leave off while the old copies still run: two copies would do the same work twice.'),
+          h('div', { class: 'row', style: 'gap:8px' }, go_, h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { bundle = null; file.value = ''; imOut.textContent = ''; } })))]);
+      });
+    };
+    file.onchange = function () {
+      var f = file.files && file.files[0];
+      imOut.textContent = '';
+      if (!f) return;
+      f.text().then(function (t) {
+        try { bundle = JSON.parse(t); } catch (e) { bundle = null; imOut.appendChild(msg({ ok: false, error: 'That isn’t an org file: it isn’t JSON.' })); return; }
+        var check = h('button', { class: 'btn', text: 'Check' });
+        imOut.appendChild(check);
+        send(true, check);
+      });
+    };
+    var importCard = h('section', { class: 'panel pad stack' },
+      h('h2', { class: 'section-title', style: 'margin:0', text: 'Import an org file' }),
+      h('p', { class: 'hint', style: 'font-size:13px;margin:0', text: 'Choose a file exported from another server. You see what would land first: each worker’s trust and manager, and which tools need their keys here. From the same Slack workspace, trust, managers and reporting lines come along; from another workspace’s org, each worker arrives on probation with you as its manager. Workers land paused unless you start them. Importing the same file again leaves what already came alone.' }),
+      h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Moving from the overcli app? In the app: Settings → Your org → Move everything. No file needed.' }),
+      file, imOut);
+    return Promise.resolve([top, exportCard, importCard]);
   }
 
   /// Setup → Capacity: what the last week says about the server's size, each
@@ -16282,7 +16390,7 @@ export const CONSOLE_JS = String.raw`
     return api('GET', '/api/setup/offers').then(function (x) {
       var top = head('From desktops');
       if (x.ok === false) return [top, msg(x)];
-      if (!x.offers.length) return [top, emptyState('Nothing published yet.', 'In the overcli app: Settings → Your org → Publish my setup. Pick the workspaces, repos and tools this server should have; they land here for you to install.')];
+      if (!x.offers.length) return [top, emptyState('Nothing published yet.', 'In the overcli app: Settings → Your org → Publish my setup. Pick the workspaces, repos and tools this server should have; they land here for you to install. To bring every worker, team and process from the app at once, use Settings → Your org → Move everything there.')];
       var done = function (label) { return h('span', { class: 'tag go', text: '✓ ' + label }); };
       return [top].concat(x.offers.map(function (o) {
         var out = h('div', { 'aria-live': 'polite' });
@@ -19460,7 +19568,7 @@ export const CONSOLE_JS = String.raw`
       rows.appendChild(row);
     };
     R.fleet.forEach(function (f) { add(f.name, f.url); });
-    return [ruleSection('Other servers', 'Other overcli servers in the company — one per department or Slack app — to watch from Admin. Connect each with an admin token there.',
+    return [ruleSection('Other servers', 'Other overcli servers in the company — one per department or Slack app — to watch from Admin. Connect each with an admin token there. Retiring one? Open its own Setup → Move org to export it, then import the file here.',
       h('div', { class: 'stack' }, rows, h('div', null, h('button', { class: 'btn small', text: 'Add a server', onclick: function () { add('', ''); } }))),
       function () { return { fleet: [].slice.call(rows.children).map(function (r) { return r._read(); }).filter(function (f) { return f.name && f.url; }) }; })];
   }

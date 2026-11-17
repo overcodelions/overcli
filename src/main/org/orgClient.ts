@@ -13,12 +13,15 @@ import type { ProcessDef, ProcessPerson, ProcessStage } from '../../shared/org/p
 import type { ToolTemplate } from './tools';
 import type { ConnectionPush } from '../../shared/overdbConnection';
 import type { ApiPush } from '../../shared/overapiProject';
+import type { OrgBundle, OrgImportReport } from './orgBundle';
 
 export const ORG_TOKEN_KEY = 'org-control-token';
 export const ORG_TOKEN_ENV = 'OVERCLI_ORG_TOKEN';
 export const ORG_URL_ENV = 'OVERCLI_ORG_URL';
 
 const TIMEOUT_MS = 20_000;
+/// Landing a whole org writes every worker, its flows and its journal.
+const ORG_MOVE_TIMEOUT_MS = 5 * 60_000;
 
 export function configuredOrgToken(): string | null {
   try {
@@ -221,6 +224,25 @@ export async function publishProcessToOrg(base: string, token: string, payload: 
       ? `${name} is updated on the org. Items already in it carry on.`
       : `${name} is on the org. People can put work into it from the console or Slack.`,
   };
+}
+
+/// The whole org from a server, as an org file (orgBundle.ts). Admins only.
+export async function exportOrgFrom(base: string, token: string): Promise<{ ok: true; bundle: OrgBundle; filename: string; left: string[] } | { ok: false; error: string }> {
+  const res = await orgCall<{ bundle: OrgBundle; filename: string; left: string[] }>(base, token, 'GET', '/api/org/export', undefined, ORG_MOVE_TIMEOUT_MS);
+  return res.ok ? { ok: true, bundle: res.data.bundle, filename: res.data.filename, left: res.data.left } : res;
+}
+
+/// An org file onto a server. `dryRun`: what would land, nothing changed.
+export async function importOrgTo(
+  base: string,
+  token: string,
+  bundle: OrgBundle,
+  opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {},
+): Promise<{ ok: true; report: OrgImportReport } | { ok: false; error: string }> {
+  const res = await orgCall<{ report: OrgImportReport }>(base, token, 'POST', '/api/org/import', { bundle, dryRun: !!opts.dryRun, start: !!opts.start, keepTrust: !!opts.keepTrust }, ORG_MOVE_TIMEOUT_MS);
+  if (!res.ok && res.status === 404) return { ok: false, error: 'That server is too old to take an org file. Update it, then try again.' };
+  if (!res.ok && res.status === 413) return { ok: false, error: 'That org file is too large for one import.' };
+  return res.ok ? { ok: true, report: res.data.report } : res;
 }
 
 /// A desktop's picked setup onto the org (see setupShare.ts).

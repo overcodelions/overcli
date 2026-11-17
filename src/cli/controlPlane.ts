@@ -22,7 +22,9 @@ import type { TestSystemsService } from '../main/org/testSystems';
 import { parseCron } from '../shared/flows/cron';
 import { scheduleText } from '../main/org/orgService';
 import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/processLibrary';
-import type { ProcessField, ProcessPerson, ProcessStage } from '../shared/org/process';
+import { personInput, stagesInput } from '../main/org/processInput';
+import { parseOrgBundle } from '../main/org/orgBundle';
+import { exportOrgBundle, importOrgBundle } from '../main/org/orgMigrate';
 import { processFromYaml, processToYaml, type ProcessYamlNames } from '../shared/org/processYaml';
 import { teamFromYaml, teamToYaml } from '../shared/org/teamYaml';
 import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
@@ -89,6 +91,8 @@ export function teamBriefFiles(raw: unknown): { ok: true; attachments: Attachmen
 /// A published worker or team carries its flows whole; only signed-in
 /// callers get this far.
 const MAX_PUBLISH_BYTES = 16_000_000;
+/// A whole org, every worker's journal in it.
+const MAX_ORG_IMPORT_BYTES = 64_000_000;
 /// A process drafted from a picture carries it as a data URL: 5 MB of image
 /// is about 7 MB of base64.
 const MAX_IMAGE_BODY_BYTES = 7_200_000;
@@ -597,68 +601,6 @@ function placeNames(org: OrgService, c: OrgCaller): string[] {
   return places.ok ? [...places.repos.map((r) => r.name), ...places.workspaces.map((w) => w.name)] : [];
 }
 
-function personInput(raw: unknown): ProcessPerson | undefined {
-  const p = raw as { name?: unknown; slackUserId?: unknown } | null;
-  const name = typeof p?.name === 'string' ? p.name.trim().slice(0, 120) : '';
-  if (!name) return undefined;
-  const id = typeof p?.slackUserId === 'string' && /^[UW][A-Z0-9]{6,}$/.test(p.slackUserId) ? p.slackUserId : undefined;
-  return { name, ...(id ? { slackUserId: id } : {}) };
-}
-
-/// What a people stage asks for, as a form sends it.
-function fieldsInput(raw: unknown): ProcessField[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, 12).map((x) => {
-    const r = (x ?? {}) as Record<string, unknown>;
-    const kind = r.kind === 'longText' || r.kind === 'choice' ? r.kind : 'text';
-    const options = kind === 'choice' && Array.isArray(r.options) ? r.options.filter((o): o is string => typeof o === 'string' && !!o.trim()).slice(0, 20).map((o) => o.trim().slice(0, 80)) : [];
-    return {
-      id: typeof r.id === 'string' ? r.id.trim().slice(0, 40) : '',
-      label: typeof r.label === 'string' ? r.label.trim().slice(0, 120) : '',
-      kind,
-      ...(options.length ? { options } : {}),
-      ...(r.required === true ? { required: true } : {}),
-    };
-  });
-}
-
-function stagesInput(raw: unknown): ProcessStage[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, 20).map((x) => {
-    const r = (x ?? {}) as Record<string, unknown>;
-    const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
-    const kind = r.kind === 'people' ? 'people' : r.kind === 'worker' ? 'worker' : 'team';
-    const owner = personInput(r.owner);
-    const approvers = Array.isArray(r.approvers) ? r.approvers.map(personInput).filter((p): p is ProcessPerson => !!p).slice(0, 20) : [];
-    const groups = Array.isArray(r.approverGroups)
-      ? (r.approverGroups as Array<{ id?: unknown; name?: unknown }>)
-          .filter((g) => typeof g?.id === 'string' && typeof g.name === 'string')
-          .slice(0, 10)
-          .map((g) => ({ id: (g.id as string).slice(0, 120), name: (g.name as string).slice(0, 120) }))
-      : [];
-    const fields = fieldsInput(r.fields);
-    return {
-      id: str(r.id, 40),
-      name: str(r.name, 80),
-      kind,
-      ...(kind === 'team' && str(r.teamId, 80) ? { teamId: str(r.teamId, 80) } : {}),
-      ...(kind === 'worker' && str(r.workerId, 80) ? { workerId: str(r.workerId, 80) } : {}),
-      ...(owner ? { owner } : {}),
-      ...(kind === 'people' ? { approvers, ...(groups.length ? { approverGroups: groups } : {}) } : {}),
-      ...(kind === 'people' && r.mode === 'input' ? { mode: 'input' } : {}),
-      ...(kind === 'people' && fields.length ? { fields } : {}),
-      ...(kind === 'people' && (r.needs === 'all' || (typeof r.needs === 'number' && Number.isInteger(r.needs) && r.needs > 1)) ? { needs: r.needs } : {}),
-      ...(str(r.ask, 2000) ? { ask: str(r.ask, 2000) } : {}),
-      ...(str(r.sendBackTo, 40) ? { sendBackTo: str(r.sendBackTo, 40) } : {}),
-      ...(str(r.why, 600) ? { why: str(r.why, 600) } : {}),
-      ...(kind !== 'people' && typeof r.delayDays === 'number' && r.delayDays > 0 ? { delayDays: Math.round(r.delayDays) } : {}),
-      ...(kind !== 'people' && r.repeat && typeof r.repeat === 'object' && Number((r.repeat as { times?: unknown }).times) > 1
-        ? { repeat: { everyDays: Math.round(Number((r.repeat as { everyDays?: unknown }).everyDays)), times: Math.round(Number((r.repeat as { times?: unknown }).times)) } }
-        : {}),
-    } as ProcessStage;
-  });
-}
-
 /// Processes: define them, put items in, decide and steer. Intake is a
 /// trigger that hands each event to the process instead of a worker.
 function processRoutes(processes: ProcessService, triggers: TriggerService | undefined, org: OrgService, draftProcess?: ControlPlaneDeps['draftProcess'], slackPeople?: ControlPlaneDeps['slackPeople']): Array<{ method: string; path: RegExp; handle: Handler }> {
@@ -1161,6 +1103,23 @@ function modelTestRoutes(testModelIds?: ControlPlaneDeps['testModelIds']): Array
         } finally {
           testing.delete(who);
         }
+      },
+    },
+  ];
+}
+
+/// Moving the whole org to or from another server, for admins. Its own
+/// routes so it can reach processes, which a control plane may not have.
+function migrateRoutes(org: OrgService, processes?: ProcessService, access?: AccessService): Array<{ method: string; path: RegExp; handle: Handler }> {
+  return [
+    { method: 'GET', path: /^\/api\/org\/export$/, handle: (c) => exportOrgBundle(org, processes, c, 'server', access) },
+    {
+      method: 'POST',
+      path: /^\/api\/org\/import$/,
+      handle: (c, b) => {
+        const parsed = parseOrgBundle(b.bundle);
+        if (!parsed.ok) return parsed;
+        return importOrgBundle(org, processes, c, parsed.bundle, { dryRun: b.dryRun === true, start: b.start === true, keepTrust: b.keepTrust === true }, access);
       },
     },
   ];
@@ -1911,6 +1870,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...(deps.connections ? connectionRoutes(deps.connections) : []),
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess, deps.slackPeople) : []),
     ...searchRoutes(deps.org, deps.processes),
+    ...migrateRoutes(deps.org, deps.processes, deps.access),
     ...slackRoutes(deps.slackConversations),
     ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText, deps.capacity), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),
   ];
@@ -2118,7 +2078,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
-              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/teams/brief' ? MAX_TEAM_BRIEF_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
+              const parsed = await readBody(req, path === '/api/org/import' ? MAX_ORG_IMPORT_BYTES : path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/teams/brief' ? MAX_TEAM_BRIEF_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
               body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
             } catch {
               return send(res, 400, { ok: false, error: 'Send a JSON object.' });

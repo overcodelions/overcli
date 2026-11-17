@@ -147,7 +147,15 @@ export interface WorkerCarried {
 }
 
 /// Caps on what a file may carry, so a hand-made one can't bloat a roster.
-export const CARRIED_LIMITS = { triggers: 30, tools: 30, notes: 50, journal: 1000, knowledge: 20_000, text: 2000 };
+/// Journal and notes go as high as a server ever keeps (the journal file is
+/// compacted to its newest 2,000 entries, WORKER_JOURNAL_MAX_ENTRIES), so
+/// moving an org carries a worker's whole history: every turned-down idea
+/// it checks before proposing, and every note in its digest.
+export const CARRIED_LIMITS = { triggers: 30, tools: 30, notes: 2000, journal: 2000, knowledge: 20_000, text: 2000 };
+
+/// What one worker's export to another org carries: a trimmed history is
+/// right for a worker someone else will run.
+export const SHARE_LIMITS = { notes: 50, journal: 1000 };
 
 /// Journal kinds worth carrying. A demotion and a compaction are about this
 /// install's copy, not about the work.
