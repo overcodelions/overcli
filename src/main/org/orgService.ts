@@ -22,7 +22,7 @@ import { friendlyModelLabel, newestInFamily, type FlowModelDefaults } from '../.
 import type { RunChanges } from './runChanges';
 import { ticketFlowId, ticketFlowYaml, trackerOf } from './ticketFollowUp';
 import { flowRunTitle } from '../../shared/flows/schema';
-import type { HireMessage, Worker, WorkerAudience, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
+import type { HireMessage, Worker, WorkerAudience, WorkerManager, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
 import { ANSWERS_AT_ONCE, ANSWERS_AT_ONCE_MAX, WORKER_NOTE_MAX, isCodingWorker, isSlackUserId, validateOrgFields, workerTagline } from '../../shared/flows/worker';
 import { describeTrigger, type ScheduleTrigger } from '../../shared/flows/schedule';
 import type { Orchestration } from '../../shared/flows/orchestration';
@@ -64,7 +64,10 @@ import { answerOptions, projectMonthEnd, trustReadiness, workerState, type Trust
 import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamKnowledgeRefresh, TeamStageKind, TeamTask } from '../../shared/flows/team';
 import { resolveShortNames } from '../../shared/shortName';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
-import { CARRIED_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
+import { CARRIED_LIMITS, SHARE_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
+import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
+import { OVERDB_TOOL, parseOverdbConnection } from '../../shared/overdbConnection';
+import { overapiToolName, parseApiPush } from '../../shared/overapiProject';
 import type { Attachment, Backend, UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
 import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
@@ -6847,13 +6850,23 @@ export class OrgService {
     if (trust === 'autonomous' && !isAdmin(this.policy(), caller)) {
       return { ok: false, error: 'Only an admin can make a worker autonomous.' };
     }
-    const res = this.deps.setTrust(found.worker.id, trust);
+    const res = this.applyTrust(found.worker.id, trust);
     if (!res.ok) return res;
-    // "On its own" means it acts outside the server without asking, and
-    // that is the grant that says so. It used to change only the label: an
-    // autonomous member still stopped for every Jira write in a team task.
-    // Moving it down takes the grant back.
-    const after = this.deps.workers.get(found.worker.id);
+    const now = this.deps.workers.get(found.worker.id);
+    if (now) this.version(caller, found.worker, now);
+    this.record(caller, `Set ${found.worker.name} to ${trust}.`);
+    return { ok: true, name: found.worker.name, trust };
+  }
+
+  /// A trust level and the grant that goes with it. "On its own" means it
+  /// acts outside the server without asking, and that is the grant that says
+  /// so. It used to change only the label: an autonomous member still stopped
+  /// for every Jira write in a team task. Moving it down takes the grant back.
+  private applyTrust(id: UUID, trust: WorkerTrustLevel): Result {
+    if (!this.deps.setTrust) return { ok: false, error: 'Trust cannot be changed from here.' };
+    const res = this.deps.setTrust(id, trust);
+    if (!res.ok) return res;
+    const after = this.deps.workers.get(id);
     const grant = trust === 'autonomous';
     if (after && !!after.caps.allowExternalActions !== grant) {
       const next = structuredClone(after);
@@ -6861,10 +6874,7 @@ export class OrgService {
       else delete next.caps.allowExternalActions;
       this.deps.workers.save(next);
     }
-    const now = this.deps.workers.get(found.worker.id);
-    if (now) this.version(caller, found.worker, now);
-    this.record(caller, `Set ${found.worker.name} to ${trust}.`);
-    return { ok: true, name: found.worker.name, trust };
+    return { ok: true };
   }
 
   // ---- TODAY ------------------------------------------------------------
@@ -7378,8 +7388,21 @@ export class OrgService {
     const found = this.managed(caller, idOrName);
     if (!found.ok) return found;
     const w = found.worker;
+    const { yaml, filename, left } = this.portableFile(w, opts);
+    left.unshift('Secret values: enter its tools’ keys on the new server.', 'Its trust: it starts on probation there.');
+    this.record(caller, `Exported ${w.name}${opts.learned ? ', with what it has learned' : ''}${opts.journal ? ', with its journal' : ''}.`);
+    return { ok: true, yaml, filename, left };
+  }
+
+  /// A worker's file with an export's extras: its triggers, tool scopes and
+  /// its tools' setup minus secrets, and when asked what it knows, its notes
+  /// and its journal. `left`: what stays behind, besides secrets and trust.
+  /// `whole`: moving the org, so all of its notes and journal go (as much as
+  /// the server keeps); otherwise a share's trimmed history.
+  private portableFile(w: Worker, opts: { learned?: boolean; journal?: boolean; whole?: boolean }): { yaml: string; filename: string; left: string[] } {
+    const limits = opts.whole ? CARRIED_LIMITS : SHARE_LIMITS;
     const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
-    const left = ['Secret values: enter its tools’ keys on the new server.', 'Its trust: it starts on probation there.'];
+    const left: string[] = [];
     const carried: WorkerCarried = {};
     if (w.toolScopes && Object.keys(w.toolScopes).length) carried.toolScopes = structuredClone(w.toolScopes);
     const tools = (w.mcpServers ?? []).flatMap((name) => this.deps.tools?.template?.(name) ?? []);
@@ -7407,19 +7430,352 @@ export class OrgService {
     const journal = this.deps.workers.journalFor(w.id);
     if (opts.learned) {
       if (w.knowledge?.body) carried.knowledge = w.knowledge.body;
-      const notes = journal.filter((e) => e.kind === 'note' && e.note).sort((a, b) => a.at - b.at).slice(-CARRIED_LIMITS.notes);
+      const notes = journal.filter((e) => e.kind === 'note' && e.note).sort((a, b) => a.at - b.at);
+      if (notes.length > limits.notes) left.push(`Its oldest ${notes.length - limits.notes} notes: only the newest ${limits.notes} go.`);
+      notes.splice(0, Math.max(0, notes.length - limits.notes));
       if (notes.length) carried.notes = notes.map((e) => ({ at: e.at, note: e.note! }));
     } else left.push('What it knows and its notes.');
     if (opts.journal) {
       const history = journal.filter((e) => e.kind !== 'note' && e.kind !== 'demoted' && e.kind !== 'compacted').sort((a, b) => a.at - b.at);
-      if (history.length > CARRIED_LIMITS.journal) left.push(`Its oldest ${history.length - CARRIED_LIMITS.journal} journal entries: only the newest ${CARRIED_LIMITS.journal} go.`);
-      const kept = history.slice(-CARRIED_LIMITS.journal);
+      if (history.length > limits.journal) left.push(`Its oldest ${history.length - limits.journal} journal entries: only the newest ${limits.journal} go.`);
+      const kept = history.slice(-limits.journal);
       if (kept.length) carried.journal = kept.map((e) => ({ kind: e.kind, at: e.at, title: e.title, ...(e.note ? { note: e.note } : {}) }));
     } else left.push('Its journal: without it, it may pick up work it already did.');
-    const file = this.deps.shareWorker(w, carried);
+    const file = this.deps.shareWorker!(w, carried);
     if (file.missingFlowIds.length) left.push(`Flows it uses that aren’t here: ${file.missingFlowIds.join(', ')}.`);
-    this.record(caller, `Exported ${w.name}${opts.learned ? ', with what it has learned' : ''}${opts.journal ? ', with its journal' : ''}.`);
-    return { ok: true, yaml: file.yaml, filename: file.filename, left };
+    return { yaml: file.yaml, filename: file.filename, left };
+  }
+
+  // ---- MOVE THE WHOLE ORG -----------------------------------------------
+
+  /// Every worker and team as an org file, for an admin to take to another
+  /// server: each worker with what it has learned and its journal, and its
+  /// trust, manager and reporting line. Processes are added by whoever holds
+  /// them (`orgMigrate.ts`). No secret value is in it.
+  exportOrg(caller: OrgCaller): Result<{ bundle: Omit<OrgBundle, 'processes'>; left: string[] }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can export the whole org.' };
+    if (!this.deps.shareWorker) return { ok: false, error: 'Workers can’t be exported from this server.' };
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    const left = new Set<string>(['Secret values: each tool’s keys are entered again on the new server.', 'Webhook addresses: each webhook trigger gets a new one there.']);
+    const workers: OrgBundleWorker[] = roster.map((w) => {
+      const file = this.portableFile(w, { learned: true, journal: true, whole: true });
+      for (const l of file.left) left.add(`${w.name}: ${l}`);
+      return {
+        sourceId: w.id,
+        yaml: file.yaml,
+        trust: w.trust,
+        enabled: w.enabled,
+        ...(w.manager ? { manager: { ...w.manager } } : {}),
+        ...(w.reportsTo ? { reportsTo: w.reportsTo } : {}),
+        ...(w.visibility ? { visibility: w.visibility } : {}),
+      };
+    });
+    const ids = new Set(roster.map((w) => w.id));
+    const teams: OrgBundleTeam[] = (this.deps.teams?.list().teams ?? [])
+      .filter((t) => !t.disbanded && t.members.every((m) => ids.has(m.workerId)))
+      .map((t) => ({
+        sourceId: t.id,
+        name: t.name,
+        ...(t.purpose ? { purpose: t.purpose } : {}),
+        budgetUSDPerTask: t.budgetUSDPerTask,
+        checkpoints: { ...t.checkpoints },
+        ...(t.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
+        members: t.members.map((m) => ({ sourceId: m.workerId, role: m.role })),
+      }));
+    this.record(caller, `Exported the org: ${workers.length} workers and ${teams.length} teams.`);
+    return {
+      ok: true,
+      bundle: {
+        format: ORG_BUNDLE_FORMAT,
+        version: ORG_BUNDLE_VERSION,
+        exportedAt: this.now(),
+        source: { kind: 'server', ...(policy.name ? { org: policy.name } : {}), ...(policy.slackTeamId ? { slackTeamId: policy.slackTeamId } : {}) },
+        workers,
+        teams,
+      },
+      left: [...left],
+    };
+  }
+
+  /// The org's setup for an org file: its handbook, every tool's setup minus
+  /// its values, its repos and workspaces, and its databases and APIs as
+  /// overdb and overapi publish them. Rules come from the rules page
+  /// (orgMigrate.ts). Never a secret value.
+  exportSetup(caller: OrgCaller): Result<{ setup: OrgBundleSetup }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can export the whole org.' };
+    const setup: OrgBundleSetup = {};
+    const handbook = this.deps.handbook?.read().trim();
+    if (handbook) setup.handbook = handbook;
+    const apis = this.deps.overapi ? this.apis.exportPushes(caller) : null;
+    const pushes = apis?.ok ? apis.pushes : [];
+    // overdb's and overapi's own tools are set up from their databases and APIs.
+    const own = new Set([OVERDB_TOOL, ...pushes.map((p) => overapiToolName(p.project.name))]);
+    const names = (this.deps.tools?.list(this.deps.workers.roster()).tools ?? []).map((t) => t.name).filter((n) => !own.has(n));
+    const tools = names.flatMap((n) => this.deps.tools?.template?.(n) ?? []);
+    if (tools.length) setup.tools = tools;
+    const repos = (this.deps.repos?.list() ?? []).map((r) => ({ name: r.name, url: bareRepoUrl(r.url) }));
+    if (repos.length) setup.repos = repos;
+    const workspaces = (this.deps.repos?.workspaces() ?? []).map((w) => ({ name: w.name, repos: [...w.repos], ...(w.instructions ? { instructions: w.instructions } : {}) }));
+    if (workspaces.length) setup.workspaces = workspaces;
+    const dbs = this.deps.overdbConnections ? this.databases.overdbConnections(caller) : null;
+    if (dbs?.ok && dbs.connections.length) setup.databases = dbs.connections.map(({ hasPassword: _h, ...c }) => c);
+    if (pushes.length) setup.apis = pushes;
+    return { ok: true, setup };
+  }
+
+  /// An org file's setup onto this server, rules aside (orgMigrate.ts). The
+  /// handbook lands when it's the same org and this server has none of its
+  /// own. Tools, repos and workspaces wait on Setup → From desktops, and
+  /// databases and APIs on their own pages, each for an admin to add its keys
+  /// or password. Nothing arrives with a value.
+  importSetup(caller: OrgCaller, setup: OrgBundleSetup, opts: { dryRun?: boolean; sameOrg: boolean; from: string }): Result<{ rows: OrgImportReport['setup'] }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can import an org.' };
+    const rows: OrgImportReport['setup'] = [];
+    const dryRun = !!opts.dryRun;
+    if (setup.handbook) {
+      const here = this.deps.handbook?.read().trim() ?? '';
+      if (!this.deps.handbook) rows.push({ kind: 'handbook', name: 'Handbook', status: 'skipped', note: 'This server has no handbook.' });
+      else if (here === setup.handbook.trim()) rows.push({ kind: 'handbook', name: 'Handbook', status: 'alreadyHere' });
+      else if (!opts.sameOrg) rows.push({ kind: 'handbook', name: 'Handbook', status: 'skipped', note: 'It’s another org’s handbook, so it’s left out.' });
+      else if (here) rows.push({ kind: 'handbook', name: 'Handbook', status: 'skipped', note: 'This server has its own handbook, so the file’s is left out. Copy across what you need on Setup → Handbook.' });
+      else if (dryRun) rows.push({ kind: 'handbook', name: 'Handbook', status: 'added' });
+      else {
+        const res = this.setHandbook(caller, setup.handbook);
+        rows.push(res.ok ? { kind: 'handbook', name: 'Handbook', status: 'added' } : { kind: 'handbook', name: 'Handbook', status: 'failed', note: res.error });
+      }
+    }
+
+    // Tools, repos and workspaces: one offer on From desktops, as a desktop's setup arrives.
+    const installed = new Set((this.deps.tools?.list(this.deps.workers.roster()).tools ?? []).map((t) => t.name));
+    const connected = new Set((this.deps.repos?.list() ?? []).map((r) => r.name));
+    const made = new Set((this.deps.repos?.workspaces() ?? []).map((w) => w.name.toLowerCase()));
+    const desk = 'Setup → From desktops';
+    const tools = (setup.tools ?? []).filter((t) => {
+      const here = installed.has(t.name);
+      const keys = [...t.envKeys, ...t.headerKeys];
+      rows.push(here ? { kind: 'tool', name: t.name, status: 'alreadyHere' } : { kind: 'tool', name: t.name, status: 'waiting', where: desk, ...(keys.length ? { note: `Needs ${keys.join(', ')}.` } : {}) });
+      return !here;
+    });
+    const repos = (setup.repos ?? []).filter((r) => {
+      const here = connected.has(r.name);
+      rows.push(here ? { kind: 'repo', name: r.name, status: 'alreadyHere' } : { kind: 'repo', name: r.name, status: 'waiting', where: desk, note: 'Connect it; a private one needs the server’s git token.' });
+      return !here;
+    });
+    const workspaces = (setup.workspaces ?? []).filter((w) => {
+      const here = made.has(w.name.toLowerCase());
+      rows.push(here ? { kind: 'workspace', name: w.name, status: 'alreadyHere' } : { kind: 'workspace', name: w.name, status: 'waiting', where: desk, note: 'Make it once its repos are connected.' });
+      return !here;
+    });
+    if (!dryRun && (tools.length || repos.length || workspaces.length)) {
+      if (tools.length) this.deps.tools?.remember?.(tools);
+      const by = `Moved from ${opts.from}`;
+      const offer: SetupOffer = { id: randomUUID(), by, at: this.now(), tools, repos, workspaces, installed: [] };
+      // Importing the same org again replaces what it left waiting.
+      this.saveOffers([...this.loadOffers().filter((o) => o.slackUserId || o.by !== by), offer].slice(-20));
+    }
+
+    // Databases and APIs: each waits on its page for the admin's password.
+    const liveDbs = this.deps.overdbConnections ? this.databases.overdbConnections(caller) : null;
+    const dbIds = new Set(liveDbs?.ok ? liveDbs.connections.map((c) => c.id) : []);
+    for (const raw of setup.databases ?? []) {
+      const parsed = parseOverdbConnection(raw);
+      if (!parsed.ok) {
+        rows.push({ kind: 'database', name: 'A database', status: 'failed', note: parsed.reason });
+        continue;
+      }
+      const c = parsed.connection;
+      const name = `${c.name} (${c.env})`;
+      if (dbIds.has(c.id)) rows.push({ kind: 'database', name, status: 'alreadyHere' });
+      else if (dryRun) rows.push({ kind: 'database', name, status: 'waiting', where: 'Setup → Databases', ...(c.credential.source === 'secret' ? { note: 'Type its password to finish it.' } : {}) });
+      else {
+        const res = this.databases.publishOverdbConnection(caller, { connection: c });
+        rows.push(res.ok ? { kind: 'database', name, status: 'waiting', where: 'Setup → Databases', ...(c.credential.source === 'secret' ? { note: 'Type its password to finish it.' } : {}) } : { kind: 'database', name, status: 'failed', note: res.error });
+      }
+    }
+    const liveApis = this.deps.overapi ? this.apis.list(caller) : null;
+    const apiNames = new Set(liveApis?.ok ? liveApis.apis.map((a) => a.name) : []);
+    for (const raw of setup.apis ?? []) {
+      const parsed = parseApiPush(raw);
+      if (!parsed.ok) {
+        rows.push({ kind: 'api', name: 'An API', status: 'failed', note: parsed.reason });
+        continue;
+      }
+      const p = parsed.push;
+      const name = p.project.title || p.project.name;
+      const note = p.secrets.length ? `Needs ${p.secrets.join(', ')}.` : undefined;
+      if (apiNames.has(p.project.name)) rows.push({ kind: 'api', name, status: 'alreadyHere' });
+      else if (dryRun) rows.push({ kind: 'api', name, status: 'waiting', where: 'Setup → APIs', ...(note ? { note } : {}) });
+      else {
+        const res = this.apis.publish(caller, { push: p });
+        rows.push(res.ok ? { kind: 'api', name, status: 'waiting', where: 'Setup → APIs', ...(note ? { note } : {}) } : { kind: 'api', name, status: 'failed', note: res.error });
+      }
+    }
+    return { ok: true, rows };
+  }
+
+  /// Whether an org file's trust, managers and reporting lines come along.
+  /// Only a Slack workspace id that matches this server's says so on its own.
+  /// Anything else the file says about where it came from is unchecked, so
+  /// without a match it keeps trust only when the importer vouches for it
+  /// (`keepTrust`: the desktop's own move, or `--keep-trust`). A file from
+  /// another workspace's org always lands as any share does: each worker a
+  /// hire on probation managed by the admin.
+  private orgTrust(caller: OrgCaller, bundle: Pick<OrgBundle, 'source'>, keepTrust = false): { keeps: boolean; why: string } {
+    const theirs = bundle.source.slackTeamId;
+    const ours = this.policy().slackTeamId;
+    if (theirs && ours && theirs !== ours) {
+      return { keeps: false, why: 'It comes from another Slack workspace’s org, so each worker starts on probation with you as its manager.' };
+    }
+    if (theirs && ours) return { keeps: true, why: 'Same Slack workspace: trust, managers and who reports to whom come along.' };
+    if (keepTrust) return { keeps: true, why: `${bundle.source.kind === 'desktop' ? 'From an overcli app' : 'From a server that can’t be matched by Slack workspace'}, moved by ${caller.name}, an admin here: trust and reporting lines come along.` };
+    return { keeps: false, why: 'Nothing in the file shows it is from this org, so each worker starts on probation with you as its manager, and its rules stay out. If it is your own org, vouch for it: tick “This is our own org”, or pass --keep-trust.' };
+  }
+
+  /// An org file onto this server, for an admin. Workers it already took
+  /// (by their id where they came from) are left as they are, so importing
+  /// again is safe. Workers land paused unless `start`: the old copy is
+  /// likely still running. `dryRun` writes nothing and says what would land.
+  importOrg(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {}): Result<{ report: OrgImportReport }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can import an org.' };
+    if (!this.deps.importWorker) return { ok: false, error: 'This server cannot take published workers.' };
+    if (bundle.teams.length && !this.deps.teams?.save) return { ok: false, error: 'Teams are not running on this server.' };
+    const dryRun = !!opts.dryRun;
+    const trust = this.orgTrust(caller, bundle, !!opts.keepTrust);
+    const policy = this.policy();
+    const me: WorkerManager = { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
+    const report: OrgImportReport = { dryRun, keepsTrust: trust.keeps, trustWhy: trust.why, workers: [], teams: [], processes: [], setup: [], needsKeys: [], notes: [] };
+    const installed = new Set((this.deps.tools?.list(this.deps.workers.roster()).tools ?? []).map((t) => t.name));
+    const needs = new Map<string, string[]>();
+    // Where each worker in the file is (or would be) here.
+    const placed = new Map<string, UUID | 'planned'>();
+
+    for (const bw of bundle.workers) {
+      const parsed = parseWorkerYaml(bw.yaml);
+      const name = parsed.ok ? parsed.bundle.worker.name : bw.sourceId;
+      // A manager is someone here only by their Slack id in the same workspace.
+      const manager = trust.keeps && bw.manager?.slackUserId ? bw.manager : me;
+      const landingTrust: WorkerTrustLevel = trust.keeps ? bw.trust : 'probation';
+      const paused = !opts.start || !bw.enabled;
+      const row: OrgImportReport['workers'][number] = { name, sourceId: bw.sourceId, status: 'added', trust: landingTrust, manager: manager.name, paused, notes: [] };
+      report.workers.push(row);
+      const here = this.publishedWorker(bw.sourceId);
+      if (here) {
+        Object.assign(row, { status: 'alreadyHere', id: here, trust: this.deps.workers.get(here)?.trust ?? landingTrust, paused: !this.deps.workers.get(here)?.enabled });
+        placed.set(bw.sourceId, here);
+        continue;
+      }
+      if (!parsed.ok) {
+        Object.assign(row, { status: 'failed', error: `Its worker file can’t be read: ${parsed.error}` });
+        continue;
+      }
+      const w = parsed.bundle.worker;
+      const mcpServers = trust.keeps ? (w.mcpServers ?? []) : (w.mcpServers ?? []).filter((s) => (policy.allowedMcpServers ?? []).includes(s));
+      const dropped = (w.mcpServers ?? []).filter((s) => !mcpServers.includes(s));
+      if (dropped.length) row.notes.push(`Not cleared here, so left off: ${dropped.join(', ')}. An admin can add them.`);
+      for (const tool of mcpServers) if (!installed.has(tool)) needs.set(tool, [...(needs.get(tool) ?? []), name]);
+      if (dryRun) {
+        placed.set(bw.sourceId, 'planned');
+        const c = parsed.bundle.carried;
+        if (c?.triggers?.length) row.notes.push(`${c.triggers.length} trigger${c.triggers.length === 1 ? '' : 's'}${c.triggers.some((t) => t.kind === 'webhook') ? ', webhooks at new addresses' : ''}.`);
+        if (c?.journal?.length) row.notes.push(`${c.journal.length} journal ${c.journal.length === 1 ? 'entry' : 'entries'}.`);
+        continue;
+      }
+      const templates = [...(bw.tools ?? []), ...parseTemplates(parsed.bundle.carried?.tools)];
+      if (templates.length) this.deps.tools?.remember?.(templates);
+      const hire: PendingHire = {
+        id: randomUUID(),
+        status: 'drafted',
+        createdAt: this.now(),
+        requestedBy: manager,
+        jobDescription: w.jobDescription,
+        conversation: [],
+        options: bw.visibility && trust.keeps ? { visibility: bw.visibility } : {},
+        imported: {
+          yaml: bw.yaml,
+          name: w.name,
+          ...(w.description ? { tagline: w.description } : {}),
+          jobDescription: w.jobDescription,
+          budgetUSDPerMonth: w.budgetUSDPerMonth,
+          mcpServers,
+          flows: parsed.bundle.flows.map((f) => f.name),
+          cadence: w.cadence,
+          localId: bw.sourceId,
+        },
+      };
+      const made = this.make(hire, mcpServers);
+      if (!made.ok) {
+        Object.assign(row, { status: 'failed', error: made.error });
+        continue;
+      }
+      const id = made.worker.id;
+      row.id = id;
+      placed.set(bw.sourceId, id);
+      row.notes.push(...(made.brought ?? []));
+      if (landingTrust !== 'probation') {
+        const set = this.applyTrust(id, landingTrust);
+        if (!set.ok) {
+          row.trust = 'probation';
+          row.notes.push(`Its trust didn’t come: ${set.error}`);
+        }
+      }
+      if (paused) this.deps.workers.setEnabled(id, false);
+    }
+
+    // Reporting lines, once everyone it names is here. A worker an earlier,
+    // partial run left with no reporting line gets it now; one that has a
+    // line (perhaps changed by hand since) keeps it.
+    if (trust.keeps) {
+      for (const bw of bundle.workers) {
+        const id = placed.get(bw.sourceId);
+        const boss = bw.reportsTo ? placed.get(bw.reportsTo) : undefined;
+        const row = report.workers.find((r) => r.sourceId === bw.sourceId)!;
+        if (!bw.reportsTo || !id || row.status === 'failed') continue;
+        const now = id === 'planned' ? undefined : this.deps.workers.get(id);
+        const repair = row.status === 'alreadyHere';
+        if (repair && (!now || now.reportsTo)) continue;
+        if (!boss) {
+          row.notes.push('Its manager worker didn’t come, so it reports to nobody.');
+          continue;
+        }
+        if (repair) row.notes.push(dryRun ? 'Its missing reporting line would be set.' : 'Its missing reporting line is set now.');
+        if (dryRun || id === 'planned' || boss === 'planned') continue;
+        if (now) this.deps.workers.save({ ...structuredClone(now), reportsTo: boss });
+      }
+    }
+
+    for (const t of bundle.teams) {
+      const missing = t.members.filter((m) => !placed.has(m.sourceId));
+      if (missing.length || !t.members.length) {
+        report.teams.push({ name: t.name, status: 'failed', error: t.members.length ? `${missing.length} of its members didn’t come.` : 'It has no members.' });
+        continue;
+      }
+      const prior = this.publishedState().teams[t.sourceId];
+      const exists = !!prior && !!this.deps.teams?.list().teams.some((x) => x.id === prior);
+      if (dryRun) {
+        report.teams.push({ name: t.name, status: exists ? 'updated' : 'added' });
+        continue;
+      }
+      const shape: TeamPublishShape = {
+        name: t.name,
+        ...(t.purpose ? { purpose: t.purpose } : {}),
+        budgetUSDPerTask: t.budgetUSDPerTask,
+        ...(t.checkpoints ? { checkpoints: t.checkpoints } : {}),
+        ...(t.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
+        members: t.members.map((m) => ({ localId: m.sourceId, role: m.role || 'Member' })),
+      };
+      const saved = this.landTeam(t.sourceId, shape);
+      report.teams.push(saved.ok ? { name: t.name, status: exists ? 'updated' : 'added' } : { name: t.name, status: 'failed', error: saved.error });
+    }
+
+    report.needsKeys = [...needs].map(([tool, workers]) => ({ tool, workers }));
+    if (report.needsKeys.length) report.notes.push('Tools waiting for their keys are on the Tools page, set up as they were; their workers can’t use them until the keys are in.');
+    if (report.workers.some((r) => r.status === 'added' && r.paused) && !opts.start) report.notes.push('Workers land paused: switch off the old copies, then resume them here.');
+    if (!dryRun) {
+      const added = report.workers.filter((r) => r.status === 'added').length;
+      this.record(caller, `Imported ${added} worker${added === 1 ? '' : 's'} and ${report.teams.filter((t) => t.status !== 'failed').length} teams from ${bundle.source.org ?? (bundle.source.kind === 'desktop' ? 'an overcli app' : 'another server')}.`);
+    }
+    return { ok: true, report };
   }
 
   /// An exported worker's setup, onto the worker it landed as: scopes no

@@ -110,9 +110,20 @@ export interface WorkersPushOptions {
   visibility?: 'private' | 'team' | 'org';
 }
 
-/// `overcli org`: who this box's org is.
+/// `overcli org`: who this box's org is, and moving it to another server.
 export interface OrgOptions {
-  action: 'init' | 'show';
+  action: 'init' | 'show' | 'export' | 'import';
+  /// export: the server to read from (--from); import: to land on (--to).
+  server?: string;
+  token?: string;
+  /// import: the org file; export: where to write it (--out).
+  file?: string;
+  dryRun?: boolean;
+  /// import: workers start running at once instead of landing paused.
+  start?: boolean;
+  /// import: the admin vouches the file is their own org, so trust and
+  /// managers come along without a matching Slack workspace.
+  keepTrust?: boolean;
   stateDir?: string;
   name?: string;
   admins: string[];
@@ -524,24 +535,48 @@ function parseProjects(rest: string[]): { ok: true; args: ParsedArgs } | ParseFa
 }
 
 const ORG_FLAGS = new Set(['--state-dir', '--name', '--admin', '--slack-team', '--timezone', '--url', '--force']);
+const ORG_MOVE_FLAGS = new Set(['--from', '--to', '--token', '--out', '--dry-run', '--start', '--keep-trust']);
 
 function parseOrg(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
   const action = rest[0];
-  if (action !== 'init' && action !== 'show') return { ok: false, error: 'overcli org needs init or show.' };
+  if (action !== 'init' && action !== 'show' && action !== 'export' && action !== 'import') return { ok: false, error: 'overcli org needs init, show, export or import.' };
   const opts: OrgOptions = { action, admins: [], force: false };
+  const moving = action === 'export' || action === 'import';
   const args = rest.slice(1);
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
+    if (action === 'import' && !arg.startsWith('--') && !opts.file) {
+      opts.file = arg;
+      continue;
+    }
     const eq = arg.indexOf('=');
     const name = eq === -1 ? arg : arg.slice(0, eq);
-    if (!ORG_FLAGS.has(name)) return { ok: false, error: `Unknown option "${name}".` };
+    if (moving ? !ORG_MOVE_FLAGS.has(name) : !ORG_FLAGS.has(name)) return { ok: false, error: `Unknown option "${name}".` };
+    if ((name === '--from' && action !== 'export') || ((name === '--to' || name === '--dry-run' || name === '--start' || name === '--keep-trust') && action !== 'import') || (name === '--out' && action !== 'export')) {
+      return { ok: false, error: `${name} is for overcli org ${action === 'export' ? 'import' : 'export'}.` };
+    }
     if (name === '--force') {
       opts.force = true;
       continue;
     }
+    if (name === '--dry-run') {
+      opts.dryRun = true;
+      continue;
+    }
+    if (name === '--start') {
+      opts.start = true;
+      continue;
+    }
+    if (name === '--keep-trust') {
+      opts.keepTrust = true;
+      continue;
+    }
     const value = eq === -1 ? args[++i] : arg.slice(eq + 1);
     if (value === undefined) return { ok: false, error: `${name} needs a value.` };
-    if (name === '--state-dir') opts.stateDir = value;
+    if (name === '--from' || name === '--to') opts.server = value;
+    else if (name === '--token') opts.token = value;
+    else if (name === '--out') opts.file = value;
+    else if (name === '--state-dir') opts.stateDir = value;
     else if (name === '--name') opts.name = value.trim();
     else if (name === '--admin') {
       for (const id of value.split(',').map((x) => x.trim()).filter(Boolean)) {
@@ -554,6 +589,7 @@ function parseOrg(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure
     } else if (name === '--url') opts.publicUrl = value;
     else opts.timezone = value;
   }
+  if (action === 'import' && !opts.file) return { ok: false, error: 'overcli org import needs the org file: overcli org import acme-org.json --to URL' };
   if (action === 'init' && !opts.name) return { ok: false, error: 'overcli org init needs --name.' };
   return { ok: true, args: { command: 'org', org: opts, warnings: [] } };
 }
@@ -705,6 +741,18 @@ USAGE
   overcli org init --name N [--admin U…] [--slack-team T…] [--url URL] [--timezone Z]
   overcli org show                    Who this box's org is, and its rules,
                                       in <state dir>/org.json.
+  overcli org export --from URL [--token T] [--out FILE]
+                                      The whole org as one file: every
+                                      worker with its trust, journal and
+                                      what it learned, teams, processes.
+                                      Admins only. No secret is in it.
+  overcli org import FILE --to URL [--token T] [--dry-run] [--start]
+                   [--keep-trust]     Land an org file on a server. Run
+                                      with --dry-run first. Workers land
+                                      paused unless --start. Trust and
+                                      managers come along from the same
+                                      Slack workspace, or with
+                                      --keep-trust for your own org.
   overcli projects add <dir> [--name N] | list
                                       The folders workers on this box may
                                       work in — a cloned repo, or a plain

@@ -94,3 +94,22 @@ describe('defaultCwd', () => {
     expect(defaultCwd({ GITHUB_WORKSPACE: '   ' }, '/here')).toBe('/here');
   });
 });
+
+describe('overcli org export | import', () => {
+  it('reads export with --from, --token and --out', () => {
+    const res = parseArgs(['org', 'export', '--from', 'https://old.acme.example', '--token', 'tok', '--out', 'acme.json']);
+    expect(res.ok && res.args.org).toMatchObject({ action: 'export', server: 'https://old.acme.example', token: 'tok', file: 'acme.json' });
+  });
+
+  it('reads import with its file, --to, --dry-run, --start and --keep-trust', () => {
+    const res = parseArgs(['org', 'import', 'acme.json', '--to=https://new.acme.example', '--dry-run', '--start', '--keep-trust']);
+    expect(res.ok && res.args.org).toMatchObject({ action: 'import', file: 'acme.json', server: 'https://new.acme.example', dryRun: true, start: true, keepTrust: true });
+  });
+
+  it('wants the file for import, and keeps each flag to its own command', () => {
+    expect(parseArgs(['org', 'import', '--to', 'https://x.example'])).toMatchObject({ ok: false, error: expect.stringMatching(/org file/) });
+    expect(parseArgs(['org', 'export', '--dry-run'])).toMatchObject({ ok: false });
+    expect(parseArgs(['org', 'import', 'a.json', '--from', 'https://x.example'])).toMatchObject({ ok: false });
+    expect(parseArgs(['org', 'export', '--admin', 'U0ACME001'])).toMatchObject({ ok: false });
+  });
+});

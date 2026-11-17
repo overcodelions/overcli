@@ -398,6 +398,8 @@ describe('finding a Setup page', () => {
     expect(to).toBeGreaterThan(from);
     expect(find('concurrency')).toEqual(['capacity']);
     expect(find('parallel')).toEqual(['capacity']);
+    expect(find('migrate')).toEqual(['move']);
+    expect(find('new server')[0]).toBe('move');
     expect(find('okta')).toEqual(['signin']);
     expect(find('budget')[0]).toBe('spending');
     expect(find('invite')).toEqual(['people']);
@@ -408,5 +410,11 @@ describe('finding a Setup page', () => {
     expect(find('limit')).toContain('capacity');
     expect(find('budget okta')).toEqual([]);
     expect(find('   ')).toEqual([]);
+  });
+});
+
+describe('the console script', () => {
+  it('parses', () => {
+    expect(() => new Function(CONSOLE_JS)).not.toThrow();
   });
 });

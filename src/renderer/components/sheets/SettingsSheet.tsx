@@ -1390,6 +1390,131 @@ function OrgIntro({ patch }: { patch: (p: Partial<AppSettings>) => void }) {
   );
 }
 
+/// Move everything on this desktop to the org server: a dry run first, so
+/// the person sees what lands and how (trust, managers, paused or running),
+/// then the move. No key leaves this Mac; tools arrive waiting for theirs.
+function OrgMove() {
+  type Moved = Extract<ReturnType<IPCInvokeMap['org:moveOrg']>, { ok: true }>;
+  const [plan, setPlan] = useState<Moved | null>(null);
+  const [done, setDone] = useState<Moved | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [start, setStart] = useState(false);
+  const run = (dryRun: boolean) => {
+    setBusy(true);
+    setError(null);
+    void window.overcli.invoke('org:moveOrg', { dryRun, start }).then((res) => {
+      setBusy(false);
+      if (!res.ok) return setError(res.error);
+      if (dryRun) setPlan(res);
+      else {
+        setDone(res);
+        setPlan(null);
+      }
+    }).catch((err: unknown) => {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    });
+  };
+  const shown = done ?? plan;
+  const r = shown?.report;
+  const verb: Record<string, string> = r?.dryRun
+    ? { added: 'will be added', updated: 'will be updated', alreadyHere: 'already there', failed: 'can’t come' }
+    : { added: 'added', updated: 'updated', alreadyHere: 'already there', failed: 'failed' };
+  const setupVerb: Record<string, string> = r?.dryRun
+    ? { added: 'will be added', updated: 'will be updated', alreadyHere: 'already there', waiting: 'will wait for its keys', skipped: 'left out', failed: 'can’t come' }
+    : { added: 'added', updated: 'updated', alreadyHere: 'already there', waiting: 'waiting for its keys', skipped: 'left out', failed: 'failed' };
+  const adding = r ? r.workers.filter((w) => w.status === 'added').length : 0;
+  const todo = r ? adding + [...r.teams, ...r.processes, ...r.setup].filter((x) => x.status === 'added' || x.status === 'updated' || x.status === 'waiting').length : 0;
+  return (
+    <Row
+      label="Move everything"
+      help="Take every worker, team and process here to the org server, with their trust, managers, what they learned and their journals. No keys go: tools arrive waiting for theirs. Safe to run again: what's already there is left alone."
+    >
+      <div className="flex flex-col gap-3">
+        {!plan && (
+          <button onClick={() => run(true)} disabled={busy} className="self-start text-xs px-3 py-1.5 rounded border border-card text-ink hover:bg-card-strong disabled:opacity-50">
+            {busy ? 'Checking…' : done ? 'Check again…' : 'See what would move…'}
+          </button>
+        )}
+        {r && shown && (
+          <div className="flex flex-col gap-3 rounded border border-card p-4 text-xs text-ink">
+            <div className="text-ink-muted">
+              {r.dryRun ? 'Nothing has moved yet. ' : 'Moved to '}
+              {r.dryRun ? 'Going to ' : ''}
+              <span className="font-mono">{shown.server}</span>. {r.trustWhy}
+            </div>
+            <ul className="flex flex-col gap-1">
+              {r.workers.map((w) => (
+                <li key={w.sourceId}>
+                  <span className="font-medium">{w.name}</span>{' '}
+                  <span className="text-ink-muted">
+                    {verb[w.status]}
+                    {w.status === 'failed' ? `: ${w.error}` : ` · ${w.trust} · managed by ${w.manager}${w.paused ? ' · paused' : ''}`}
+                  </span>
+                  {w.notes.length > 0 && <div className="pl-3 text-[11px] text-ink-faint">{w.notes.join(' ')}</div>}
+                </li>
+              ))}
+            </ul>
+            {(r.teams.length > 0 || r.processes.length > 0) && (
+              <div className="text-ink-muted">
+                {[...r.teams.map((t) => ({ ...t, kind: 'Team' })), ...r.processes.map((p) => ({ ...p, kind: 'Process' }))].map((x) => (
+                  <div key={`${x.kind}:${x.name}`}>
+                    {x.kind} {x.name}: {verb[x.status]}
+                    {x.error ? ` (${x.error})` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            {r.setup.length > 0 && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-ink-faint">Setup</div>
+                {r.setup.map((x) => (
+                  <div key={`${x.kind}:${x.name}`} className="text-ink-muted">
+                    {x.kind} {x.name}: {setupVerb[x.status]}
+                    {x.where ? ` on ${x.where}` : ''}
+                    {x.note ? ` (${x.note})` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            {r.needsKeys.length > 0 && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-ink-faint">Needs keys on the server</div>
+                {r.needsKeys.map((k) => (
+                  <div key={k.tool} className="text-ink-muted">
+                    <span className="font-mono">{k.tool}</span>, for {k.workers.join(', ')}
+                  </div>
+                ))}
+              </div>
+            )}
+            {r.notes.map((n) => (
+              <div key={n} className="text-ink-muted">{n}</div>
+            ))}
+            {plan && (
+              <div className="flex flex-col gap-2 border-t border-card pt-3">
+                <label className="flex gap-2">
+                  <input type="checkbox" className="mt-0.5" checked={start} onChange={(e) => setStart(e.target.checked)} />
+                  <span>Start them running there now. Leave off if they still run here: two copies would do the same work twice.</span>
+                </label>
+                <div className="flex gap-2">
+                  <button onClick={() => run(false)} disabled={busy || todo === 0} className="text-xs px-3 py-1.5 rounded bg-accent text-white disabled:opacity-50">
+                    {busy ? 'Moving…' : adding ? `Move ${adding} worker${adding === 1 ? '' : 's'}` : todo ? 'Move teams and processes' : 'Nothing new to move'}
+                  </button>
+                  <button onClick={() => setPlan(null)} disabled={busy} className="text-xs px-3 py-1.5 rounded border border-card text-ink hover:bg-card-strong">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {error && <div className="text-[11px] text-red-400" role="alert">{error}</div>}
+      </div>
+    </Row>
+  );
+}
+
 /// Publish my setup: this desktop's workspaces, projects and tools, picked
 /// one by one, onto the org server. Nothing is ticked to start with. A
 /// tool's keys only go when you tick "send its keys" for that tool, and the
@@ -1547,6 +1672,7 @@ function OrgPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppS
       >
         <OrgServersField local={local} />
         <OrgSetupPublish />
+        <OrgMove />
         <OrgSetupGuide local={local} patch={patch} />
       </Group>
       <Group

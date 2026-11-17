@@ -4,6 +4,18 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **An Org tab in the desktop app** beside Local workers, for one or more overgo servers. Tokens are kept in the keychain and only the main process sees them.
+- **overgo's tools in Claude, Codex and Gemini chats.** Every change a chat asks for is put to you in a dialog first. The tools now cover runs, PR watch, tuning, flow changes, people, and every worker setting.
+- **Worker pages:** threads like Slack, runs, settings, journal, and tuning with **Improve with Claude**. The landing page shows your own workers apart from shared ones.
+- **A worker can hand a step to its manager's desktop** (`ask_desktop`), on work the manager asked for. A worker has at most 5 open at once, and one nobody picks up expires after 24 hours.
+- **Threads list the pull requests they are about,** and a worker's Slack reply turns `@Full Name`, `@handle` or a unique first name into a mention (at most 5 a message).
+- **`stop_worker_changing_repo`,** with its route and a console button.
+- **Move a whole org to another server.** `overcli org export --from URL` writes one file with every worker, team and process: each worker's trust, manager, reporting line, triggers, tool scopes, what it knows, its notes and its journal. `overcli org import FILE --to URL` lands it; run it with `--dry-run` first to see what would land. In the app, Settings → Your org → **Move everything** does the same from this desktop to the signed-in server. Admins only, at both ends. Trust, managers and reporting lines come along when the file is from the same Slack workspace, or when an admin vouches it is their own org (`--keep-trust`, **This is our own org** in the console; the app's own move vouches on its own). Otherwise each worker lands as a hire on probation, and a process from another workspace lands with the importing admin owning and deciding every stage. Workers land paused unless `--start` (or the box in the app), since the old copy is likely still running. Importing again leaves what already came alone and fills in reporting lines an earlier, partial run couldn't set.
+- **The org's setup moves with it:** rules and budgets, role catalog, handbook, tools, repos, workspaces, overdb databases and overapi APIs. Rules and the handbook land straight away when it's the same org; tools, repos and workspaces wait on Setup → From desktops, and databases and APIs on their own pages, for an admin to type their keys. A server's name, address, sign-in and admins are never changed by an import.
+- **A moved worker keeps its whole history:** every journal entry and note the server holds (up to 2,000), so it still skips ideas you turned down long ago and keeps every note people left it. Exporting one worker for another org still carries the newest 1,000 entries and 50 notes.
+- **No secret is ever in an org file.** Tools go as their setup with every value removed and wait on the Tools page for their keys; webhook triggers get new addresses; `org.json` stays with the server's deploy files.
+
 ## [0.26.0] - 2026-11-15
 
 ### Upgrading

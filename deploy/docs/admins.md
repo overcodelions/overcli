@@ -2,7 +2,7 @@
 
 Admins set the server up and keep it healthy. Most of this lives on the console's **Setup** page, with people and the decision log on **People** and **Activity**.
 
-Setup is one page at a time, picked from the list beside it: **Readiness**; **Organization** (General, Groups, Sign-in, Records); **Workers** (Hiring, Role catalog, Handbook, Spending); and **Connections** (Tools, Secrets, Repos & workspaces, From desktops, Other servers). On a phone the list is a menu above the page. Each page saves on its own, and **Save** waits until something changed.
+Setup is one page at a time, picked from the list beside it: **Readiness**; **Organization** (General, Groups, Sign-in, Records, Move org); **Workers** (Hiring, Role catalog, Handbook, Spending); and **Connections** (Tools, Secrets, Repos & workspaces, From desktops, Other servers). On a phone the list is a menu above the page. Each page saves on its own, and **Save** waits until something changed.
 
 ## Setup → Readiness
 
@@ -21,6 +21,31 @@ People publish their setup from the overcli app: **Settings → Your org → Pub
 - **Tools:** each arrives as a template: where it runs, and the names of the keys it needs, never their values. Type the keys in and **Install**. Use a service account or bot token made for the org: every worker that uses the tool acts with it.
 
 **Keys sent from a desktop.** Someone can choose to send a tool's keys with their setup. The server only accepts them from an admin, and only over https or from the same machine. The tool is installed straight away, so the values are stored only where the model CLI reads them. The activity log records which keys arrived, by name, never their values. A key sent this way acts as the person who sent it, for every worker that uses that tool. Fine for a test server; for a real deployment, prefer org-owned credentials.
+
+## Setup → Move org
+
+Takes the whole org to another server, or brings one in. Admins only, on both servers.
+
+**Export this org** downloads one file: every worker with its trust, manager, who it reports to, its triggers, how much of each tool it may use, what it knows, its notes and its journal; every team and process; and the org's setup: its rules (hiring, budgets, approvers, groups, role catalog, tool defaults, capacity, records, model ids), its handbook, and its tools, repos, workspaces, databases and APIs. Keep the file safe: it holds every worker's journal.
+
+**Import an org file** reads a file exported from another server and shows what would land before anything changes: each worker's trust and manager, whether it lands paused, and which tools need their keys here. **Import** makes it so.
+
+- **Same Slack workspace:** trust, managers and reporting lines come along.
+- **Your own org without a matching workspace** (a personal install, or a server with no Slack workspace set): tick **This is our own org** after the check, and they come along too. Only tick it for a file you exported yourself: it keeps each worker's trust and its rules. Without it, each worker arrives on probation as below. **Move everything** in the desktop app vouches on its own, since it sends its own org.
+- **Another workspace's org:** each worker arrives as a hire on probation with you as its manager, with only the tools this org has cleared. Its processes come with you owning and deciding every stage; set who decides on each process's page.
+- **Workers land paused**, because the old copies are probably still running. Switch those off, then resume these, or tick **Start them running here now**.
+- **Importing the same file again** leaves what already came alone and fills in a reporting line an earlier run couldn't set, so a move that stopped halfway can be run again. Trust isn't changed on a worker that is already here: if its row said its trust didn't come, set it on the worker's page.
+
+What the setup does on import:
+
+- **Rules and the handbook** land when the file is from the same org. They go through the same checks as saving them here, and a rule this server refuses is reported while the rest still land. A handbook this server already has is kept.
+- **Tools, repos and workspaces** wait on **From desktops**, as a desktop's setup does: type each tool's keys and **Install**, **Connect** each repo, then **Make** each workspace.
+- **Databases** wait on **Databases**, and **APIs** on **APIs**, for an admin to type their passwords and finish them.
+- **Who the server is** stays as it is: its name, address, sign-in and admins. From the overcli app, the desktop's own rules don't come: they'd overwrite the server's.
+
+No key, token or password is ever written to the file. Every tool, database and API arrives set up as it was, minus its values, and its workers can't use it until an admin types them. Webhook triggers get new addresses, listed when they land. `org.json` isn't in the file; copy it across with your deploy files.
+
+From the overcli app there's no file: **Settings → Your org → Move everything** sends the desktop's workers, teams and processes straight to the server it's signed in to. From a terminal: `overcli org export --from URL` and `overcli org import FILE --to URL --dry-run`.
 
 ## Setup → Tools
 
