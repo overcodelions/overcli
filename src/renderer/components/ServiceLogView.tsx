@@ -19,7 +19,7 @@ import { exceptionMessage, groupLog, isTraceHeader } from '../stackFrames';
 import { listExceptions, type CaughtException, type ExceptionLog } from '@shared/exceptions';
 import { summarizeLong, type Level, type ParsedLogLine } from '../logLine';
 import { firstLine, LOG_WINDOW_STEP, windowStart, type WindowItem } from '../logWindow';
-import { parseEnd, parseStart, splitRuns, type Run, type RunEnd, type RunStart } from '@shared/logRuns';
+import { parseEnd, parseStart, runKeys, splitRuns, type Run, type RunEnd, type RunStart } from '@shared/logRuns';
 import { SelectionMenu } from './SelectionMenu';
 import { useDividerDragging } from './ResizableDivider';
 
@@ -95,10 +95,14 @@ export function LogView({
   // filtered, grouped and drawn on every new line. Search looks through every
   // run — a match in a folded one should not be missed.
   const runs = useMemo(() => splitRuns(lines), [lines]);
-  const [opened, setOpened] = useState<ReadonlySet<number>>(new Set());
+  // Opened runs are remembered by their start marker, not their line index:
+  // the log drops its oldest lines once it is full, and every index shifts.
+  const keys = useMemo(() => runKeys(lines, runs), [lines, runs]);
+  const keyAt = useMemo(() => new Map(runs.map((r, i) => [r.from, keys[i]])), [runs, keys]);
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   if (lines.length === 0 && opened.size > 0) setOpened(new Set());
   const searching = query.trim() !== '';
-  const folded = (i: number) => !searching && i < runs.length - 1 && !opened.has(runs[i].from);
+  const folded = (i: number) => !searching && i < runs.length - 1 && !opened.has(keys[i]);
 
   const view = useMemo(() => {
     const shown: FilteredLine[] = [];
@@ -137,7 +141,7 @@ export function LogView({
     return { shown, items, visible, starts, ends, folds };
     // `folded` reads runs, opened and searching, all listed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs, lines, opened, query, level, hidden, searching]);
+  }, [runs, keys, lines, opened, query, level, hidden, searching]);
   const { shown, items } = view;
   const levelCounts = useMemo(() => countLevels(view.visible), [view.visible]);
   const byIndex = useMemo(() => new Map(shown.map((l) => [l.index, l])), [shown]);
@@ -191,13 +195,16 @@ export function LogView({
     }
     target?.scrollIntoView({ block: 'center' });
   }, [jump]);
-  const toggleRun = (from: number) =>
+  const toggleRun = (from: number) => {
+    const key = keyAt.get(from);
+    if (key === undefined) return;
     setOpened((o) => {
       const next = new Set(o);
-      if (next.has(from)) next.delete(from);
-      else next.add(from);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
+  };
 
   // The rows themselves, memoised: this component re-renders whenever anything
   // around it does, and handing React the same element array lets it skip
@@ -241,7 +248,8 @@ export function LogView({
           </div>
         ),
       ),
-    // toggleRun and jumpTo only call setters.
+    // jumpTo only calls setters; toggleRun also reads keyAt, which changes
+    // only with runs, and so only with view.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [drawn, byIndex, lines, wrap, formatted, view],
   );

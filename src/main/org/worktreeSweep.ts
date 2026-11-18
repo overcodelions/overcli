@@ -164,7 +164,14 @@ async function sweepOrphans(root: string, known: Set<string>, now: number): Prom
       }
       if (++checked > ORPHANS_PER_PASS) return { removed, kept };
       const common = await git(wt, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-      if (common.code !== 0 || !common.out.trim()) continue;
+      // Not a checkout git can read (a stray or broken `.git`): remember it
+      // like any other kept one, or enough of them would use up every pass's
+      // budget and the real orphans past them would never be looked at.
+      if (common.code !== 0 || !common.out.trim()) {
+        orphanKeptAt.set(wt, now);
+        kept++;
+        continue;
+      }
       const c: Checkout = { repoPath: path.dirname(common.out.trim()), worktreePath: wt, branchName: '' };
       const status = await git(wt, ['--no-optional-locks', 'status', '--porcelain']);
       const onlyHere = await git(wt, ['rev-list', '--count', 'HEAD', '--not', '--remotes']);

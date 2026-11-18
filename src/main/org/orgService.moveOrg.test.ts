@@ -138,7 +138,7 @@ function exported(policy: Partial<OrgPolicy> = { slackTeamId: 'T0ACME001', name:
 }
 
 describe('exporting the whole org', () => {
-  it('carries every worker with its trust, manager, reporting line, knowledge and journal, and its teams', () => {
+  it('carries every worker with its trust, manager, reporting line, knowledge and journal, and its teams', async () => {
     const b = exported();
     expect(b.source).toEqual({ kind: 'server', org: 'Acme', slackTeamId: 'T0ACME001' });
     const t = b.workers.find((w) => w.sourceId === 'triage-1')!;
@@ -151,7 +151,7 @@ describe('exporting the whole org', () => {
     expect(b.teams).toEqual([expect.objectContaining({ sourceId: 'team-a', members: [{ sourceId: 'lead-1', role: 'Lead' }, { sourceId: 'triage-1', role: 'Triage' }] })]);
   });
 
-  it('holds no secret value: tools go as setting names only', () => {
+  it('holds no secret value: tools go as setting names only', async () => {
     const b = exported();
     const text = JSON.stringify(b);
     expect(text).toContain('API_TOKEN');
@@ -159,16 +159,27 @@ describe('exporting the whole org', () => {
     expect(text).not.toMatch(/token"\s*:\s*"/i);
   });
 
-  it('is for admins only', () => {
+  it('is for admins only', async () => {
     const from = server({ roster: [lead] });
     expect(from.svc.exportOrg(pat)).toMatchObject({ ok: false });
   });
 });
 
+describe('an org too large for one file', () => {
+  it('is refused at export, not left for the import to choke on', () => {
+    const many = server({ roster: Array.from({ length: 501 }, (_, i) => worker(`w-${i}`, `Worker ${i}`)) });
+    expect(exportOrgBundle(many.svc, undefined, admin, 'server')).toMatchObject({ ok: false, error: expect.stringMatching(/501 workers.*500 at most/) });
+    const huge = server({ roster: [lead, triage], extra: { shareWorker: (w) => ({ yaml: 'x'.repeat(w.name === 'Lead' ? 8_000_001 : 10), filename: 'a.yaml', missingFlowIds: [] }) } });
+    expect(exportOrgBundle(huge.svc, undefined, admin, 'server')).toMatchObject({ ok: false, error: expect.stringMatching(/Lead’s worker file is too large/) });
+    const big = server({ roster: Array.from({ length: 8 }, (_, i) => worker(`w-${i}`, `Worker ${i}`)), extra: { shareWorker: () => ({ yaml: 'x'.repeat(7_900_000), filename: 'a.yaml', missingFlowIds: [] }) } });
+    expect(exportOrgBundle(big.svc, undefined, admin, 'server')).toMatchObject({ ok: false, error: expect.stringMatching(/too large for one file/) });
+  });
+});
+
 describe('importing an org file', () => {
-  it('from the same Slack workspace keeps trust, managers and reporting lines, and lands workers paused', () => {
+  it('from the same Slack workspace keeps trust, managers and reporting lines, and lands workers paused', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' }, installed: ['tracker'] });
-    const res = to.svc.importOrg(admin, exported());
+    const res = await to.svc.importOrg(admin, exported(), { keepTrust: true });
     if (!res.ok) throw new Error(res.error);
     const r = res.report;
     expect(r.keepsTrust).toBe(true);
@@ -190,16 +201,16 @@ describe('importing an org file', () => {
     expect(r.notes.join(' ')).toMatch(/land paused/);
   });
 
-  it('with start, workers that ran there run here', () => {
+  it('with start, workers that ran there run here', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
-    const res = to.svc.importOrg(admin, exported(), { start: true });
+    const res = await to.svc.importOrg(admin, exported(), { start: true });
     expect(res.ok).toBe(true);
     expect([...to.roster.values()].every((w) => w.enabled)).toBe(true);
   });
 
-  it('from another workspace lands each worker as a hire on probation, managed by the admin, with only cleared tools', () => {
+  it('from another workspace lands each worker as a hire on probation, managed by the admin, with only cleared tools', async () => {
     const to = server({ policy: { slackTeamId: 'T0OTHER01' } });
-    const res = to.svc.importOrg(admin, exported());
+    const res = await to.svc.importOrg(admin, exported());
     if (!res.ok) throw new Error(res.error);
     expect(res.report.keepsTrust).toBe(false);
     const t = [...to.roster.values()].find((w) => w.name === 'Triage')!;
@@ -209,31 +220,31 @@ describe('importing an org file', () => {
     expect(t.mcpServers).toEqual(['tracker']);
   });
 
-  it('from a file that names no workspace lands on probation unless the admin vouches for it', () => {
+  it('from a file that names no workspace lands on probation unless the admin vouches for it', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
-    const res = to.svc.importOrg(admin, exported({}));
+    const res = await to.svc.importOrg(admin, exported({}));
     expect(res.ok && res.report.keepsTrust).toBe(false);
     expect([...to.roster.values()].every((w) => w.trust === 'probation' && w.manager?.slackUserId === ADMIN)).toBe(true);
     expect(res.ok && res.report.trustWhy).toMatch(/--keep-trust/);
   });
 
-  it('vouching can’t carry trust across from another workspace', () => {
+  it('vouching can’t carry trust across from another workspace', async () => {
     const to = server({ policy: { slackTeamId: 'T0OTHER01' } });
-    const res = to.svc.importOrg(admin, exported(), { keepTrust: true });
+    const res = await to.svc.importOrg(admin, exported(), { keepTrust: true });
     expect(res.ok && res.report.keepsTrust).toBe(false);
   });
 
-  it('from a personal install keeps trust when the admin vouches for it', () => {
+  it('from a personal install keeps trust when the admin vouches for it', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
-    const res = to.svc.importOrg(admin, exported({}), { keepTrust: true });
+    const res = await to.svc.importOrg(admin, exported({}), { keepTrust: true });
     expect(res.ok && res.report.keepsTrust).toBe(true);
     // Its manager had a Slack id, so it is still them.
     expect([...to.roster.values()].find((w) => w.name === 'Triage')?.manager?.slackUserId).toBe(PAT);
   });
 
-  it('a dry run changes nothing and says what would land', () => {
+  it('a dry run changes nothing and says what would land', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
-    const res = to.svc.importOrg(admin, exported(), { dryRun: true });
+    const res = await to.svc.importOrg(admin, exported(), { dryRun: true, keepTrust: true });
     if (!res.ok) throw new Error(res.error);
     expect(to.roster.size).toBe(0);
     expect(to.teams()).toEqual([]);
@@ -244,11 +255,11 @@ describe('importing an org file', () => {
     expect(res.report.teams).toEqual([{ name: 'Crew', status: 'added' }]);
   });
 
-  it('is safe to run again: what already came is left alone', () => {
+  it('is safe to run again: what already came is left alone', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
     const b = exported();
-    expect(to.svc.importOrg(admin, b).ok).toBe(true);
-    const again = to.svc.importOrg(admin, b);
+    expect((await to.svc.importOrg(admin, b, { keepTrust: true })).ok).toBe(true);
+    const again = await to.svc.importOrg(admin, b, { keepTrust: true });
     if (!again.ok) throw new Error(again.error);
     expect(to.roster.size).toBe(2);
     expect(again.report.workers.map((w) => w.status)).toEqual(['alreadyHere', 'alreadyHere']);
@@ -256,34 +267,110 @@ describe('importing an org file', () => {
     expect(to.teams()).toHaveLength(1);
   });
 
-  it('run again after a partial run, sets the reporting line the first run couldn’t', () => {
+  it('run again after a partial run, sets the reporting line the first run couldn’t', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
     const b = exported();
     // The first run: only Triage came, so its manager worker didn't.
-    const first = to.svc.importOrg(admin, { ...b, workers: b.workers.filter((w) => w.sourceId === 'triage-1'), teams: [] });
+    const first = await to.svc.importOrg(admin, { ...b, workers: b.workers.filter((w) => w.sourceId === 'triage-1'), teams: [] }, { keepTrust: true });
     if (!first.ok) throw new Error(first.error);
     const t = () => [...to.roster.values()].find((w) => w.name === 'Triage')!;
     expect(t().reportsTo).toBeUndefined();
-    const again = to.svc.importOrg(admin, b);
+    const again = await to.svc.importOrg(admin, b, { keepTrust: true });
     if (!again.ok) throw new Error(again.error);
     const l = [...to.roster.values()].find((w) => w.name === 'Lead')!;
     expect(t().reportsTo).toBe(l.id);
     expect(again.report.workers.find((w) => w.name === 'Triage')?.notes.join(' ')).toMatch(/reporting line is set now/);
   });
 
-  it('run again, leaves a reporting line already set by hand alone', () => {
+  it('run again, leaves a reporting line already set by hand alone', async () => {
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
     const b = exported();
-    expect(to.svc.importOrg(admin, b).ok).toBe(true);
+    expect((await to.svc.importOrg(admin, b, { keepTrust: true })).ok).toBe(true);
     const t = [...to.roster.values()].find((w) => w.name === 'Triage')!;
-    to.roster.set(t.id, { ...t, reportsTo: 'someone-else' });
-    expect(to.svc.importOrg(admin, b).ok).toBe(true);
-    expect(to.roster.get(t.id)?.reportsTo).toBe('someone-else');
+    to.roster.set('boss-9', worker('boss-9', 'Boss'));
+    to.roster.set(t.id, { ...t, reportsTo: 'boss-9' });
+    expect((await to.svc.importOrg(admin, b, { keepTrust: true })).ok).toBe(true);
+    expect(to.roster.get(t.id)?.reportsTo).toBe('boss-9');
   });
 
-  it('is for admins only', () => {
+  it('run again, mends a reporting line to a worker no longer here', async () => {
+    const to = server({ policy: { slackTeamId: 'T0ACME001' } });
+    const b = exported();
+    expect((await to.svc.importOrg(admin, b, { keepTrust: true })).ok).toBe(true);
+    const t = [...to.roster.values()].find((w) => w.name === 'Triage')!;
+    const l = [...to.roster.values()].find((w) => w.name === 'Lead')!;
+    to.roster.set(t.id, { ...t, reportsTo: 'retired-1' });
+    expect((await to.svc.importOrg(admin, b, { keepTrust: true })).ok).toBe(true);
+    expect(to.roster.get(t.id)?.reportsTo).toBe(l.id);
+  });
+
+  it('the file naming this Slack workspace isn’t enough: trust comes only when the admin vouches', async () => {
+    const to = server({ policy: { slackTeamId: 'T0ACME001' } });
+    const res = await to.svc.importOrg(admin, exported());
+    if (!res.ok) throw new Error(res.error);
+    expect(res.report.keepsTrust).toBe(false);
+    expect(res.report.trustWhy).toMatch(/a file can say anything/);
+    expect([...to.roster.values()].every((w) => w.trust === 'probation' && w.manager?.slackUserId === ADMIN)).toBe(true);
+    // Its rules stay out too.
+    const rules = { budgetAllowanceUSD: 999 };
+    let set = 0;
+    const access = { rules: () => ({ ok: true as const, rules: {} }), setRules: () => (set++, { ok: true as const }) };
+    const b = exported();
+    b.setup = { rules };
+    const via = await importOrgBundle(server({ policy: { slackTeamId: 'T0ACME001' } }).svc, undefined, admin, b, {}, access);
+    expect(via.ok && via.report.setup.find((r) => r.kind === 'rules')?.status).toBe('skipped');
+    expect(set).toBe(0);
+  });
+
+  it('run again with the admin vouching, raises workers an unvouched run left on probation, and only those', async () => {
+    const to = server({ policy: { slackTeamId: 'T0ACME001' } });
+    const b = exported();
+    expect((await to.svc.importOrg(admin, b)).ok).toBe(true);
+    const named = (n: string) => [...to.roster.values()].find((w) => w.name === n)!;
+    expect(named('Triage').trust).toBe('probation');
+    // Someone put Lead under Pat on probation by hand since: that stays.
+    to.roster.set(named('Lead').id, { ...named('Lead'), manager: { name: 'Pat', slackUserId: PAT } });
+    const dry = await to.svc.importOrg(admin, b, { keepTrust: true, dryRun: true });
+    expect(dry.ok && dry.report.workers.find((w) => w.name === 'Triage')).toMatchObject({ trust: 'trusted', manager: 'Pat' });
+    expect(named('Triage').trust).toBe('probation');
+    const again = await to.svc.importOrg(admin, b, { keepTrust: true });
+    if (!again.ok) throw new Error(again.error);
+    expect(named('Triage')).toMatchObject({ trust: 'trusted', manager: { name: 'Pat', slackUserId: PAT }, reportsTo: named('Lead').id });
+    expect(named('Lead').trust).toBe('probation');
+    expect(again.report.workers.find((w) => w.name === 'Lead')?.notes.join(' ')).toMatch(/raise it on its page/);
+    // And once more: nothing left to change.
+    const third = await to.svc.importOrg(admin, b, { keepTrust: true });
+    expect(third.ok && third.report.workers.find((w) => w.name === 'Triage')?.notes).toEqual([]);
+  });
+
+  it('one import at a time: a second while the first runs is turned away', async () => {
+    const to = server({ policy: { slackTeamId: 'T0ACME001' } });
+    const b = exported();
+    const [one, two] = await Promise.all([to.svc.importOrg(admin, b, { keepTrust: true }), to.svc.importOrg(admin, b, { keepTrust: true })]);
+    expect(one.ok).toBe(true);
+    expect(two).toMatchObject({ ok: false, error: expect.stringMatching(/already running/) });
+    expect(to.roster.size).toBe(2);
+  });
+
+  it('lets the server answer others while it lands many workers', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => worker(`w-${i}`, `Worker ${i}`));
+    const from = server({ roster: many });
+    const out = exportOrgBundle(from.svc, undefined, admin, 'server');
+    if (!out.ok) throw new Error(out.error);
     const to = server();
-    expect(to.svc.importOrg(pat, exported())).toMatchObject({ ok: false, error: expect.stringMatching(/admin/) });
+    let done = false;
+    let answeredMeanwhile = false;
+    const pending = to.svc.importOrg(admin, out.bundle).then((r) => ((done = true), r));
+    // Someone else's request, arriving once the import has started.
+    setImmediate(() => (answeredMeanwhile = !done));
+    expect((await pending).ok).toBe(true);
+    expect(to.roster.size).toBe(25);
+    expect(answeredMeanwhile).toBe(true);
+  });
+
+  it('is for admins only', async () => {
+    const to = server();
+    expect(await to.svc.importOrg(pat, exported())).toMatchObject({ ok: false, error: expect.stringMatching(/admin/) });
   });
 });
 
@@ -315,7 +402,7 @@ describe('processes in an org file', () => {
     };
   }
 
-  it('travel with their team stages mapped to the copy that landed, and "You" becomes the admin', () => {
+  it('travel with their team stages mapped to the copy that landed, and "You" becomes the admin', async () => {
     const from = server({ policy: { slackTeamId: 'T0ACME001' }, roster: [lead, triage], teams: [crew] });
     const out = exportOrgBundle(from.svc, processes([def]).svc, admin, 'desktop');
     if (!out.ok) throw new Error(out.error);
@@ -325,7 +412,7 @@ describe('processes in an org file', () => {
 
     const to = server({ policy: { slackTeamId: 'T0ACME001' } });
     const p = processes();
-    const res = importOrgBundle(to.svc, p.svc, admin, parsed.bundle);
+    const res = await importOrgBundle(to.svc, p.svc, admin, parsed.bundle, { keepTrust: true });
     if (!res.ok) throw new Error(res.error);
     expect(res.report.processes).toEqual([{ name: 'Ship it', status: 'added' }]);
     const stages = p.saved[0].stages as Array<Record<string, unknown>>;
@@ -334,41 +421,68 @@ describe('processes in an org file', () => {
     expect(p.saved[0].owner).toEqual({ name: 'Alex', slackUserId: ADMIN });
   });
 
-  it('from another workspace, every owner and decider is the admin and its groups are dropped', () => {
+  it('from another workspace, every owner and decider is the admin and its groups are dropped', async () => {
     const from = server({ policy: { slackTeamId: 'T0ACME001' }, roster: [lead, triage], teams: [crew] });
     const withGroups: ProcessDef = { ...def, stages: [def.stages[0], { ...def.stages[1], approverGroups: [{ id: 'team:Leads', name: 'Leads' }], needs: 'all' }] };
     const out = exportOrgBundle(from.svc, processes([withGroups]).svc, admin, 'server');
     if (!out.ok) throw new Error(out.error);
     const to = server({ policy: { slackTeamId: 'T0OTHER01' } });
     const p = processes();
-    const res = importOrgBundle(to.svc, p.svc, admin, out.bundle);
+    const res = await importOrgBundle(to.svc, p.svc, admin, out.bundle);
     if (!res.ok) throw new Error(res.error);
     const stage = (p.saved[0].stages as Array<Record<string, unknown>>)[1];
     expect(stage.approvers).toEqual([{ name: 'Alex', slackUserId: ADMIN }]);
     expect(stage.approverGroups).toBeUndefined();
     expect(stage.needs).toBeUndefined();
     expect(p.saved[0].owner).toEqual({ name: 'Alex', slackUserId: ADMIN });
-    expect(res.report.notes.join(' ')).toMatch(/you own and decide every stage/);
+    expect(res.report.notes.join(' ')).toMatch(/Nobody here is Pat, so you own or decide in their place on Ship it/);
   });
 
-  it('a process whose team didn’t come is reported, not saved', () => {
+  it('from another workspace, a decider someone here goes by the name of is matched to them, and flagged to check', async () => {
+    const from = server({ policy: { slackTeamId: 'T0ACME001' }, roster: [lead, triage], teams: [crew] });
+    const out = exportOrgBundle(from.svc, processes([def]).svc, admin, 'server');
+    if (!out.ok) throw new Error(out.error);
+    const PAT_HERE = 'U0ACMEPT2';
+    const to = server({ policy: { slackTeamId: 'T0OTHER01' }, roster: [worker('here-1', 'Scout', { manager: { name: 'Pat', slackUserId: PAT_HERE } })] });
+    const p = processes();
+    const res = await importOrgBundle(to.svc, p.svc, admin, out.bundle);
+    if (!res.ok) throw new Error(res.error);
+    const stage = (p.saved[0].stages as Array<Record<string, unknown>>)[1];
+    expect(stage.approvers).toEqual([{ name: 'Alex', slackUserId: ADMIN }, { name: 'Pat', slackUserId: PAT_HERE }]);
+    expect(JSON.stringify(p.saved)).not.toContain(PAT);
+    expect(res.report.notes.join(' ')).toMatch(/Matched by name to people here: Pat → Pat/);
+  });
+
+  it('vouched for, a decider this server doesn’t know is kept but listed to check', async () => {
+    const from = server({ roster: [lead, triage], teams: [crew] });
+    const stranger: ProcessDef = { ...def, stages: [def.stages[0], { ...def.stages[1], approvers: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }] }] };
+    const out = exportOrgBundle(from.svc, processes([stranger]).svc, admin, 'server');
+    if (!out.ok) throw new Error(out.error);
+    const p = processes();
+    const res = await importOrgBundle(server().svc, p.svc, admin, out.bundle, { keepTrust: true });
+    if (!res.ok) throw new Error(res.error);
+    expect((p.saved[0].stages as Array<Record<string, unknown>>)[1].approvers).toEqual([{ name: 'Sam', slackUserId: 'U0ACMESAM' }]);
+    expect(res.report.notes.join(' ')).toMatch(/Not known on this server yet: Sam/);
+  });
+
+  it('a process whose team didn’t come is reported, not saved', async () => {
     const b = exported();
     b.teams = [];
     b.processes = [{ sourceId: 'proc-1', name: 'Ship it', stages: [{ id: 's1', name: 'Build', kind: 'team', sourceTeamId: 'team-a' }] }];
     const p = processes();
-    const res = importOrgBundle(server({ policy: { slackTeamId: 'T0ACME001' } }).svc, p.svc, admin, b);
-    expect(res.ok && res.report.processes).toEqual([{ name: 'Ship it', status: 'failed', error: 'The team or worker for Build didn’t come.' }]);
+    const res = await importOrgBundle(server({ policy: { slackTeamId: 'T0ACME001' } }).svc, p.svc, admin, b);
+    expect(res.ok && res.report.processes).toEqual([{ name: 'Ship it', status: 'failed', error: 'Left out: its stage “Build” is done by a team or worker that didn’t come over.' }]);
     expect(p.saved).toEqual([]);
   });
 });
 
 describe('reading an org file', () => {
-  it('refuses something that is not one', () => {
+  it('refuses something that is not one', async () => {
     expect(parseOrgBundle({ workers: [] }).ok).toBe(false);
     expect(parseOrgBundle({ format: 'overgo-org', version: 99 })).toMatchObject({ ok: false, error: expect.stringMatching(/version 99/) });
   });
 
-  it('drops a reporting line to a worker that isn’t in it, and an unknown trust level', () => {
+  it('drops a reporting line to a worker that isn’t in it, and an unknown trust level', async () => {
     const res = parseOrgBundle({
       format: 'overgo-org',
       version: 1,
@@ -380,7 +494,7 @@ describe('reading an org file', () => {
     expect(res.bundle.workers[0].reportsTo).toBeUndefined();
   });
 
-  it('refuses two workers with the same id', () => {
+  it('refuses two workers with the same id', async () => {
     const w = { sourceId: 'a', yaml: 'x: 1', trust: 'probation' };
     expect(parseOrgBundle({ format: 'overgo-org', version: 1, workers: [w, w] }).ok).toBe(false);
   });
@@ -432,7 +546,7 @@ describe('the org’s setup in an org file', () => {
     return parsed.bundle;
   }
 
-  it('carries rules, handbook, tools, repos, workspaces and databases, with no secret value anywhere', () => {
+  it('carries rules, handbook, tools, repos, workspaces and databases, with no secret value anywhere', async () => {
     const b = bundleFrom();
     const text = JSON.stringify(b);
     expect(b.setup?.rules).toMatchObject({ budgetAllowanceUSD: 200, orgBudgetUSD: 3000, approvers: [PAT] });
@@ -450,9 +564,9 @@ describe('the org’s setup in an org file', () => {
     expect(text).not.toContain('hasPassword');
   });
 
-  it('into the same org: rules and handbook land, the rest waits for its keys where each is set up', () => {
+  it('into the same org: rules and handbook land, the rest waits for its keys where each is set up', async () => {
     const to = setUp({ slackTeamId: 'T0ACME001' });
-    const res = importOrgBundle(to.svc, undefined, admin, bundleFrom(), {}, to.access);
+    const res = await importOrgBundle(to.svc, undefined, admin, bundleFrom(), { keepTrust: true }, to.access);
     if (!res.ok) throw new Error(res.error);
     const rows = res.report.setup;
     expect(to.rules()).toMatchObject({ budgetAllowanceUSD: 200, orgBudgetUSD: 3000, approvers: [PAT] });
@@ -465,20 +579,20 @@ describe('the org’s setup in an org file', () => {
     expect(describeImport(res.report).join('\n')).toMatch(/tool tracker: waits for its keys on Setup → From desktops/);
   });
 
-  it('importing again replaces what the last import left waiting, and leaves what is here alone', () => {
+  it('importing again replaces what the last import left waiting, and leaves what is here alone', async () => {
     const to = setUp({ slackTeamId: 'T0ACME001' }, { installed: ['tracker'] });
     const b = bundleFrom();
-    importOrgBundle(to.svc, undefined, admin, b, {}, to.access);
-    const again = importOrgBundle(to.svc, undefined, admin, b, {}, to.access);
+    await importOrgBundle(to.svc, undefined, admin, b, { keepTrust: true }, to.access);
+    const again = await importOrgBundle(to.svc, undefined, admin, b, { keepTrust: true }, to.access);
     if (!again.ok) throw new Error(again.error);
     expect(to.offers()).toHaveLength(1);
     expect(again.report.setup.find((r) => r.kind === 'tool')?.status).toBe('alreadyHere');
     expect(again.report.setup.find((r) => r.kind === 'rules')?.status).toBe('alreadyHere');
   });
 
-  it('a dry run says what would change and changes nothing', () => {
+  it('a dry run says what would change and changes nothing', async () => {
     const to = setUp({ slackTeamId: 'T0ACME001' });
-    const res = importOrgBundle(to.svc, undefined, admin, bundleFrom(), { dryRun: true }, to.access);
+    const res = await importOrgBundle(to.svc, undefined, admin, bundleFrom(), { dryRun: true, keepTrust: true }, to.access);
     if (!res.ok) throw new Error(res.error);
     expect(res.report.setup.find((r) => r.kind === 'rules')).toMatchObject({ status: 'updated', note: expect.stringMatching(/Hiring allowance.*Monthly org budget/) });
     expect(to.rules().budgetAllowanceUSD).toBe(50);
@@ -487,27 +601,27 @@ describe('the org’s setup in an org file', () => {
     expect(to.dbOffers()).toEqual([]);
   });
 
-  it('from another org leaves its rules and handbook out', () => {
+  it('from another org leaves its rules and handbook out', async () => {
     const to = setUp({ slackTeamId: 'T0OTHER01' });
-    const res = importOrgBundle(to.svc, undefined, admin, bundleFrom(), {}, to.access);
+    const res = await importOrgBundle(to.svc, undefined, admin, bundleFrom(), {}, to.access);
     if (!res.ok) throw new Error(res.error);
     expect(to.rules().budgetAllowanceUSD).toBe(50);
     expect(to.handbook()).toBe('');
     expect(res.report.setup.filter((r) => r.kind === 'rules' || r.kind === 'handbook').map((r) => r.status)).toEqual(['skipped', 'skipped']);
   });
 
-  it('keeps a handbook this server already has', () => {
+  it('keeps a handbook this server already has', async () => {
     const to = setUp({ slackTeamId: 'T0ACME001' }, { handbook: 'Our own.' });
-    const res = importOrgBundle(to.svc, undefined, admin, bundleFrom(), {}, to.access);
+    const res = await importOrgBundle(to.svc, undefined, admin, bundleFrom(), { keepTrust: true }, to.access);
     expect(to.handbook()).toBe('Our own.');
     expect(res.ok && res.report.setup.find((r) => r.kind === 'handbook')?.status).toBe('skipped');
   });
 
-  it('one rule the server refuses doesn’t keep the others out', () => {
+  it('one rule the server refuses doesn’t keep the others out', async () => {
     const to = setUp({ slackTeamId: 'T0ACME001' });
     const b = bundleFrom();
     b.setup!.rules = { ...b.setup!.rules, budgetAllowanceUSD: -1 };
-    const res = importOrgBundle(to.svc, undefined, admin, b, {}, to.access);
+    const res = await importOrgBundle(to.svc, undefined, admin, b, { keepTrust: true }, to.access);
     if (!res.ok) throw new Error(res.error);
     expect(to.rules()).toMatchObject({ orgBudgetUSD: 3000, budgetAllowanceUSD: 50 });
     expect(res.report.setup.filter((r) => r.kind === 'rules').map((r) => r.status)).toEqual(['updated', 'failed']);
@@ -530,7 +644,7 @@ describe('a worker’s whole history in an org file', () => {
     return p.bundle.carried!;
   }
 
-  it('moving the org carries all of it, oldest rejection included, and it reads back whole', () => {
+  it('moving the org carries all of it, oldest rejection included, and it reads back whole', async () => {
     const s = from();
     (s.svc as unknown as { deps: { workers: { journalFor: (id: string) => WorkerJournalEntry[] } } }).deps.workers.journalFor = () => long;
     const res = s.svc.exportOrg(admin);
@@ -542,7 +656,7 @@ describe('a worker’s whole history in an org file', () => {
     expect(res.left.join(' ')).not.toMatch(/oldest/);
   });
 
-  it('exporting one worker for another org still trims it', () => {
+  it('exporting one worker for another org still trims it', async () => {
     const s = from();
     (s.svc as unknown as { deps: { workers: { journalFor: (id: string) => WorkerJournalEntry[] } } }).deps.workers.journalFor = () => long;
     const res = s.svc.exportWorker(admin, 'Triage', { learned: true, journal: true });

@@ -30,15 +30,16 @@ Takes the whole org to another server, or brings one in. Admins only, on both se
 
 **Import an org file** reads a file exported from another server and shows what would land before anything changes: each worker's trust and manager, whether it lands paused, and which tools need their keys here. **Import** makes it so.
 
-- **Same Slack workspace:** trust, managers and reporting lines come along.
-- **Your own org without a matching workspace** (a personal install, or a server with no Slack workspace set): tick **This is our own org** after the check, and they come along too. Only tick it for a file you exported yourself: it keeps each worker's trust and its rules. Without it, each worker arrives on probation as below. **Move everything** in the desktop app vouches on its own, since it sends its own org.
-- **Another workspace's org:** each worker arrives as a hire on probation with you as its manager, with only the tools this org has cleared. Its processes come with you owning and deciding every stage; set who decides on each process's page.
+- **Your own org:** tick **This is our own org** after the check (`--keep-trust` from a terminal), and trust, managers and reporting lines come along. The file can say which Slack workspace it came from, but that alone never keeps trust, since anyone can write it into a file: only tick it for a file you exported yourself. A file naming another workspace never keeps trust, ticked or not. **Move everything** in the desktop app vouches on its own, since it sends its own org.
+- **Otherwise:** each worker arrives as a hire on probation with you as its manager, with only the tools this org has cleared. Each process's approvers and owners are matched by name to people here, when exactly one person has that name, and the report asks you to check each is the same person. Anyone with no match is replaced by you, and the report names the processes where you now decide in their place; set who decides on each process's page. Nobody is ever kept by another workspace's Slack id. With trust kept, a Slack id this server doesn't know yet is kept and listed to check.
 - **Workers land paused**, because the old copies are probably still running. Switch those off, then resume these, or tick **Start them running here now**.
-- **Importing the same file again** leaves what already came alone and fills in a reporting line an earlier run couldn't set, so a move that stopped halfway can be run again. Trust isn't changed on a worker that is already here: if its row said its trust didn't come, set it on the worker's page.
+- **Importing the same file again** leaves what already came alone and fills in a reporting line an earlier run couldn't set, or one that points at a worker no longer here, so a move that stopped halfway can be run again. Vouched this time, it also gives a worker that an earlier, unvouched run left on probation under you its trust and manager from the file. A worker you put on probation by hand is left alone, and its row says so.
+- **One import at a time.** A second import while one is running is turned away; run it again when the first has finished.
+- **Export limits:** an org over 500 workers or 200 teams, a worker over 8 MB, or a file over 56 MB in all is refused, so the file always fits what an import accepts.
 
 What the setup does on import:
 
-- **Rules and the handbook** land when the file is from the same org. They go through the same checks as saving them here, and a rule this server refuses is reported while the rest still land. A handbook this server already has is kept.
+- **Rules and the handbook** land when you vouch that the file is your own org. They go through the same checks as saving them here, and a rule this server refuses is reported while the rest still land. A handbook this server already has is kept.
 - **Tools, repos and workspaces** wait on **From desktops**, as a desktop's setup does: type each tool's keys and **Install**, **Connect** each repo, then **Make** each workspace.
 - **Databases** wait on **Databases**, and **APIs** on **APIs**, for an admin to type their passwords and finish them.
 - **Who the server is** stays as it is: its name, address, sign-in and admins. From the overcli app, the desktop's own rules don't come: they'd overwrite the server's.
@@ -147,6 +148,23 @@ Protect the default branch on your git host as well (required reviews, no force 
 - **Pull requests:** what the server does after pushing a worker's branch. **Open as a draft** (the default) opens the pull request on Bitbucket or GitHub with the title and description the worker wrote, as a draft a person marks ready; **open for review** opens it ready; **link only** hands back the link to open one, as before. A fix pushed onto a branch whose pull request is open goes into that pull request. The token needs pull request write access (Bitbucket: Pull requests: Write; GitHub: Pull requests: Read and write); without it the run says why and the link stands.
 - **When CI fails:** after the server pushes a worker's branch, it reads the repo's own CI result for that commit through the git host's API, with the same token it pushes with: Bitbucket commit statuses (and, for Pipelines, the failed step's test cases and log), or GitHub check runs and commit statuses (with annotations and the Actions job log). A red build goes back to the same worker with the failing checks, tests and the end of the log, to fix on the same branch, so the open pull request gets the fix and CI runs again. After the number of rounds set in the strip (3 by default; "tell the manager" for none), or a build still running after 3 hours, the worker's manager gets a Slack DM, and a reply there goes to the worker. Each run's result is attached to it as `ci.md`. A repo whose CI reports nothing within 20 minutes isn't watched. A Bitbucket access token needs read access to pipelines for the detail; without it the worker still gets the failing checks and their links.
 - **Workers don't fetch or push.** Before each run the server fetches every branch of the repo, and every step of a worker's run is told so: work from `origin/<branch>` (an open pull request's branch included), never `git fetch` or `git push`, and the server pushes when the run ends.
+- **Continuing a pull request:** the run's checkout starts from origin's copy of its branch. Before pushing, the server merges in any newer commits on that branch, then checks for conflict markers and runs the tests on the merged tree, and pushes onto the same branch. It never opens a second pull request: a merge that conflicts pushes nothing and names the files.
+
+### Setup and checks
+
+Each repo's **Setup and checks** let a worker install the repo's dependencies and check its own change before it finishes. Admins only; every change is in the decision log.
+
+- **Setup** (`npm ci`, `./gradlew dependencies`): run by the server in every fresh checkout, before the worker starts. The worker isn't given it to run.
+- **Checks** (`npm run lint-changed`, `npm test`), up to 6: commands the worker may run in its checkout. Each becomes a narrowed grant, `Bash(npm test:*)`, and the build step is told to run them and fix what they report. No other shell command is allowed. In a workspace, each repo's checks run from inside it (`cd api && npm test`).
+- **What they may be:** one plain command each, at most 80 characters, with no quotes, `;`, `&&`, pipes, redirects or `$`. Blank lines and repeats are dropped. `nvm`, `sdk`, `pyenv` and `asdf` are refused: the server already puts the version the repo asks for on `PATH` (see [Toolchains](#setup--toolchains)).
+- **Who it runs as:** the worker's own user (`OVERCLI_WORKER_UID`; the server where that isn't set), with the toolchains on `PATH` and the server's secrets taken out of the environment. Install scripts are the repo's code, and get exactly what the worker's own shell would. Setup runs whether or not repo tests are turned on.
+- **Limits:** 15 minutes per command, and two checkouts set up at a time, so a workspace run with many repos doesn't install them all at once.
+- **When setup fails** the run still starts. Every step is told it failed, with the end of what it printed, and to say so in its reply.
+- **Changes apply** from each worker's next run; runs under way keep theirs.
+
+**Try** runs the saved setup and checks the way a worker's checkout would get them: in a throwaway checkout of the default branch as origin has it, in the background. Each command shows passed, failed or skipped, how long it took and the end of what it printed. Checks are skipped after a failed setup. One trial runs per repo at a time, and the checkout is removed when it ends. The repo's row shows how the last trial went.
+
+**Toolchain gaps** show on each repo's row: a kit the repo needs with none installed, or a version it asks for that isn't installed, so runs get the default instead. When the catalog has that version, the row names it; install it on [Toolchains](#setup--toolchains). An admin's pick for the repo is never a gap. Workers are told the same, and to say so in their reply when their change needs it.
 
 ## Setup → Databases
 
@@ -213,6 +231,13 @@ For each app:
 
 Screenshots a worker takes are kept with the run (on its page under Files) in the server's tool folder, `/data/tool-home/run-evidence/<run>/`, and the worker is given that path, so a ticket tool such as `mcp-atlassian` can attach them; it only uploads files from its own folder. Workers can't open or change them there.
 
+**Test video.** A worker can record what it tests for people to watch: `start_video` before the first step (named for the ticket, `BILL-123-checkout`), `browser_video_chapter` to title each part, `stop_video` at the end.
+
+- **What's kept:** a `.webm` at 1280×720 and 15 fps, a few MB a minute, in the same folder as screenshots and played on the run's page. The worker is given its path to attach to a ticket. One over 150 MB isn't kept.
+- **Signing in is never recorded.** With a login page, recording stops before the server signs in and carries on afterwards as a next part (`BILL-123-checkout-part2.webm`). A run that ends with a video still recording keeps what was recorded.
+- **A pointer** moves to each click, so the video is easy to follow, unless the worker turns it off.
+- **It needs Playwright's ffmpeg,** which `playwright install chromium` brings with the browser. Without it, `start_video` says this server can't record video, and the worker takes screenshots instead.
+
 **Test** opens the app as a worker would, on the environment you type, and says whether it got in. Use a test account with the least access it needs, on non-production environments only. The Docker image comes with the Chromium this uses (leave it out with `--build-arg INSTALL_BROWSER=0`, about 400 MB); the first use fetches Playwright MCP from the npm registry. Running the server outside the image, install the browser once with `npx playwright install --with-deps chromium`.
 
 ## Setup → Secrets
@@ -238,15 +263,23 @@ Build tools for workers and repo tests, without rebuilding the image. The server
 | Node.js | nodejs.org (latest of each major) | 18 to 26 | |
 | Python | python-build-standalone, through `uv` (in the image) | 3.9 to 3.14 | |
 | Go | go.dev | 1.22 to 1.26 | `GOROOT` |
+| Gradle | services.gradle.org (latest final release of each major) | 7, 8, 9 | `GRADLE_HOME` |
 | Custom | any `.tar.gz` or `.tar.xz` you give | | the variables you name |
 
 **Which version a run gets**, per kit, from the next run on:
 
 1. the repo's pick under *Versions each repo uses*;
-2. else what the repo asks for itself, if that version is installed: `.nvmrc` or `.node-version`, `.python-version`, `.sdkmanrc` or `.java-version`, the `go` line in `go.mod`, or `.tool-versions`;
+2. else what the repo asks for itself, if that version is installed:
+   - a version file first: `.tool-versions`, `.nvmrc` or `.node-version` (`lts/iron` counts as 20), `.python-version`, `.sdkmanrc` or `.java-version`, or the `go` line in `go.mod`;
+   - else its build file or manifest: `engines.node` in `package.json`; `JavaLanguageVersion.of(17)`, or `sourceCompatibility`/`targetCompatibility`, in `build.gradle` or `build.gradle.kts`; `maven.compiler.release`, `java.version`, `maven.compiler.source` or `release` in `pom.xml`; `requires-python` in `pyproject.toml`;
+   - a range there (`">=18"`, `"^20.11"`, `"18.x || 20.x"`, `">=3.9,<4"`) is met by any installed version it allows, not only the one it names: with Node 22 installed, `">=18"` gets 22. A version file is always a pin;
 3. else the kit's **default** (the first one installed, until you make another the default).
 
-Every worker's shell and every repo's test command gets that version's `bin` first on `PATH`. A repo whose files already say `java=8.0.422-amzn` or `20` needs no setting at all once that version is installed.
+Every worker's shell, every repo's setup and checks, and every repo's test command get that version's `bin` first on `PATH`. A repo whose files already say `java=8.0.422-amzn` or `20` needs no setting at all once that version is installed.
+
+**Gradle** is needed only by a repo with a Gradle build and no `gradlew`: the wrapper fetches its own Gradle and needs only Java. The kit runs on the installed Java, so install a Java first. It unpacks a zip, so a server outside the image needs `unzip`.
+
+**Gaps** are listed per repo, here and on [Repos](#setup--repos): a kit a repo needs (from its files, such as `package.json`, `pom.xml`, a Gradle build, `pyproject.toml` or `go.mod`) with none installed, or a version it asks for that isn't installed. A version the catalog doesn't offer says so; anything else names the version to install.
 
 **Custom kits** are for anything the catalog doesn't carry (Terraform, a Maven, another runtime). Give a name, an https address of the archive built for the server's OS and CPU (the section shows which), the folder inside it to put on `PATH` (`bin` by default, counted from the archive's one top folder if it has one), and any variables, with `{home}` for where it unpacks. Give its **sha256** when the publisher lists one: a download that doesn't match is never installed. A custom kit can't set `PATH`, `HOME`, `LD_*`, `DYLD_*`, `NODE_OPTIONS` or `OVERCLI_*`. It runs on the server like any other tool workers have, so it's admin-only and recorded in the decision log with its address.
 
@@ -367,6 +400,27 @@ Below it, each of the last seven days' busiest moment, against the limits then. 
 - **Code runs at once:** runs in a checkout of their own, which build and test. CPUs limit them. Left blank: one per CPU.
 
 Work over a limit waits its turn, oldest first; nothing fails. A change applies within seconds, no restart, and is written to the decision log. Where the server's operator set `OVERCLI_ANSWERS_AT_ONCE` or `OVERCLI_CODE_RUNS_AT_ONCE`, that wins, and the page shows the value it set. The [metrics](../README.md#metrics) carry the same numbers for your own dashboards.
+
+### Run checkouts
+
+A run that changes code works in a checkout of its own, under `~/.overcli/worktrees/<repo>/` (`/data/home/.overcli/worktrees` in the image). Every run in a workspace checks out each of its repos, so the server removes them as it goes. The sweep runs a minute after start and then every 10 minutes.
+
+- **A finished run's checkout** goes 2 hours after the run ends when it changed nothing, and after 2 days when its changes were pushed. One with work that isn't pushed is kept, however old.
+- **One someone kept working in** after its run ended is kept until it has sat untouched for 2 days. Touched means a file in it changed, or HEAD moved (a commit, a checkout, a reset). A `git status`, or `git gc` rewriting the reflog, doesn't count.
+- **A checkout no run knows any more** (its run was deleted or pruned, or a restart left it behind) is removed once `git status` shows nothing, every commit in it is on a remote, and nothing in it changed for 2 days. Files git ignores, such as `node_modules`, build output or an ignored `.env`, don't count as work and go with it. Its local branch is deleted too, unless it's `main`, `master`, `develop`, `development`, `trunk` or `release`. One kept for its work is looked at again after 6 hours; at most 150 are looked at in each pass.
+
+Don't keep anything by hand under that folder. **Readiness** shows how many run checkouts are on disk, and turns red when one has kept work that was never pushed for more than 3 days: push it or delete the run.
+
+## Setup → Tuning
+
+What goes wrong across the org's workers, that no one worker's [Tuning](#tune-a-worker) tab can see or fix. It counts the last 30 days of every worker's runs, leaving out test runs, with no model in the loop: the same answer every time. Admins only.
+
+- **Give a tool:** a worker's runs were refused a tool it doesn't have. **Apply** gives it.
+- **Let any manager give a tool:** workers of 2 or more managers were refused the same tool, so each manager would have to ask an admin. **Apply** adds it to the tools any manager may give.
+- **Let it use its tools on its own:** a worker has the tool, but runs it started on its own were refused it. **Apply** turns on **Always allow its role's tools** for it.
+- **Always allow a step:** a step stopped for an OK before an outside action in 3 or more runs, and was approved in at least 80% of them. **Apply** lets it run without asking.
+
+Each suggestion says which workers and how many runs. It's about the org as it is now, so it goes by itself once its fix is in; there is nothing to dismiss. Applying one is recorded in the decision log.
 
 ## Setup → Permissions
 

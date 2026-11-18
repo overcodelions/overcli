@@ -67,7 +67,7 @@ import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, 
 import { resolveShortNames } from '../../shared/shortName';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
 import { CARRIED_LIMITS, SHARE_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
-import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
+import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_LIMITS, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
 import { OVERDB_TOOL, parseOverdbConnection } from '../../shared/overdbConnection';
 import { overapiToolName, parseApiPush } from '../../shared/overapiProject';
 import type { Attachment, Backend, UUID } from '../../shared/types';
@@ -80,7 +80,7 @@ import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTo
 import type { Discovery, SignInSummary } from './toolSignIn';
 import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
 import { argsFor, LISTEN_RULES, untrusted } from './triggers';
-import { newPullRequestLink, prFlowId as prFlowIdFor, prFlowYaml as prFlowFor, workspaceFlowId, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
+import { checkGrantWarning, newPullRequestLink, prFlowId as prFlowIdFor, prFlowYaml as prFlowFor, workspaceFlowId, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 import type { ModelProvider, SecretStatus } from './secrets/service';
 import type { ToolTrouble } from './toolHealth';
 import { HANDBOOK_MAX, WORKER_VERSIONS_KEPT } from './orgStores';
@@ -1440,6 +1440,11 @@ export function autonomousWithoutGrant(roster: Worker[]): Worker[] {
 /// The artifacts a run report shows, in this order, each clipped to REPORT_CLIP.
 const REPORT_ARTIFACTS = ['plan.md', 'pull-request.md', 'pull-requests.md', 'review.md', 'ci.md', 'pr-replies.md', 'ticket-update.md'];
 const REPORT_CLIP = 4000;
+/// An org import lets the server answer others every this many workers or teams.
+const IMPORT_YIELD_EVERY = 10;
+/// An org file stays under what an import takes (the control plane reads up
+/// to 64 MB for one), with room for its setup and processes.
+export const ORG_EXPORT_MAX_BYTES = 56_000_000;
 
 export interface RunReport {
   worker: string;
@@ -5128,9 +5133,11 @@ export class OrgService {
     // be carrying words written by anyone, and on the desktop those words
     // land in a chat with the manager's own browser and sign-ins.
     const ask = run.parentOrchestrationId ? this.allAsks().find((a) => a.orchestrationId === run.parentOrchestrationId) : undefined;
-    const managersOwn = !!ask && ask.via !== 'trigger' && !ask.untrusted && (ask.slackUserId ? ask.slackUserId === manager.slackUserId : ask.by === manager.name);
+    // By Slack id only: a name is whatever a token or sign-in was called, so
+    // anyone could go by the manager's.
+    const managersOwn = !!ask && ask.via !== 'trigger' && !ask.untrusted && !!ask.slackUserId && ask.slackUserId === manager.slackUserId;
     if (!managersOwn) {
-      const why = !ask ? 'your own schedule' : ask.via === 'trigger' ? 'a trigger or a Slack message' : `${ask.by}, not ${manager.name}`;
+      const why = !ask ? 'your own schedule' : ask.via === 'trigger' ? 'a trigger or a Slack message' : ask.slackUserId ? `${ask.by}, not ${manager.name}` : `${ask.by}, who isn’t signed in as ${manager.name}`;
       return { ok: false, error: `This work came from ${why}, so it can’t go to ${manager.name}’s desktop: only work ${manager.name} asked you for can. Say what you couldn’t do, and ${manager.name} can ask you directly.` };
     }
     const task = req.task.trim();
@@ -5157,8 +5164,10 @@ export class OrgService {
     const store = this.deps.desktopTasks;
     if (!store) return { ok: true, tasks: [] };
     if (!caller.slackUserId) return { ok: true, tasks: [] };
-    const all = tidyDesktopTasks(store.load().tasks, this.now());
-    store.save({ tasks: all });
+    const stored = store.load().tasks;
+    const all = tidyDesktopTasks(stored, this.now());
+    // A desktop asks every refresh: write only when something lapsed.
+    if (all !== stored) store.save({ tasks: all });
     return { ok: true, tasks: all.filter((t) => t.forSlackUserId === caller.slackUserId && (t.status === 'waiting' || t.status === 'claimed')).sort((a, b) => a.at - b.at) };
   }
 
@@ -5168,7 +5177,10 @@ export class OrgService {
     const all = tidyDesktopTasks(store.load().tasks, this.now());
     const task = all.find((t) => t.id === id);
     if (!task || !caller.slackUserId || task.forSlackUserId !== caller.slackUserId) return { ok: false, error: 'No task by that id for your desktop.' };
-    if (!want.includes(task.status)) return { ok: false, error: task.status === 'expired' ? 'That task lapsed: nobody picked it up within a day.' : `That task is already ${task.status}.` };
+    if (!want.includes(task.status)) {
+      const lapsed = task.claimedAt ? 'That task lapsed: it was allowed but nothing came back within three days.' : 'That task lapsed: nobody picked it up within a day.';
+      return { ok: false, error: task.status === 'expired' ? lapsed : `That task is already ${task.status}.` };
+    }
     return { ok: true, task, all };
   }
 
@@ -5199,15 +5211,22 @@ export class OrgService {
     if (!got.ok) return got;
     const text = result.trim();
     if (!text) return { ok: false, error: 'Send back what came of it.' };
-    const task = { ...got.task, status: 'done' as const, doneAt: this.now(), result: text.slice(0, MAX_DESKTOP_RESULT_CHARS) };
-    this.deps.desktopTasks!.save({ tasks: got.all.map((t) => (t.id === id ? task : t)) });
-    this.record(caller, `Sent back ${task.workerName}’s desktop task`);
-    const note = this.desktopReply(
+    const sent = text.slice(0, MAX_DESKTOP_RESULT_CHARS);
+    // Handed over first: if the worker can't take it (paused, say), the task
+    // stays open on the desktop with the text still in the box, rather than
+    // closing with the result where the worker never sees it.
+    const failed = this.desktopReply(
       caller,
-      task,
-      `${caller.name} did the task you handed to their desktop ("${task.task.slice(0, 200)}") and sent back:\n\n${task.result}\n\nCarry on with what you were doing, using this. If whoever asked you is waiting in Slack, tell them with your notify call.`,
+      got.task,
+      `${caller.name} did the task you handed to their desktop ("${got.task.task.slice(0, 200)}") and sent back:\n\n${sent}\n\nCarry on with what you were doing, using this. If whoever asked you is waiting in Slack, tell them with your notify call.`,
     );
-    return { ok: true, task, ...(note ? { note } : {}) };
+    if (failed) return { ok: false, error: `${failed} It’s still open here: send it again once ${got.task.workerName} can take it.` };
+    const task = { ...got.task, status: 'done' as const, doneAt: this.now(), result: sent };
+    // Read again: the hand-over may have taken a moment, and others' tasks moved.
+    const latest = tidyDesktopTasks(this.deps.desktopTasks!.load().tasks, this.now());
+    this.deps.desktopTasks!.save({ tasks: latest.some((t) => t.id === id) ? latest.map((t) => (t.id === id ? task : t)) : [...latest, task] });
+    this.record(caller, `Sent back ${task.workerName}’s desktop task`);
+    return { ok: true, task };
   }
 
   /// The reply to the worker, in the thread that asked. Why not, when it
@@ -7164,7 +7183,7 @@ export class OrgService {
   // ---- REPOS ------------------------------------------------------------
 
   /// Connected repos, and who works in each.
-  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string; toolchainGaps?: KitUse[]; checkTrial?: { ok?: boolean; finishedAt: number } }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; ticketStatus?: string; branchPrefix?: string; lastRefreshedAt?: number }> {
+  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string; toolchainGaps?: KitUse[]; checkTrial?: { ok?: boolean; finishedAt: number } }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; ticketStatus?: string; branchPrefix?: string; lastRefreshedAt?: number; checksWarning?: string }> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!canHire(this.policy(), caller)) return { ok: false, error: 'Only people who may hire workers can see the repos.' };
     const roster = this.deps.workers.roster();
@@ -7172,8 +7191,12 @@ export class OrgService {
     const testsOff = repos.testsOff?.();
     // What each repo builds with that its runs don't get.
     const gaps = this.deps.toolchains?.gapsByRepo?.() ?? {};
+    // Standing, not only on the save that set them: checks run the repo's
+    // own scripts, which a worker that isn't its own user can edit and run.
+    const checksWarning = checkGrantWarning(repos.list());
     return {
       ok: true,
+      ...(checksWarning ? { checksWarning } : {}),
       repos: repos.list().map((r) => {
         const tokenEnv = repos.tokenFor(r);
         const trial = repos.checkTrial?.(r.name);
@@ -7661,11 +7684,18 @@ export class OrgService {
     if (!this.deps.shareWorker) return { ok: false, error: 'Workers can’t be exported from this server.' };
     const policy = this.policy();
     const roster = this.deps.workers.roster();
+    // What an import won't take, refused here rather than there.
+    if (roster.length > ORG_BUNDLE_LIMITS.workers) return { ok: false, error: `This org has ${roster.length} workers; one org file holds ${ORG_BUNDLE_LIMITS.workers} at most. Retire the ones you don’t need, then export again.` };
     const left = new Set<string>(['Secret values: each tool’s keys are entered again on the new server.', 'Webhook addresses: each webhook trigger gets a new one there.']);
-    const workers: OrgBundleWorker[] = roster.map((w) => {
+    let bytes = 0;
+    const workers: OrgBundleWorker[] = [];
+    for (const w of roster) {
       const file = this.portableFile(w, { learned: true, journal: true, whole: true });
+      if (file.yaml.length > ORG_BUNDLE_LIMITS.workerFile) return { ok: false, error: `${w.name}’s worker file is too large to move (${Math.ceil(file.yaml.length / 1_000_000)} MB; ${ORG_BUNDLE_LIMITS.workerFile / 1_000_000} MB at most). Trim what it knows, then export again.` };
+      bytes += Buffer.byteLength(file.yaml, 'utf8');
+      if (bytes > ORG_EXPORT_MAX_BYTES) return { ok: false, error: `The org is too large for one file (over ${ORG_EXPORT_MAX_BYTES / 1_000_000} MB, mostly workers’ journals and what they know). Retire workers you don’t need, or trim what they know, then export again.` };
       for (const l of file.left) left.add(`${w.name}: ${l}`);
-      return {
+      workers.push({
         sourceId: w.id,
         yaml: file.yaml,
         trust: w.trust,
@@ -7673,8 +7703,8 @@ export class OrgService {
         ...(w.manager ? { manager: { ...w.manager } } : {}),
         ...(w.reportsTo ? { reportsTo: w.reportsTo } : {}),
         ...(w.visibility ? { visibility: w.visibility } : {}),
-      };
-    });
+      });
+    }
     const ids = new Set(roster.map((w) => w.id));
     const teams: OrgBundleTeam[] = (this.deps.teams?.list().teams ?? [])
       .filter((t) => !t.disbanded && t.members.every((m) => ids.has(m.workerId)))
@@ -7687,6 +7717,7 @@ export class OrgService {
         ...(t.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
         members: t.members.map((m) => ({ sourceId: m.workerId, role: m.role })),
       }));
+    if (teams.length > ORG_BUNDLE_LIMITS.teams) return { ok: false, error: `This org has ${teams.length} teams; one org file holds ${ORG_BUNDLE_LIMITS.teams} at most. Disband the ones you don’t need, then export again.` };
     this.record(caller, `Exported the org: ${workers.length} workers and ${teams.length} teams.`);
     return {
       ok: true,
@@ -7819,32 +7850,56 @@ export class OrgService {
   }
 
   /// Whether an org file's trust, managers and reporting lines come along.
-  /// Only a Slack workspace id that matches this server's says so on its own.
-  /// Anything else the file says about where it came from is unchecked, so
-  /// without a match it keeps trust only when the importer vouches for it
-  /// (`keepTrust`: the desktop's own move, or `--keep-trust`). A file from
-  /// another workspace's org always lands as any share does: each worker a
-  /// hire on probation managed by the admin.
+  /// Everything a file says about where it came from is the file's word,
+  /// workspace id included: anyone can write any id into one. So trust
+  /// comes along only when the admin importing it vouches for it
+  /// (`keepTrust`: the desktop's own move, the console's “This is our own
+  /// org”, or `--keep-trust`). The workspace id can only take trust away: a
+  /// file naming another workspace lands as any share does, each worker a
+  /// hire on probation managed by the admin, vouched for or not.
   private orgTrust(caller: OrgCaller, bundle: Pick<OrgBundle, 'source'>, keepTrust = false): { keeps: boolean; why: string } {
     const theirs = bundle.source.slackTeamId;
     const ours = this.policy().slackTeamId;
     if (theirs && ours && theirs !== ours) {
       return { keeps: false, why: 'It comes from another Slack workspace’s org, so each worker starts on probation with you as its manager.' };
     }
-    if (theirs && ours) return { keeps: true, why: 'Same Slack workspace: trust, managers and who reports to whom come along.' };
-    if (keepTrust) return { keeps: true, why: `${bundle.source.kind === 'desktop' ? 'From an overcli app' : 'From a server that can’t be matched by Slack workspace'}, moved by ${caller.name}, an admin here: trust and reporting lines come along.` };
+    if (keepTrust) {
+      const from = theirs && ours ? 'From this Slack workspace' : bundle.source.kind === 'desktop' ? 'From an overcli app' : 'From a server that can’t be matched by Slack workspace';
+      return { keeps: true, why: `${from}, vouched for by ${caller.name}, an admin here: trust, managers and who reports to whom come along.` };
+    }
+    if (theirs && ours) return { keeps: false, why: 'The file says it’s from this Slack workspace, but a file can say anything, so each worker starts on probation with you as its manager, and its rules stay out. If it’s an export of your own org, vouch for it: tick “This is our own org”, or pass --keep-trust.' };
     return { keeps: false, why: 'Nothing in the file shows it is from this org, so each worker starts on probation with you as its manager, and its rules stay out. If it is your own org, vouch for it: tick “This is our own org”, or pass --keep-trust.' };
   }
 
   /// An org file onto this server, for an admin. Workers it already took
   /// (by their id where they came from) are left as they are, so importing
-  /// again is safe. Workers land paused unless `start`: the old copy is
+  /// again is safe, but for what an earlier run couldn't set (see
+  /// `repairLanded`). Workers land paused unless `start`: the old copy is
   /// likely still running. `dryRun` writes nothing and says what would land.
-  importOrg(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {}): Result<{ report: OrgImportReport }> {
+  /// Up to 500 workers: it stops every few to let the server answer others.
+  async importOrg(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {}): Promise<Result<{ report: OrgImportReport }>> {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can import an org.' };
     if (!this.deps.importWorker) return { ok: false, error: 'This server cannot take published workers.' };
     if (bundle.teams.length && !this.deps.teams?.save) return { ok: false, error: 'Teams are not running on this server.' };
+    if (opts.dryRun) return this.importOrgNow(caller, bundle, opts);
+    // Two at once would each find a worker not here yet, and hire it twice.
+    if (this.importingOrg) return { ok: false, error: 'An org import is already running on this server. Wait for it to finish, then run this one again.' };
+    this.importingOrg = true;
+    try {
+      return await this.importOrgNow(caller, bundle, opts);
+    } finally {
+      this.importingOrg = false;
+    }
+  }
+
+  private importingOrg = false;
+
+  private async importOrgNow(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean }): Promise<Result<{ report: OrgImportReport }>> {
     const dryRun = !!opts.dryRun;
+    let n = 0;
+    const breathe = async () => {
+      if (++n % IMPORT_YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r));
+    };
     const trust = this.orgTrust(caller, bundle, !!opts.keepTrust);
     const policy = this.policy();
     const me: WorkerManager = { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
@@ -7855,6 +7910,7 @@ export class OrgService {
     const placed = new Map<string, UUID | 'planned'>();
 
     for (const bw of bundle.workers) {
+      await breathe();
       const parsed = parseWorkerYaml(bw.yaml);
       const name = parsed.ok ? parsed.bundle.worker.name : bw.sourceId;
       // A manager is someone here only by their Slack id in the same workspace.
@@ -7865,8 +7921,10 @@ export class OrgService {
       report.workers.push(row);
       const here = this.publishedWorker(bw.sourceId);
       if (here) {
-        Object.assign(row, { status: 'alreadyHere', id: here, trust: this.deps.workers.get(here)?.trust ?? landingTrust, paused: !this.deps.workers.get(here)?.enabled });
+        const cur = this.deps.workers.get(here);
+        Object.assign(row, { status: 'alreadyHere', id: here, trust: cur?.trust ?? landingTrust, manager: cur?.manager?.name ?? manager.name, paused: !cur?.enabled });
         placed.set(bw.sourceId, here);
+        if (trust.keeps && cur) this.repairLanded(cur, bw, me, row, dryRun);
         continue;
       }
       if (!parsed.ok) {
@@ -7937,7 +7995,8 @@ export class OrgService {
         if (!bw.reportsTo || !id || row.status === 'failed') continue;
         const now = id === 'planned' ? undefined : this.deps.workers.get(id);
         const repair = row.status === 'alreadyHere';
-        if (repair && (!now || now.reportsTo)) continue;
+        // A line to a worker no longer here is as good as none.
+        if (repair && (!now || (now.reportsTo && this.deps.workers.get(now.reportsTo)))) continue;
         if (!boss) {
           row.notes.push('Its manager worker didn’t come, so it reports to nobody.');
           continue;
@@ -7949,6 +8008,7 @@ export class OrgService {
     }
 
     for (const t of bundle.teams) {
+      await breathe();
       const missing = t.members.filter((m) => !placed.has(m.sourceId));
       if (missing.length || !t.members.length) {
         report.teams.push({ name: t.name, status: 'failed', error: t.members.length ? `${missing.length} of its members didn’t come.` : 'It has no members.' });
@@ -7980,6 +8040,32 @@ export class OrgService {
       this.record(caller, `Imported ${added} worker${added === 1 ? '' : 's'} and ${report.teams.filter((t) => t.status !== 'failed').length} teams from ${bundle.source.org ?? (bundle.source.kind === 'desktop' ? 'an overcli app' : 'another server')}.`);
     }
     return { ok: true, report };
+  }
+
+  /// A worker an earlier import landed, when this one keeps trust: an earlier
+  /// run the admin didn't vouch for landed it on probation under them. If it
+  /// is still exactly that, it takes the file's trust and manager now. If it
+  /// is on probation for any other reason (someone moved it there by hand,
+  /// say), it is left alone and the report says so. Run again, nothing more
+  /// changes.
+  private repairLanded(cur: Worker, bw: OrgBundleWorker, me: WorkerManager, row: OrgImportReport['workers'][number], dryRun: boolean): void {
+    if (cur.trust !== 'probation' || bw.trust === 'probation') return;
+    const isMe = (m?: WorkerManager) => !!m && (me.slackUserId ? m.slackUserId === me.slackUserId : !m.slackUserId && m.name === me.name);
+    const theirs = bw.manager?.slackUserId ? bw.manager : undefined;
+    if (!theirs || isMe(theirs) || !isMe(cur.manager)) {
+      row.notes.push(`It’s on probation here, ${bw.trust} in the file. If that’s right, raise it on its page.`);
+      return;
+    }
+    if (dryRun) {
+      Object.assign(row, { trust: bw.trust, manager: theirs.name });
+      row.notes.push('An earlier import landed it on probation under you: its trust and manager from the file would be set.');
+      return;
+    }
+    this.deps.workers.save({ ...structuredClone(cur), manager: { ...theirs } });
+    row.manager = theirs.name;
+    const set = this.applyTrust(cur.id, bw.trust);
+    if (set.ok) row.trust = bw.trust;
+    row.notes.push(set.ok ? 'An earlier import landed it on probation under you: its trust and manager from the file are set now.' : `Its manager is set now; its trust didn’t come: ${set.error}`);
   }
 
   /// An exported worker's setup, onto the worker it landed as: scopes no

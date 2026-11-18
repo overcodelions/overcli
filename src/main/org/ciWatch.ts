@@ -124,6 +124,26 @@ const tail = (s: string, n = LOG_TAIL) => (s.length > n ? `…${s.slice(-n)}` : 
 /// and warnings, and the one line that matters can sit far above it.
 const FLAGGED = /(?:^|[\s[])(?:ERROR|FAILED|FAIL)(?:[\]:]|\s|$)|\berror TS\d+|\berror:|\bError:/;
 const FLAGGED_MAX = 30;
+/// The most of an unfinished line held between chunks. A log that never
+/// writes a newline (a progress bar redrawn with `\r`, a minified dump) would
+/// otherwise grow it without bound and re-split all of it on every chunk.
+export const PARTIAL_MAX = 64 * 1024;
+
+/// Cut streamed text into lines, handing each finished one to `onLine`. What
+/// is left of a line still arriving is held, but only its last `max`
+/// characters: a line that long is no one's error message.
+export function lineSplitter(onLine: (line: string) => void, max = PARTIAL_MAX): { push: (text: string, final?: boolean) => void; held: () => number } {
+  let partial = '';
+  return {
+    push(text, final = false) {
+      const lines = (partial + text).split('\n');
+      partial = final ? '' : lines.pop() ?? '';
+      if (partial.length > max) partial = partial.slice(-max);
+      for (const line of lines) onLine(line);
+    },
+    held: () => partial.length,
+  };
+}
 
 /// The flagged lines of a log the tail doesn't already show, at most FLAGGED_MAX.
 function flaggedAbove(lines: string[], shown: string): string[] {
@@ -197,12 +217,9 @@ async function getTail(fetchImpl: Fetch, url: string, headers: Record<string, st
   // Lines that say what failed, from anywhere in the log: kept as it streams,
   // since the tail alone can start after the one that matters.
   const flagged: string[] = [];
-  let partial = '';
-  const scan = (text: string, final = false) => {
-    const lines = (partial + text).split('\n');
-    partial = final ? '' : lines.pop() ?? '';
-    for (const line of lines) if (flagged.length < FLAGGED_MAX * 4 && FLAGGED.test(line)) flagged.push(line);
-  };
+  const { push: scan } = lineSplitter((line) => {
+    if (flagged.length < FLAGGED_MAX * 4 && FLAGGED.test(line)) flagged.push(line);
+  });
   const withFlagged = (end: string) => {
     const above = flaggedAbove(flagged, end);
     return above.length ? `Lines that say what failed, from the whole log:\n${above.join('\n')}\n\n${end}` : end;

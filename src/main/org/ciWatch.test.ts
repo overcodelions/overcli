@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CiWatcher, FIX_ASK_MS, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
+import { CiWatcher, FIX_ASK_MS, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, lineSplitter, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
 import type { ConnectedRepo } from './repos';
 
 const bb: ConnectedRepo = { name: 'billing', url: 'https://bitbucket.org/acme/billing.git', path: '/data/repos/billing', defaultBranch: 'main', host: 'bitbucket', addedBy: 'Pat', at: 1 };
@@ -400,5 +400,29 @@ describe('the store and the log', () => {
     expect(prompt).toContain('FAILED: the last line');
     expect(prompt).toContain('…');
     expect(prompt.length).toBeLessThan(20_000);
+  });
+});
+
+describe('lineSplitter', () => {
+  it('hands over whole lines across chunks', () => {
+    const seen: string[] = [];
+    const split = lineSplitter((l) => seen.push(l));
+    split.push('comp');
+    split.push('iling\nERROR: bro');
+    expect(seen).toEqual(['compiling']);
+    split.push('ken\ntail');
+    expect(seen).toEqual(['compiling', 'ERROR: broken']);
+    split.push('', true);
+    expect(seen).toEqual(['compiling', 'ERROR: broken', 'tail']);
+  });
+
+  it('holds no more than its cap of a line that never ends, and still reads the next one', () => {
+    const seen: string[] = [];
+    const split = lineSplitter((l) => seen.push(l), 1024);
+    for (let i = 0; i < 100; i++) split.push('#'.repeat(500));
+    expect(split.held()).toBeLessThanOrEqual(1024);
+    split.push('\nERROR: acme build broke\n');
+    expect(seen[seen.length - 1]).toBe('ERROR: acme build broke');
+    expect(seen[0].length).toBeLessThanOrEqual(1024);
   });
 });

@@ -236,34 +236,122 @@ function prunedLogPath(): string {
   return path.join(host().dataDir(), 'worker-batches.jsonl');
 }
 
-function appendPrunedBatches(records: PrunedWorkerBatch[]): void {
-  if (!records.length) return;
+/// The parsed log, kept between calls: `loadPrunedBatches` runs on every
+/// worker report, and the file only ever grows. Valid while the file's size
+/// and mtime are what they were when it was read (or last appended to here),
+/// so an edit from outside is still picked up.
+interface PrunedCache {
+  file: string;
+  size: number;
+  mtimeMs: number;
+  byId: Map<string, PrunedWorkerBatch>;
+  list: PrunedWorkerBatch[] | null;
+}
+let prunedCache: PrunedCache | null = null;
+
+/// Rewrite the log deduped once it holds this many times more lines than
+/// batches, and at least `COMPACT_MIN_LINES` of them.
+const COMPACT_RATIO = 2;
+const COMPACT_MIN_LINES = 200;
+
+function statOf(file: string): { size: number; mtimeMs: number } | null {
   try {
-    fs.appendFileSync(prunedLogPath(), records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    const st = fs.statSync(file);
+    return { size: st.size, mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function cacheFresh(file: string, st: { size: number; mtimeMs: number } | null): boolean {
+  return !!prunedCache && !!st && prunedCache.file === file && prunedCache.size === st.size && prunedCache.mtimeMs === st.mtimeMs;
+}
+
+/// Append records to the all-time log. Exported for tests.
+export function appendPrunedBatches(records: PrunedWorkerBatch[]): void {
+  if (!records.length) return;
+  const file = prunedLogPath();
+  const fresh = cacheFresh(file, statOf(file));
+  const payload = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  try {
+    fs.appendFileSync(file, payload, 'utf8');
   } catch (err) {
     log('warn', 'orchestrations', `Failed to log pruned batches: ${String(err)}`);
+    prunedCache = null;
+    return;
+  }
+  // Our own append: fold it into the cache rather than reading it all back,
+  // as long as the file grew by exactly what we wrote.
+  const st = statOf(file);
+  if (fresh && prunedCache && st && st.size === prunedCache.size + Buffer.byteLength(payload, 'utf8')) {
+    for (const r of records) prunedCache.byId.set(r.id, r);
+    prunedCache.list = null;
+    prunedCache.size = st.size;
+    prunedCache.mtimeMs = st.mtimeMs;
+  } else {
+    prunedCache = null;
   }
 }
 
 /// Every worker batch ever pruned, one per id (the last line wins).
 export function loadPrunedBatches(): PrunedWorkerBatch[] {
-  let raw = '';
-  try {
-    raw = fs.readFileSync(prunedLogPath(), 'utf8');
-  } catch {
+  const file = prunedLogPath();
+  const st = statOf(file);
+  if (!st) {
+    prunedCache = null;
     return [];
   }
-  const byId = new Map<string, PrunedWorkerBatch>();
-  for (const line of raw.split('\n')) {
-    if (!line) continue;
+  if (!cacheFresh(file, st)) {
+    let raw = '';
     try {
-      const r = JSON.parse(line) as PrunedWorkerBatch;
-      if (r && typeof r.id === 'string' && typeof r.workerId === 'string' && Array.isArray(r.items)) byId.set(r.id, r);
+      raw = fs.readFileSync(file, 'utf8');
     } catch {
-      // a torn line from a crash mid-append: skip it
+      prunedCache = null;
+      return [];
     }
+    const byId = new Map<string, PrunedWorkerBatch>();
+    let lines = 0;
+    for (const line of raw.split('\n')) {
+      if (!line) continue;
+      lines++;
+      try {
+        const r = JSON.parse(line) as PrunedWorkerBatch;
+        if (r && typeof r.id === 'string' && typeof r.workerId === 'string' && Array.isArray(r.items)) byId.set(r.id, r);
+      } catch {
+        // a torn line from a crash mid-append: skip it
+      }
+    }
+    let size = st.size;
+    let mtimeMs = st.mtimeMs;
+    if (lines >= COMPACT_MIN_LINES && lines > byId.size * COMPACT_RATIO) {
+      const compacted = compactPrunedLog(file, byId);
+      if (compacted) ({ size, mtimeMs } = compacted);
+    }
+    prunedCache = { file, size, mtimeMs, byId, list: null };
   }
-  return [...byId.values()];
+  const cache = prunedCache!;
+  cache.list ??= [...cache.byId.values()];
+  return [...cache.list];
+}
+
+/// Rewrite the log with one line per batch, atomically. Nothing is lost: the
+/// last line per id is the one that counts, and that is the one kept.
+function compactPrunedLog(file: string, byId: Map<string, PrunedWorkerBatch>): { size: number; mtimeMs: number } | null {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    const body = [...byId.values()].map((r) => JSON.stringify(r)).join('\n');
+    fs.writeFileSync(tmp, body ? body + '\n' : '', 'utf8');
+    fs.renameSync(tmp, file);
+    return statOf(file);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // best-effort
+    }
+    log('warn', 'orchestrations', `Failed to compact the pruned batch log: ${String(err)}`);
+    return null;
+  }
 }
 
 export function deleteOrchestration(id: string): void {

@@ -22,6 +22,7 @@ import path from 'node:path';
 import { stripSecrets } from './secrets';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 import { DEFAULT_PR_MODE, PR_MODES, type PrMode } from './prOpen';
+import { activeWorkerUser } from './workerUser';
 
 export type RepoHost = 'github' | 'bitbucket' | 'other';
 
@@ -74,6 +75,25 @@ export function checkRepoChecks(input: { setup?: string; checks?: string[] }): R
     return { ok: false, error: 'No version manager is needed: the server puts the version the repo asks for (.nvmrc and the like) on PATH. Install it on Setup → Toolchains.' };
   }
   return { ok: true, ...(setup.command ? { setup: setup.command } : {}), checks };
+}
+
+/// Why a repo's checks are a risk on this server, or undefined when they
+/// aren't. A check grant (`Bash(npm test:*)`) sits beside Edit and Write in
+/// acceptEdits mode, and the command it names runs what the repo says it
+/// runs: a worker steered by something it read can edit the test script,
+/// then run it. Its environment has no stored secrets (stripSecrets, as for
+/// setup), but without OVERCLI_WORKER_UID it runs as the server's own user,
+/// which can read the data directory. The checks still work; the admin
+/// should know, and isolate workers.
+export function checkGrantWarning(repos: Array<Pick<ConnectedRepo, 'checks'>>, isolated: boolean = !!activeWorkerUser()): string | undefined {
+  const checks = [...new Set(repos.flatMap((r) => r.checks ?? []))];
+  if (!checks.length || isolated) return undefined;
+  return (
+    `Workers run as the server's own user here, and a worker allowed to edit files and run ${checks.join(', ')} ` +
+    'can change what that command runs (a package.json script, a Makefile target) and run it, so a worker misled by ' +
+    'something it read could run any code as the server and read its data directory. Its environment carries no stored ' +
+    'secrets. Set OVERCLI_WORKER_UID to run workers as a user of their own (deploy/docs/security.md).'
+  );
 }
 
 /// The grants a repo's checks become.
@@ -158,6 +178,9 @@ export interface RepoDeps {
   /// store so runs fork a worktree per repo. Null removes it.
   registerWorkspace(ws: { id: string; name: string; repos: Array<{ name: string; path: string }>; instructions?: string } | { id: string; remove: true }): { ok: true; rootPath: string } | { ok: false; error: string };
   env(name: string): string | undefined;
+  /// Whether workers run as a user of their own (OVERCLI_WORKER_UID).
+  /// Absent: whether this process turned that on.
+  workersIsolated?(): boolean;
   log?(message: string): void;
   now?(): number;
 }
@@ -430,7 +453,8 @@ export class RepoService {
   }
 
   /// A repo's setup and checks. Both replace what was there; empty clears.
-  setChecks(name: string, input: { setup?: string; checks?: string[] }): Result<{ repo: ConnectedRepo }> {
+  /// `warning`: the checks are set, but workers aren't isolated (checkGrantWarning).
+  setChecks(name: string, input: { setup?: string; checks?: string[] }): Result<{ repo: ConnectedRepo; warning?: string }> {
     const repo = this.get(name);
     if (!repo) return { ok: false, error: `No connected repo is called ${name}.` };
     const checked = checkRepoChecks(input);
@@ -438,7 +462,8 @@ export class RepoService {
     const { setup: _s, checks: _c, ...rest } = repo;
     const next: ConnectedRepo = { ...rest, ...(checked.setup ? { setup: checked.setup } : {}), ...(checked.checks.length ? { checks: checked.checks } : {}) };
     this.save({ repos: this.list().map((r) => (r.name === name ? next : r)) });
-    return { ok: true, repo: next };
+    const warning = checkGrantWarning([next], this.deps.workersIsolated?.());
+    return { ok: true, repo: next, ...(warning ? { warning } : {}) };
   }
 
   /// Forget a repo. The clone stays on disk until someone deletes it: a
@@ -653,8 +678,9 @@ function pullRequestStep(inputs: string, what: string): string[] {
 /// push a branch and hand back the link to open a pull request. The push is
 /// external, so it waits for a yes until the worker is trusted with it; the
 /// clone's pre-push hook runs the repo's tests and refuses a failing push.
-export function prFlowYaml(repo: ConnectedRepo): string {
+export function prFlowYaml(repo: ConnectedRepo, opts: { isolated?: boolean } = {}): string {
   const test = repo.testCommand;
+  const warning = checkGrantWarning([repo], opts.isolated);
   return [
     `name: Change ${repo.name} and push a branch`,
     'description: |',
@@ -676,6 +702,7 @@ export function prFlowYaml(repo: ConnectedRepo): string {
       'say exactly what is missing instead of planning.',
     ]),
     '    output: plan.md',
+    ...warningComment(warning),
     '  - id: build',
     `    model: { backend: claude, model: ${WORK_MODEL} }`,
     '    role: implementer',
@@ -695,6 +722,21 @@ export function prFlowYaml(repo: ConnectedRepo): string {
   ].join('\n');
 }
 
+/// A warning as YAML comment lines above the step it is about, wrapped.
+function warningComment(warning: string | undefined): string[] {
+  if (!warning) return [];
+  const lines: string[] = [];
+  let line = '';
+  for (const word of `Warning: ${warning}`.split(' ')) {
+    if (line && line.length + word.length + 1 > 96) {
+      lines.push(`  # ${line}`);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(`  # ${line}`);
+  return lines;
+}
+
 export function prFlowId(repo: Pick<ConnectedRepo, 'name'>): string {
   return `org-pr-${repo.name}`;
 }
@@ -704,8 +746,9 @@ export function prFlowId(repo: Pick<ConnectedRepo, 'name'>): string {
 /// folder and named after the repos. It plans across them, changes them, then
 /// pushes a branch in every repo it changed — git runs each repo's tests
 /// first — and hands back one link per repo to open its pull request.
-export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): string {
+export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[], opts: { isolated?: boolean } = {}): string {
   const members = ws.repos.map((n) => repos.find((r) => r.name === n)).filter((r): r is ConnectedRepo => !!r);
+  const warning = checkGrantWarning(members, opts.isolated);
   const layout = members.map((r) => `- ${r.name}/: ${r.url}, pull requests against ${r.defaultBranch}${r.testCommand ? `, tests: ${r.testCommand}` : ''}${r.checks?.length ? `, checks: ${r.checks.join(', ')}` : ''}`);
   const git = workspaceGitTools(members.map((r) => r.name));
   const checked = members.filter((r) => r.checks?.length);
@@ -739,6 +782,7 @@ export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): str
       'instead of planning.',
     ]),
     '    output: plan.md',
+    ...warningComment(warning),
     '  - id: build',
     `    model: { backend: claude, model: ${WORK_MODEL} }`,
     '    role: implementer',

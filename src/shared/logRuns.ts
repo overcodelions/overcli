@@ -113,3 +113,20 @@ export function splitRuns(lines: readonly string[]): Run[] {
   }
   return runs;
 }
+
+/// A name for each run that survives the log being trimmed from the front.
+/// Line indices shift every time the pane drops its oldest lines, so a run
+/// remembered by index would close, or a different one would open. The start
+/// marker carries the time, ref, cwd and command, which is as good as unique;
+/// the occurrence count separates two identical starts in the same second.
+/// Output before any marker is the head run, keyed on its own.
+export function runKeys(lines: readonly string[], runs: readonly Run[]): string[] {
+  const seen = new Map<string, number>();
+  return runs.map((run) => {
+    if (!run.start) return 'head';
+    const text = lines[run.from];
+    const n = seen.get(text) ?? 0;
+    seen.set(text, n + 1);
+    return `${n}:${text}`;
+  });
+}

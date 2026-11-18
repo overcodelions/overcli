@@ -152,6 +152,29 @@ describe('cleaning up finished runs’ checkouts', () => {
     expect(fs.existsSync(recent)).toBe(true);
   }, 30_000);
 
+  it('remembers a folder git cannot read, so a pile of them cannot starve the real orphans', async () => {
+    const r = repo();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-root-'));
+    // More broken `.git`s than one pass looks at, all ahead of the real one.
+    for (let i = 0; i < 160; i++) {
+      const bad = path.join(root, 'a-broken', `acme-${String(i).padStart(3, '0')}`);
+      fs.mkdirSync(bad, { recursive: true });
+      fs.writeFileSync(path.join(bad, '.git'), 'gitdir: /nowhere/acme\n');
+    }
+    fs.mkdirSync(path.join(root, 'b-main'));
+    const clean = path.join(root, 'b-main', 'clean');
+    git(r.main, 'worktree', 'add', '-q', '-b', 'run/clean', clean, r.base);
+    untouchedFor(clean, TOUCHED_KEEP_MS + 60_000);
+    const now = Date.now();
+    // Where the folders list in order, the first pass spends its whole budget
+    // on the broken ones; the next must skip them as remembered and reach the
+    // real orphan. (Listing order is the file system's, so only the end state
+    // is asserted.)
+    await sweepWorktrees([], () => undefined, now, root);
+    await sweepWorktrees([], () => undefined, now, root);
+    expect(fs.existsSync(clean)).toBe(false);
+  }, 60_000);
+
   it("leaves a checkout alone when a newer run has taken over its folder", async () => {
     const r = repo();
     // The old run pushed long ago and its checkout went; a new run on the

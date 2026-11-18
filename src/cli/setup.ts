@@ -116,8 +116,13 @@ async function orgExportCommand(opts: OrgOptions, deps: { out: (line: string) =>
     return EXIT.RUN_FAILED;
   }
   const file = opts.file ?? res.filename;
-  // Its journals and job descriptions are the org's own: readable by this user only.
-  fs.writeFileSync(file, JSON.stringify(res.bundle, null, 2), { mode: 0o600 });
+  try {
+    // Its journals and job descriptions are the org's own: readable by this user only.
+    fs.writeFileSync(file, JSON.stringify(res.bundle, null, 2), { mode: 0o600 });
+  } catch (err) {
+    deps.err(`Could not write ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    return EXIT.RUN_FAILED;
+  }
   const { workers, teams, processes } = res.bundle;
   deps.out(`Wrote ${file}: ${workers.length} workers, ${teams.length} teams, ${processes.length} processes.`);
   deps.out('Not in it:');
@@ -151,7 +156,9 @@ async function orgImportCommand(opts: OrgOptions, deps: { out: (line: string) =>
   for (const line of describeImport(res.report)) deps.out(line);
   if (opts.dryRun) deps.out('\nLooks right? Run it again without --dry-run.');
   const r = res.report;
-  const failed = r.workers.some((w) => w.status === 'failed') || r.teams.some((t) => t.status === 'failed') || r.processes.some((p) => p.status === 'failed');
+  // Anything that didn't land is a failed run, setup included, so a script
+  // moving the org stops rather than carrying on short.
+  const failed = [...r.workers, ...r.teams, ...r.processes, ...r.setup].some((x) => x.status === 'failed');
   return failed ? EXIT.RUN_FAILED : EXIT.OK;
 }
 

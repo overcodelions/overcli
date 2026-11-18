@@ -17510,9 +17510,12 @@ export const CONSOLE_JS = String.raw`
               var restore = busy(e.target, andTry ? 'Starting…' : 'Saving…');
               api('POST', checksUrl, { setup: setup.value, checks: checks.value.split('\n') }).then(function (x) {
                 said.textContent = '';
+                // Saved, but workers aren't a user of their own: say what that
+                // risks, and leave it on screen rather than redraw over it.
+                if (x.ok !== false && x.warning) said.appendChild(h('div', { class: 'msg warn', role: 'alert', text: x.warning }));
                 if (x.ok === false || !andTry) {
                   restore(); said.appendChild(msg(x, 'Saved. The next run uses it.'));
-                  if (x.ok !== false) setTimeout(render, 900);
+                  if (x.ok !== false && !x.warning) setTimeout(render, 900);
                   return;
                 }
                 api('POST', checksUrl + '/try', {}).then(function (y) {
@@ -17541,7 +17544,7 @@ export const CONSOLE_JS = String.raw`
         // for but isn't installed, Gradle with no wrapper. Admins install
         // the version it asks for from here.
         var gapTags = (repo.toolchainGaps || []).map(function (g) {
-          var label = (g.got ? 'Asks ' : 'Needs ') + g.label + (g.asked ? ' ' + g.asked : '');
+          var label = (g.got ? 'Asks ' : 'Needs ') + g.label + (g.range || g.asked ? ' ' + (g.range || g.asked) : '');
           if (!admin || !g.install) return h('span', { class: 'tag bad', text: label, title: g.gap + '.' + (admin ? '' : ' An admin installs it on Setup → Toolchains.') });
           return h('button', { class: 'tag bad', style: 'cursor:pointer', text: label + ' · Install', title: g.gap + '.', onclick: function (e) {
             var restore = busy(e.target, 'Starting…');
@@ -17658,6 +17661,7 @@ export const CONSOLE_JS = String.raw`
       })() : null;
       if (tab === 'workspaces') return [top, tabs].concat(workspacesSection(repos, spaces, workers, admin, function () { state.reposTab = 'repos'; render(); }));
       return [top, tabs, listHead, shipPanel, connect, data.testsOff && repos.some(function (x) { return x.testCommand; }) ? h('div', { class: 'msg err', text: 'Repos with a test command push nothing yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
+        data.checksWarning ? h('div', { class: 'msg warn', role: 'alert', text: data.checksWarning }) : null,
         selBar, table];
     });
   }
@@ -18074,7 +18078,7 @@ export const CONSOLE_JS = String.raw`
               return h('tr', null, h('td', null, h('b', { text: r.name })), usedKits.map(function (k) {
                 var ready = readyOf(k.id), asks = r.asks[k.id], gap = gapOf(r, k.id);
                 if (!ready.length) {
-                  return h('td', null, gap ? h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, h('span', { class: 'tag bad', text: 'Needs ' + k.label + (gap.asked ? ' ' + gap.asked : ''), title: gap.gap + '.' }), installGap(gap)) : h('span', { class: 'faint', text: '—' }));
+                  return h('td', null, gap ? h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, h('span', { class: 'tag bad', text: 'Needs ' + k.label + (gap.range || gap.asked ? ' ' + (gap.range || gap.asked) : ''), title: gap.gap + '.' }), installGap(gap)) : h('span', { class: 'faint', text: '—' }));
                 }
                 var auto = asks && ready.indexOf(asks) >= 0 ? 'As the repo asks (' + k.label + ' ' + asks + ')'
                   : 'Default (' + k.label + ' ' + data.defaults[k.id] + ')' + (asks ? ' · repo asks ' + asks + ', not installed' : '');

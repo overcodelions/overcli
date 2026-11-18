@@ -228,6 +228,40 @@ export class BranchLander {
     const there = await git(['for-each-ref', '--contains', 'HEAD', '--format=%(refname:short)', 'refs/remotes/origin']);
     const pushedAs = there.ok ? there.stdout.split('\n').map((s) => s.trim()).filter((b) => b && b !== `origin/${base}` && b !== 'origin/HEAD')[0] : undefined;
     if (pushedAs) return { repo: place.name, branch: pushedAs.replace(/^origin\//, ''), ...(repo && newPullRequestLink(repo, pushedAs.replace(/^origin\//, '')) ? { url: newPullRequestLink(repo, pushedAs.replace(/^origin\//, ''))! } : {}) };
+    // Started on a branch this server pushed, to add to it (a CI fix, a
+    // follow-up for the same ticket): the new commits go on that branch, so
+    // its pull request has them. Only that one: a run whose checkout merely
+    // sits on someone else's commits gets a branch of its own, or its work
+    // lands in another ticket's pull request. Never forced: if the branch has
+    // moved, or this repo doesn't have it, a branch of its own.
+    // Where this repo has that branch, the run's work goes there or nowhere:
+    // a branch of its own would open a second pull request against the
+    // default branch, carrying the whole feature, whose CI then fails on
+    // things this run never touched. Behind it (it moved, or the checkout
+    // started short of it), its commits are merged in first, before the
+    // marker check and the tests, so the tree that's pushed is the tree that
+    // was tested. A merge that fails leaves it unpushed, and says why.
+    let onto: string | undefined;
+    if (continues) {
+      const theirs = `refs/remotes/origin/${continues}`;
+      await git(['fetch', '--quiet', 'origin', `+refs/heads/${continues}:${theirs}`]);
+      const has = await git(['rev-parse', '--verify', '--quiet', `${theirs}^{commit}`]);
+      if (has.ok) {
+        onto = continues;
+        const on = await git(['merge-base', '--is-ancestor', theirs, 'HEAD']);
+        if (!on.ok) {
+          const merged = await git(['merge', '--no-edit', '--no-ff', '-m', `Merge ${continues} into ${title}`, theirs]);
+          if (!merged.ok) {
+            // Read before the abort clears them: unmerged paths mean a real conflict.
+            const unmerged = await git(['diff', '--name-only', '--diff-filter=U']);
+            const files = unmerged.ok ? unmerged.stdout.split('\n').map((f) => f.trim()).filter(Boolean) : [];
+            await git(['merge', '--abort']);
+            if (files.length) return { repo: place.name, skipped: `${continues} has commits this run's checkout lacks, and they conflict with its change in ${files.join(', ')}, so nothing was pushed (and no second pull request opened)` };
+            return { repo: place.name, skipped: `couldn't merge ${continues}'s newer commits into this run's change, so nothing was pushed (and no second pull request opened): ${merged.error.trim().slice(-300)}` };
+          }
+        }
+      }
+    }
     // A conflict the run left half-resolved: its markers would go out as code.
     if (baseline) {
       // Only files whose change touches a marker-shaped line: a merge can bring in a lot.
@@ -240,35 +274,10 @@ export class BranchLander {
       if (!tested.ok && tested.refused) return { repo: place.name, skipped: `repo tests are turned off on this server, so nothing was pushed. ${tested.error}` };
       if (!tested.ok) return { repo: place.name, skipped: `its tests failed, so nothing was pushed:\n${tested.error.slice(-1500)}` };
     }
-    // Started on a branch this server pushed, to add to it (a CI fix, a
-    // follow-up for the same ticket): the new commits go on that branch, so
-    // its pull request has them. Only that one: a run whose checkout merely
-    // sits on someone else's commits gets a branch of its own, or its work
-    // lands in another ticket's pull request. Never forced: if the branch has
-    // moved, or this repo doesn't have it, a branch of its own.
-    // Where this repo has that branch, the run's work goes there or nowhere:
-    // a branch of its own would open a second pull request against the
-    // default branch, carrying the whole feature, whose CI then fails on
-    // things this run never touched. Behind it (it moved, or the checkout
-    // started short of it), its commits are merged in first; only a merge
-    // that conflicts leaves it unpushed, and says so.
-    if (continues) {
-      const theirs = `refs/remotes/origin/${continues}`;
-      await git(['fetch', '--quiet', 'origin', `+refs/heads/${continues}:${theirs}`]);
-      const has = await git(['rev-parse', '--verify', '--quiet', `${theirs}^{commit}`]);
-      if (has.ok) {
-        const on = await git(['merge-base', '--is-ancestor', theirs, 'HEAD']);
-        if (!on.ok) {
-          const merged = await git(['merge', '--no-edit', '--no-ff', '-m', `Merge ${continues} into ${title}`, theirs]);
-          if (!merged.ok) {
-            await git(['merge', '--abort']);
-            return { repo: place.name, skipped: `${continues} has commits this run's checkout lacks, and they conflict with its change, so nothing was pushed (and no second pull request opened)` };
-          }
-        }
-        const added = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${continues}`]);
-        if (added.ok) return { repo: place.name, branch: continues, updated: true };
-        return { repo: place.name, skipped: `couldn't add to ${continues}, so nothing was pushed (and no second pull request opened): ${added.error.slice(-300)}` };
-      }
+    if (onto) {
+      const added = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${onto}`]);
+      if (added.ok) return { repo: place.name, branch: onto, updated: true };
+      return { repo: place.name, skipped: `couldn't add to ${onto}, so nothing was pushed (and no second pull request opened): ${added.error.slice(-300)}` };
     }
     const pushed = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`]);
     if (!pushed.ok) return { repo: place.name, error: pushed.error.slice(-800) };

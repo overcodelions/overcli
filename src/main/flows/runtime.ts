@@ -231,6 +231,34 @@ export interface FlowRuntimeStartArgs {
 
 /// What a policy refusal tells the model. Without the second half it retried
 /// the same call, then wrote up the work as blocked by file permissions.
+/// A repo's names as its origin's address gives them, lower-cased: `app` and
+/// `acme/app` for https://github.com/acme/app.git or git@github.com:acme/app.git.
+export function remoteRepoKeys(remote: string | undefined): string[] {
+  const parts = (remote ?? '').trim().replace(/\.git\/?$/, '').replace(/\/+$/, '').split(/[/:]/).filter(Boolean);
+  if (!parts.length) return [];
+  const last = parts[parts.length - 1].toLowerCase();
+  return parts.length > 1 ? [last, `${parts[parts.length - 2]}/${parts[parts.length - 1]}`.toLowerCase()] : [last];
+}
+
+/// The places a continued run merges the default branch into: those of the
+/// pull request's repos (`mergeRepos`, as the host names them), matched on
+/// the place's name, its clone's folder, or its origin's address. None
+/// matching is a naming mismatch, not "no repo": then every place, so the
+/// merge isn't silently skipped.
+export function scopeMergePlaces<P extends { name: string; projectPath: string; remote?: string }>(
+  places: P[],
+  mergeRepos: string[] | undefined,
+): { scoped: P[]; unmatched: boolean } {
+  if (!mergeRepos?.length) return { scoped: places, unmatched: false };
+  const only = new Set(mergeRepos.flatMap((n) => {
+    const key = n.trim().toLowerCase();
+    return key.includes('/') ? [key, key.split('/').pop()!] : [key];
+  }));
+  const keys = (p: P) => [p.name.toLowerCase(), basename(p.projectPath).toLowerCase(), ...remoteRepoKeys(p.remote)];
+  const scoped = places.filter((p) => keys(p).some((k) => only.has(k)));
+  return scoped.length ? { scoped, unmatched: false } : { scoped: places, unmatched: places.length > 0 };
+}
+
 export function refusalForModel(why: string): string {
   return (
     `Refused by policy, not by a person: ${why} ` +
@@ -1337,8 +1365,13 @@ export class FlowRuntimeImpl {
       const places = workspaceWorktrees
         ? workspaceWorktrees.map((m) => ({ name: m.name, worktreePath: m.worktreePath, projectPath: m.projectPath }))
         : [{ name: basename(args.projectPath), worktreePath: worktreeMeta!.worktreePath, projectPath: args.projectPath }];
-      const only = args.mergeRepos?.length ? new Set(args.mergeRepos.map((n) => n.toLowerCase())) : null;
-      const scoped = only ? places.filter((p) => only.has(p.name.toLowerCase()) || only.has(basename(p.projectPath).toLowerCase())) : places;
+      // The pull request's repos come as the host names them; a repo
+      // connected under another name is matched by its origin's address.
+      const remotes = args.mergeRepos?.length
+        ? await Promise.all(places.map(async (p) => ({ ...p, remote: await runGitAsync(['remote', 'get-url', 'origin'], p.projectPath).then((r) => (r.exitCode === 0 ? r.stdout.trim() : undefined)).catch(() => undefined) })))
+        : places;
+      const { scoped, unmatched } = scopeMergePlaces(remotes, args.mergeRepos);
+      if (unmatched) log('warn', 'flows', `${args.continues}: none of ${places.map((p) => p.name).join(', ')} matches its pull request's repos (${args.mergeRepos!.join(', ')}), so the default branch is checked in all of them.`);
       const merging = await mergeDefaultInto(
         await Promise.all(scoped.map(async (p) => ({ name: p.name, worktreePath: p.worktreePath, defaultBranch: await detectBaseBranchAsync(p.projectPath) }))),
         (gitArgs, at) => runGitAsync(gitArgs, at),

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { validateFlow } from '../../shared/flows/validation';
 import { enabledToolsFor } from '../flows/runtime';
-import { RepoService, checkRepoChecks, prFlowId, prFlowYaml, repoChecksNote, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
+import { RepoService, checkGrantWarning, checkRepoChecks, prFlowId, prFlowYaml, repoChecksNote, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 import { RepoSetup, type SetupExec } from './repoSetup';
 
 const app: ConnectedRepo = { name: 'app', url: 'https://github.com/acme/app.git', path: '/data/repos/app', defaultBranch: 'main', setup: 'npm ci', checks: ['npm run lint-changed', 'npm test'], addedBy: 'Bo', at: 0 };
@@ -82,6 +82,56 @@ describe('a repo’s setup and checks', () => {
     expect(failed).toContain('npm ci in app and it failed');
     expect(failed).toContain('ERESOLVE');
     expect(failed).toContain('cd app && npm test');
+  });
+});
+
+describe('checks on a server whose workers aren’t a user of their own', () => {
+  it('warns only when there are checks and workers run as the server', () => {
+    expect(checkGrantWarning([app], false)).toMatch(/run npm run lint-changed, npm test can change what that command runs.*OVERCLI_WORKER_UID/);
+    expect(checkGrantWarning([app], true)).toBeUndefined();
+    expect(checkGrantWarning([api], false)).toBeUndefined();
+    expect(checkGrantWarning([app, { ...api, checks: ['npm test'] }], false)).toContain('run npm run lint-changed, npm test can');
+  });
+
+  it('says so when checks are saved, and still saves them', () => {
+    const h = service([api]);
+    const res = h.svc.setChecks('api', { checks: ['npm test'] });
+    expect(res).toMatchObject({ ok: true, repo: { checks: ['npm test'] }, warning: expect.stringContaining('OVERCLI_WORKER_UID') });
+    expect(h.svc.setChecks('api', {})).not.toHaveProperty('warning');
+    expect(h.svc.setChecks('api', { setup: 'npm ci' })).not.toHaveProperty('warning');
+  });
+
+  it('puts the warning in the generated flow as a comment above the build step, and the flow still parses', () => {
+    const yaml = prFlowYaml(app, { isolated: false });
+    expect(yaml).toMatch(/ {2}# Warning: Workers run as the server's own user[\s\S]*OVERCLI_WORKER_UID[\s\S]*\n {2}- id: build/);
+    expect(yaml.split('\n').filter((l) => l.startsWith('  #')).every((l) => l.length <= 110)).toBe(true);
+    const flow = parseFlowYaml({ yaml, id: prFlowId(app), source: 'user', filePath: '' })!;
+    expect(validateFlow(flow).errors).toEqual([]);
+    expect(flow.steps.find((s) => s.id === 'build')!.tools).toContain('Bash(npm test:*)');
+    expect(prFlowYaml(app, { isolated: true })).not.toContain('# Warning');
+    expect(prFlowYaml(api, { isolated: false })).not.toContain('# Warning');
+    const ws: OrgWorkspace = { id: 'ws-shop', name: 'shop', repos: ['app', 'api'], rootPath: '/w', addedBy: 'Bo', at: 0 };
+    const wsYaml = workspaceFlowYaml(ws, [app, api], { isolated: false });
+    expect(wsYaml).toContain('# Warning: Workers run as the server');
+    expect(validateFlow(parseFlowYaml({ yaml: wsYaml, id: 'org-pr-ws-shop', source: 'user', filePath: '' })!).errors).toEqual([]);
+  });
+
+  it('runs a trial’s checks without the server’s secrets in their environment', async () => {
+    const envs: NodeJS.ProcessEnv[] = [];
+    const exec: SetupExec = (_f, _a, options, cb) => {
+      envs.push(options.env);
+      cb(null, '', '');
+      return undefined;
+    };
+    const fork = async () => ({ ok: true as const, worktreePath: '/wt/trial', remove: async () => undefined });
+    const trial = new RepoSetup({ repos: () => [app], exec, fork, env: { PATH: '/bin', GH_TOKEN: 'x', BITBUCKET_TOKEN: 'y' } }).startTrial('app');
+    if (!trial.ok) throw new Error(trial.error);
+    await trial.done;
+    expect(envs).toHaveLength(3);
+    for (const env of envs) {
+      expect(env.GH_TOKEN).toBeUndefined();
+      expect(env.BITBUCKET_TOKEN).toBeUndefined();
+    }
   });
 });
 

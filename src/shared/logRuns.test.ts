@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { endLine, formatDuration, parseEnd, parseStart, splitRuns, startLine } from './logRuns';
+import { endLine, formatDuration, parseEnd, parseStart, runKeys, splitRuns, startLine } from './logRuns';
 
 describe('run markers', () => {
   it('reads back what it writes', () => {
@@ -55,5 +55,27 @@ describe('splitRuns', () => {
 
   it('is empty for an empty log', () => {
     expect(splitRuns([])).toEqual([]);
+  });
+});
+
+describe('runKeys', () => {
+  const a = startLine({ time: '08:00:00', ref: 'master', cwd: '/r', command: 'run' });
+  const b = startLine({ time: '08:05:00', ref: 'master', cwd: '/r', command: 'run' });
+
+  it('keeps naming a run the same once the front of the log is trimmed', () => {
+    const lines = ['before', a, 'one', endLine({ status: 'failed' }), b, 'two'];
+    const before = runKeys(lines, splitRuns(lines));
+    const trimmed = lines.slice(2);
+    const after = runKeys(trimmed, splitRuns(trimmed));
+    // The second start's index moved from 4 to 2; its key did not.
+    expect(after[after.length - 1]).toBe(before[before.length - 1]);
+    // What is left of the first run lost its marker and is the head now.
+    expect(after[0]).toBe('head');
+  });
+
+  it('tells two identical starts apart', () => {
+    const lines = [a, 'one', a, 'two'];
+    const keys = runKeys(lines, splitRuns(lines));
+    expect(new Set(keys).size).toBe(2);
   });
 });

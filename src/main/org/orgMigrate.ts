@@ -93,40 +93,116 @@ function importRules(access: Rules | undefined, caller: OrgCaller, rules: Record
   return rows;
 }
 
-/// "You" on a desktop is whoever moves the org. From another org nobody in
-/// the file is anyone here (their Slack ids are another workspace's), so
-/// every person becomes the admin moving it.
-function person(p: ProcessPerson, caller: OrgCaller, keeps: boolean): ProcessPerson {
-  const you = !p.slackUserId && p.name.trim().toLowerCase() === 'you';
-  if (you || !keeps) return { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
-  return { ...p };
+type Directory = Pick<OrgService, 'peopleDirectory'>;
+
+/// The people in an org file, as people on this server. "You" on a desktop
+/// is whoever moves the org. From the same org (trust kept), a Slack id this
+/// server knows is that person, and one it doesn't is kept but listed for
+/// the admin to check. From another org, a Slack id is another workspace's
+/// and means nobody here: the person is found here by name when exactly one
+/// person here goes by it, and otherwise is dropped, the admin standing in
+/// and the process listed so someone reassigns it. Never a foreign id kept
+/// to wait on an approval nobody here can give.
+class People {
+  private readonly byName = new Map<string, ProcessPerson | null>();
+  private readonly ids = new Set<string>();
+  readonly matched = new Set<string>();
+  readonly unknown = new Set<string>();
+  readonly missing = new Set<string>();
+
+  constructor(
+    dir: Directory | undefined,
+    private readonly caller: OrgCaller,
+    private readonly keeps: boolean,
+  ) {
+    for (const d of dir?.peopleDirectory() ?? []) {
+      if (!d.slackUserId) continue;
+      this.ids.add(d.slackUserId);
+      for (const n of [d.name, ...(d.aliases ?? [])]) {
+        const k = n.trim().toLowerCase();
+        if (!k) continue;
+        const prior = this.byName.get(k);
+        // Two people by one name: neither is the one.
+        this.byName.set(k, prior && prior.slackUserId !== d.slackUserId ? null : { name: d.name, slackUserId: d.slackUserId });
+      }
+    }
+  }
+
+  private admin(): ProcessPerson {
+    return { name: this.caller.name, ...(this.caller.slackUserId ? { slackUserId: this.caller.slackUserId } : {}) };
+  }
+
+  /// Someone here for a person in the file, or null for nobody.
+  find(p: ProcessPerson): ProcessPerson | null {
+    if (!p.slackUserId && p.name.trim().toLowerCase() === 'you') return this.admin();
+    if (this.keeps) {
+      if (p.slackUserId && !this.ids.has(p.slackUserId)) this.unknown.add(p.name);
+      return { ...p };
+    }
+    const here = this.byName.get(p.name.trim().toLowerCase());
+    if (here) {
+      this.matched.add(`${p.name} → ${here.name}`);
+      return here;
+    }
+    this.missing.add(p.name);
+    return null;
+  }
+
+  /// An owner: someone, the admin when nobody here is them.
+  owner(p: ProcessPerson): ProcessPerson {
+    return this.find(p) ?? this.admin();
+  }
+
+  /// Deciders: each found here, once; the admin when none is.
+  deciders(list: ProcessPerson[]): ProcessPerson[] {
+    const out: ProcessPerson[] = [];
+    for (const a of list) {
+      const p = this.find(a);
+      if (p && !out.some((o) => (o.slackUserId ?? o.name) === (p.slackUserId ?? p.name))) out.push(p);
+    }
+    return out.length ? out : [this.admin()];
+  }
 }
 
-/// A stage's deciders from another org: just the admin, its groups (another
-/// org's ids) dropped, and one approval enough, since one person is left.
-function foreignDeciders(st: ProcessStage, caller: OrgCaller): Pick<ProcessStage, 'approvers' | 'approverGroups' | 'needs'> {
-  const out: Pick<ProcessStage, 'approvers' | 'approverGroups' | 'needs'> = {};
-  if (st.approvers?.length || st.approverGroups?.length) out.approvers = [person({ name: 'You' }, caller, false)];
-  return out;
-}
+/// Orgs with an import under way: one at a time each, held from before the
+/// rules change until the last process lands.
+const importing = new WeakSet<object>();
 
-export function importOrgBundle(
-  org: Pick<OrgService, 'importOrg' | 'importSetup' | 'publishedTeamId' | 'publishedWorkerId'>,
+export async function importOrgBundle(
+  org: Pick<OrgService, 'importOrg' | 'importSetup' | 'publishedTeamId' | 'publishedWorkerId'> & Partial<Directory>,
   processes: Processes | undefined,
   caller: OrgCaller,
   bundle: OrgBundle,
   opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {},
   access?: Rules,
-): Result<{ report: OrgImportReport }> {
+): Promise<Result<{ report: OrgImportReport }>> {
   if (bundle.processes.length && !processes) return { ok: false, error: 'Processes are not running on this server.' };
+  if (opts.dryRun) return importOrgBundleNow(org, processes, caller, bundle, opts, access);
+  if (importing.has(org)) return { ok: false, error: 'An org import is already running on this server. Wait for it to finish, then run this one again.' };
+  importing.add(org);
+  try {
+    return await importOrgBundleNow(org, processes, caller, bundle, opts, access);
+  } finally {
+    importing.delete(org);
+  }
+}
+
+async function importOrgBundleNow(
+  org: Pick<OrgService, 'importOrg' | 'importSetup' | 'publishedTeamId' | 'publishedWorkerId'> & Partial<Directory>,
+  processes: Processes | undefined,
+  caller: OrgCaller,
+  bundle: OrgBundle,
+  opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean },
+  access?: Rules,
+): Promise<Result<{ report: OrgImportReport }>> {
   // Rules first: the workers that land next are hired under them (which
   // tools are cleared, who approves). The preview runs every check the real
   // import can fail on, so rules never change ahead of an import that fails.
-  const preview = org.importOrg(caller, { ...bundle, workers: [] }, { dryRun: true, keepTrust: opts.keepTrust });
+  const preview = await org.importOrg(caller, { ...bundle, workers: [] }, { dryRun: true, keepTrust: opts.keepTrust });
   if (!preview.ok) return preview;
   const sameOrg = preview.report.keepsTrust;
   const ruleRows = importRules(access, caller, bundle.setup?.rules, { dryRun: opts.dryRun, sameOrg });
-  const res = org.importOrg(caller, bundle, opts);
+  const res = await org.importOrg(caller, bundle, opts);
   if (!res.ok) return res;
   const { report } = res;
   report.setup.push(...ruleRows);
@@ -138,7 +214,8 @@ export function importOrgBundle(
     if (report.setup.some((r) => r.status === 'waiting')) report.notes.push('Tools, repos, databases and APIs wait where each is set up, for an admin to add its keys or password. None came with the file.');
   }
   if (!processes) return res;
-  if (!report.keepsTrust && bundle.processes.length) report.notes.push('Its processes name people in another org, so you own and decide every stage for now. Set who decides on each process’s page.');
+  const people = new People(org.peopleDirectory ? (org as Directory) : undefined, caller, report.keepsTrust);
+  const reassign = new Set<string>();
   const known = new Map(processes.list(caller).filter((p) => p.localId).map((p) => [p.localId!, p]));
   // In a dry run nothing has landed: a team or worker counts as there if the
   // run says it would be.
@@ -146,15 +223,22 @@ export function importOrgBundle(
   const plannedWorkers = new Set(report.workers.filter((w) => w.status !== 'failed').map((w) => w.sourceId));
   for (const p of bundle.processes) {
     const missing: string[] = [];
+    const nobody = people.missing.size;
+    const owner = p.owner ? people.owner(p.owner) : undefined;
+    if (people.missing.size > nobody) reassign.add(p.name);
     const stages: ProcessStage[] = p.stages.map(({ sourceTeamId, sourceWorkerId, ...st }, i) => {
       const id = String(i + 1);
       const out = { ...st, id: st.id || id } as ProcessStage;
-      if (st.owner) out.owner = person(st.owner, caller, report.keepsTrust);
+      const before = people.missing.size;
+      if (st.owner) out.owner = people.owner(st.owner);
       if (!report.keepsTrust) {
+        // Another org's groups are its ids; with whoever is left, one approval is enough.
         delete out.approverGroups;
         delete out.needs;
-        Object.assign(out, foreignDeciders(st, caller));
-      } else if (st.approvers) out.approvers = st.approvers.map((a) => person(a, caller, true));
+        if (st.approvers?.length || st.approverGroups?.length) out.approvers = people.deciders(st.approvers ?? []);
+        if (st.approverGroups?.length) reassign.add(p.name);
+      } else if (st.approvers) out.approvers = people.deciders(st.approvers);
+      if (people.missing.size > before) reassign.add(p.name);
       if (st.kind === 'team') {
         const here = sourceTeamId ? org.publishedTeamId(sourceTeamId) : undefined;
         if (here) out.teamId = here;
@@ -170,7 +254,9 @@ export function importOrgBundle(
     });
     const exists = known.has(p.sourceId);
     if (missing.length) {
-      report.processes.push({ name: p.name, status: 'failed', error: `The team or worker for ${missing.join(', ')} didn’t come.` });
+      reassign.delete(p.name);
+      const list = missing.map((m) => `“${m}”`).join(', ');
+      report.processes.push({ name: p.name, status: 'failed', error: `Left out: ${missing.length === 1 ? 'its stage' : 'its stages'} ${list} ${missing.length === 1 ? 'is' : 'are'} done by a team or worker that didn’t come over.` });
       continue;
     }
     if (opts.dryRun) {
@@ -181,11 +267,17 @@ export function importOrgBundle(
       localId: p.sourceId,
       name: p.name,
       ...(p.purpose ? { purpose: p.purpose } : {}),
-      ...(p.owner ? { owner: person(p.owner, caller, report.keepsTrust) } : {}),
+      ...(owner ? { owner } : {}),
       stages,
       ...(p.access !== undefined ? { access: p.access } : {}),
     });
     report.processes.push(saved.ok ? { name: p.name, status: saved.updated ? 'updated' : 'added' } : { name: p.name, status: 'failed', error: saved.error });
+  }
+  if (bundle.processes.length) {
+    const names = (s: Set<string>) => [...s].join(', ');
+    if (people.matched.size) report.notes.push(`Matched by name to people here: ${names(people.matched)}. Check each is the same person.`);
+    if (reassign.size) report.notes.push(`${people.missing.size ? `Nobody here is ${names(people.missing)}` : 'Their deciding groups are another org’s'}, so you own or decide in their place on ${names(reassign)}. Set who decides on each process’s page.`);
+    if (people.unknown.size) report.notes.push(`Not known on this server yet: ${names(people.unknown)}. Their stages wait on them; if any isn’t in this Slack workspace, reassign it on the process’s page.`);
   }
   return { ok: true, report };
 }
