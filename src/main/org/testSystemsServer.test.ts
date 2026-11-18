@@ -12,7 +12,7 @@ describe('the browser behind apps to test', () => {
     expect(linux.slice(linux.indexOf('--browser'), linux.indexOf('--browser') + 2)).toEqual(['--browser', 'chromium']);
     expect(linux).toContain('--no-sandbox');
     expect(playwrightArgs('/tmp/out', 'darwin')).not.toContain('--no-sandbox');
-    expect(linux).toEqual(expect.arrayContaining(['--headless', '--isolated', '--caps=storage,testing', '--output-dir', '/tmp/out']));
+    expect(linux).toEqual(expect.arrayContaining(['--headless', '--isolated', '--caps=storage,testing,devtools', '--output-dir', '/tmp/out']));
     expect(linux).not.toContain('-y');
   });
 

@@ -131,9 +131,27 @@ export function buildCommand(
 
   const style = spec.optionStyle ?? defaultOptionStyle(spec);
   if (style === 'gradle-jvm-args') {
-    return [...spec.command, `-PjvmArgs=${rendered.join(' ')}`];
+    return appendArgs(spec.command, [`-PjvmArgs=${rendered.join(' ')}`]);
   }
-  return [...spec.command, ...rendered];
+  return appendArgs(spec.command, rendered);
+}
+
+/// Arguments added to the end of a command. A command that runs through
+/// `sh -c` takes them inside its script: put after it, they become `$0`, `$1`
+/// of a script that never reads them, and every option silently vanished the
+/// moment a clean step was chained in front of a bootRun. Inside, they land on
+/// the script's last command — the run, after any setup chained before it.
+/// Single-quoted, so a value is never expanded by the shell.
+export function appendArgs(command: readonly string[], extra: readonly string[]): string[] {
+  if (extra.length === 0) return [...command];
+  if (command.length === 3 && command[0] === 'sh' && command[1] === '-c') {
+    return ['sh', '-c', `${command[2].trimEnd()} ${extra.map(shellQuote).join(' ')}`];
+  }
+  return [...command, ...extra];
+}
+
+function shellQuote(arg: string): string {
+  return /^[A-Za-z0-9_.,:/=@%+-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
 /// What a runner needs when nobody has said. Gradle is the one that differs,

@@ -39,6 +39,9 @@ export interface DesktopTaskStore {
 
 /// Waiting this long with nobody picking it up, it lapses.
 export const DESKTOP_TASK_TTL_MS = 24 * 60 * 60_000;
+/// Allowed but never sent back or given up on (its desktop gone, say): it
+/// lapses this long after it was allowed, so it stops holding a place.
+export const DESKTOP_CLAIM_TTL_MS = 3 * 24 * 60 * 60_000;
 /// A worker may have this many waiting at once.
 export const MAX_OPEN_DESKTOP_TASKS = 5;
 export const MAX_DESKTOP_TASK_CHARS = 4000;
@@ -46,9 +49,24 @@ export const MAX_DESKTOP_RESULT_CHARS = 20_000;
 /// Finished ones are kept this long, then dropped.
 const KEEP_MS = 14 * 24 * 60 * 60_000;
 
-/// Lapse what nobody picked up, and drop what's long finished.
+/// Lapse what nobody picked up, or picked up and never finished, and drop
+/// what's long finished. Hands back the same array when nothing changed, so
+/// a caller can tell whether there's anything to save.
 export function tidyDesktopTasks(tasks: DesktopTask[], now: number): DesktopTask[] {
-  return tasks
-    .map((t) => (t.status === 'waiting' && now - t.at > DESKTOP_TASK_TTL_MS ? { ...t, status: 'expired' as const, doneAt: now } : t))
-    .filter((t) => !(t.doneAt && now - t.doneAt > KEEP_MS));
+  let changed = false;
+  const out = tasks
+    .map((t) => {
+      const lapsed =
+        (t.status === 'waiting' && now - t.at > DESKTOP_TASK_TTL_MS) ||
+        (t.status === 'claimed' && now - (t.claimedAt ?? t.at) > DESKTOP_CLAIM_TTL_MS);
+      if (!lapsed) return t;
+      changed = true;
+      return { ...t, status: 'expired' as const, doneAt: now };
+    })
+    .filter((t) => {
+      const drop = !!t.doneAt && now - t.doneAt > KEEP_MS;
+      if (drop) changed = true;
+      return !drop;
+    });
+  return changed ? out : tasks;
 }

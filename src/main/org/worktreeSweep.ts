@@ -88,7 +88,12 @@ export async function lastTouched(c: Checkout): Promise<number> {
   };
   const gitDir = await git(c.worktreePath, ['rev-parse', '--absolute-git-dir']);
   if (gitDir.code === 0 && gitDir.out.trim()) {
-    for (const f of ['index', 'HEAD', path.join('logs', 'HEAD')]) await mtime(path.join(gitDir.out.trim(), f));
+    // When HEAD last moved (a commit, a checkout, a reset), from its
+    // reflog's own last entry. Not the files' mtimes: gc rewrites every
+    // worktree's reflog when it expires old entries (a fetch in the clone
+    // can run it), and any `git status` may rewrite the index. Neither is
+    // someone working here, and both kept day-old checkouts forever.
+    latest = Math.max(latest, await lastReflogAt(path.join(gitDir.out.trim(), 'logs', 'HEAD')));
   }
   let seen = 0;
   const walk = async (dir: string): Promise<void> => {
@@ -110,6 +115,80 @@ export async function lastTouched(c: Checkout): Promise<number> {
   };
   await walk(c.worktreePath);
   return latest;
+}
+
+/// The time of a reflog's last entry (`<old> <new> <who> <unix-secs> <tz>\t<what>`), or 0.
+export async function lastReflogAt(file: string): Promise<number> {
+  try {
+    const lines = (await fs.promises.readFile(file, 'utf8')).trimEnd().split('\n');
+    const secs = /\s(\d{9,11})\s[+-]\d{4}\t/.exec(lines[lines.length - 1] ?? '')?.[1];
+    return secs ? Number(secs) * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+const readdir = (dir: string): string[] => {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+};
+
+/// Orphans checked per pass: each costs a walk and a few git calls.
+const ORPHANS_PER_PASS = 150;
+/// An orphan kept for its work is looked at again after this long.
+const ORPHAN_RECHECK_MS = 6 * 60 * 60_000;
+const orphanKeptAt = new Map<string, number>();
+/// Branches never deleted with an orphan, whatever it had checked out.
+const SHARED_BRANCHES = new Set(['main', 'master', 'develop', 'development', 'trunk', 'release']);
+
+/// Checkouts under `root` no run knows any more: their run was deleted or
+/// pruned from the records, or the server stopped between making one and
+/// recording it (a trial of a repo's checks, say). Nobody can reach them
+/// from a run, so one goes once nothing in it is only here (no changes, no
+/// commits that aren't on a remote) and nothing has touched it in two days.
+async function sweepOrphans(root: string, known: Set<string>, now: number): Promise<{ removed: number; kept: number }> {
+  let removed = 0;
+  let kept = 0;
+  let checked = 0;
+  for (const repoDir of readdir(root)) {
+    for (const name of readdir(path.join(root, repoDir))) {
+      const wt = path.join(root, repoDir, name);
+      if (known.has(wt) || !fs.existsSync(path.join(wt, '.git'))) continue;
+      const keptAt = orphanKeptAt.get(wt);
+      if (keptAt && now - keptAt < ORPHAN_RECHECK_MS) {
+        kept++;
+        continue;
+      }
+      if (++checked > ORPHANS_PER_PASS) return { removed, kept };
+      const common = await git(wt, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+      // Not a checkout git can read (a stray or broken `.git`): remember it
+      // like any other kept one, or enough of them would use up every pass's
+      // budget and the real orphans past them would never be looked at.
+      if (common.code !== 0 || !common.out.trim()) {
+        orphanKeptAt.set(wt, now);
+        kept++;
+        continue;
+      }
+      const c: Checkout = { repoPath: path.dirname(common.out.trim()), worktreePath: wt, branchName: '' };
+      const status = await git(wt, ['--no-optional-locks', 'status', '--porcelain']);
+      const onlyHere = await git(wt, ['rev-list', '--count', 'HEAD', '--not', '--remotes']);
+      if (status.code !== 0 || status.out.trim() || onlyHere.code !== 0 || onlyHere.out.trim() !== '0' || now - (await lastTouched(c)) < TOUCHED_KEEP_MS) {
+        orphanKeptAt.set(wt, now);
+        kept++;
+        continue;
+      }
+      const branch = await git(wt, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+      const b = branch.code === 0 ? branch.out.trim() : '';
+      if (await remove({ ...c, branchName: SHARED_BRANCHES.has(b) ? '' : b })) {
+        orphanKeptAt.delete(wt);
+        removed++;
+      }
+    }
+  }
+  return { removed, kept };
 }
 
 async function remove(c: Checkout): Promise<boolean> {
@@ -137,7 +216,9 @@ export const STALE_UNPUSHED_MS = 3 * 86_400_000;
 
 /// One pass over the runs. Ended runs only; a paused or running one is
 /// using its checkouts.
-export async function sweepWorktrees(runs: FlowRun[], log: (level: 'info' | 'warn', msg: string) => void, now = Date.now()): Promise<{ removed: number; kept: number }> {
+/// `orphanRoot`: where run checkouts live, to also remove the ones no run
+/// knows. Only the server passes it; absent, only runs' own are looked at.
+export async function sweepWorktrees(runs: FlowRun[], log: (level: 'info' | 'warn', msg: string) => void, now = Date.now(), orphanRoot?: string): Promise<{ removed: number; kept: number }> {
   if (sweeping) return { removed: 0, kept: 0 };
   sweeping = true;
   let removed = 0;
@@ -183,6 +264,9 @@ export async function sweepWorktrees(runs: FlowRun[], log: (level: 'info' | 'war
     }
     keptLast = keptRuns;
     if (removed) log('info', `Removed ${removed} finished run checkout${removed === 1 ? '' : 's'}${kept ? `; kept ${kept} with unpushed work` : ''}.`);
+    const orphans = orphanRoot ? await sweepOrphans(orphanRoot, new Set(owner.keys()), now) : { removed: 0, kept: 0 };
+    removed += orphans.removed;
+    if (orphans.removed) log('info', `Removed ${orphans.removed} checkout${orphans.removed === 1 ? '' : 's'} no run knows any more${orphans.kept ? `; kept ${orphans.kept} with work that isn't on a remote or touched in the last two days` : ''}.`);
   } catch (err) {
     log('warn', `Checkout cleanup stopped: ${err instanceof Error ? err.message : String(err)}`);
   } finally {

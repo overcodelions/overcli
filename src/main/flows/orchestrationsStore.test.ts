@@ -3,14 +3,26 @@
 // coverage until an item that could never be continued sat in the Workers
 // work queue for a week asking to be dealt with.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The module reaches for electron's `app.getPath` at import time via its
 // helpers; nothing under test calls them, but the import has to resolve.
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/overcli-test' } }));
 vi.mock('../diagnostics', () => ({ log: () => {} }));
 
-import { settleItemOnLoad } from './orchestrationsStore';
+// The pruned-batch log lives in the data dir; point it at a scratch folder.
+const dataDir = vi.hoisted(() => ({ current: '' }));
+vi.mock('../host', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../host')>()),
+  host: () => ({ dataDir: () => dataDir.current }),
+}));
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { appendPrunedBatches, loadPrunedBatches, prunePlan, prunedRecord, settleItemOnLoad } from './orchestrationsStore';
+import type { PrunedWorkerBatch } from '../../shared/flows/workerReport';
+import type { Orchestration } from '../../shared/flows/orchestration';
 
 import type { OrchestrationItem } from '../../shared/flows/orchestration';
 
@@ -120,5 +132,76 @@ describe('settleItemOnLoad', () => {
       expect(settleItemOnLoad(it_, GONE, NOW)).toBe(false);
       expect(it_.status).toBe(status);
     }
+  });
+});
+
+describe('prunePlan', () => {
+  const batch = (id: string, over: Partial<Orchestration> = {}): Orchestration =>
+    ({ id, title: id, projectPath: '/p', maxConcurrent: 1, createdAt: 0, items: [item({ status: 'done' })], origin: { kind: 'worker', workerId: 'w', workerName: 'W' }, ...over }) as Orchestration;
+
+  it('evicts a desk turn that proposed nothing, not only stamped batches, so they cannot hold the cap', () => {
+    const all = [
+      batch('new', { completedAt: 1 }),
+      batch('empty', { items: [] }),
+      batch('open', { items: [item({ status: 'proposed' })] }),
+      batch('old', { completedAt: 1 }),
+    ];
+    const { kept, gone } = prunePlan(all, 1);
+    expect(kept.map((o) => o.id)).toEqual(['new', 'open']);
+    expect(gone.map((o) => o.id)).toEqual(['empty', 'old']);
+  });
+
+  it('logs a worker batch with work in it, and nothing else', () => {
+    expect(prunedRecord(batch('b', { createdAt: 5, items: [item({ status: 'done', finishedAt: 9 }), item({ status: 'failed' })] }))).toEqual({
+      id: 'b', workerId: 'w', createdAt: 5, items: [{ status: 'done', finishedAt: 9 }, { status: 'failed' }],
+    });
+    expect(prunedRecord(batch('e', { items: [] }))).toBeNull();
+    expect(prunedRecord(batch('s', { origin: undefined }))).toBeNull();
+  });
+});
+
+describe('the pruned batch log', () => {
+  const rec = (id: string, status: 'done' | 'failed' = 'done'): PrunedWorkerBatch => ({ id, workerId: 'w', createdAt: 1, items: [{ status }] });
+  const file = () => path.join(dataDir.current, 'worker-batches.jsonl');
+
+  beforeEach(() => {
+    dataDir.current = fs.mkdtempSync(path.join(os.tmpdir(), 'acme-pruned-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dataDir.current, { recursive: true, force: true });
+  });
+
+  it('reads the file once, then folds its own appends in without reading again', () => {
+    appendPrunedBatches([rec('a')]);
+    expect(loadPrunedBatches().map((r) => r.id)).toEqual(['a']);
+    const read = vi.spyOn(fs, 'readFileSync');
+    appendPrunedBatches([rec('b'), rec('a', 'failed')]);
+    const all = loadPrunedBatches();
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+    expect(all.map((r) => r.id).sort()).toEqual(['a', 'b']);
+    expect(all.find((r) => r.id === 'a')?.items[0].status).toBe('failed');
+  });
+
+  it('notices the file changing underneath it', () => {
+    appendPrunedBatches([rec('a')]);
+    expect(loadPrunedBatches()).toHaveLength(1);
+    fs.appendFileSync(file(), JSON.stringify(rec('outside')) + '\n');
+    expect(loadPrunedBatches().map((r) => r.id).sort()).toEqual(['a', 'outside']);
+    fs.rmSync(file());
+    expect(loadPrunedBatches()).toEqual([]);
+  });
+
+  it('compacts a log full of repeated ids down to one line each, keeping the last', () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 300; i++) lines.push(JSON.stringify(rec(`b${i % 3}`, i === 299 ? 'failed' : 'done')));
+    fs.writeFileSync(file(), lines.join('\n') + '\n');
+    const all = loadPrunedBatches();
+    expect(all).toHaveLength(3);
+    expect(fs.readFileSync(file(), 'utf8').trim().split('\n')).toHaveLength(3);
+    expect(all.find((r) => r.id === 'b2')?.items[0].status).toBe('failed');
+    // Still served from cache, and still right after another append.
+    appendPrunedBatches([rec('b3')]);
+    expect(loadPrunedBatches()).toHaveLength(4);
   });
 });

@@ -932,10 +932,14 @@ function OrgServerRow({ server: s, many, onChanged, onSignIn }: { server: OrgSer
   const [busy, setBusy] = useState(false);
   const act = (p: Promise<unknown>) => {
     setBusy(true);
-    void p.finally(() => {
-      setBusy(false);
-      onChanged();
-    });
+    // A failure shows as the server's state after the refresh; it mustn't
+    // also surface as an unhandled rejection.
+    void p
+      .finally(() => {
+        setBusy(false);
+        onChanged();
+      })
+      .catch(() => undefined);
   };
   const title = s.name ?? s.url;
   const signedIn = s.tokenConfigured && !!s.me;
@@ -1157,7 +1161,7 @@ function OrgSignInForm({ initial, label, onDone, onCancel }: { initial: string; 
                 }
                 setToken('');
                 onDone();
-              });
+              }, (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
             }}
             className="field flex-1 px-2 py-1 text-xs font-mono"
           />
@@ -1543,6 +1547,9 @@ function OrgSetupPublish() {
       setBusy(false);
       if (!res.ok) setError(res.error);
       else setPreview(res);
+    }).catch((err: unknown) => {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
     });
   };
   const publish = () => {
@@ -1557,6 +1564,10 @@ function OrgSetupPublish() {
           setDone(res.message);
           setPreview(null);
         }
+      })
+      .catch((err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
       });
   };
   if (!preview) {

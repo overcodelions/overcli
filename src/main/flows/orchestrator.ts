@@ -78,6 +78,8 @@ export interface FlowLauncher {
     continues?: string;
     /// Fixing the continued branch's red build: merge its default branch in, even cleanly.
     mergeWhenBehind?: boolean;
+    /// The repos the continued pull request is in: only these get the default branch merged in.
+    mergeRepos?: string[];
     scheduleId?: UUID;
     scheduleName?: string;
     /// Chain provenance for a run fired by an `onFlowComplete` schedule. The
@@ -966,6 +968,9 @@ export class OrchestratorImpl {
             ? await this.continueBranch({ projectPath: o.projectPath, workerId: worker.workerId, title: next.candidate.title, prompt: next.candidate.prompt }).catch(() => null)
             : null;
         if (continued) baseBranch = continued;
+        // The repos the continued pull request is in, from the batch's own record
+        // (the replies' targets, the CI watch's links), never from prose.
+        const mergeRepos = continued && worker ? [...new Set([...(worker.prTargets ?? []).map((t) => t.repo), ...(worker.prLinks ?? []).map((l) => l.repo)])] : [];
         const failure = continued && this.buildFailureOf ? await this.buildFailureOf({ projectPath: o.projectPath, branch: continued }).catch(() => '') : '';
         const worktreeName =
           !adoptWorktrees && worker?.team && baseBranch?.startsWith('team/')
@@ -990,6 +995,7 @@ export class OrchestratorImpl {
           ...(continued ? { continues: continued } : {}),
           // Its build failed: the host built it merged with its target, so the run starts from that too.
           ...(continued && failure ? { mergeWhenBehind: true } : {}),
+          ...(mergeRepos.length ? { mergeRepos } : {}),
           // Stamp the worker on child runs of a worker's batch — the run
           // summary's `workerId` is what the monthly budget rollup groups by,
           // and nothing can reconstruct the tag after launch.

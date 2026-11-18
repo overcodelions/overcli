@@ -102,6 +102,7 @@ import {
   type WorkspaceMemberRef,
 } from '../../shared/flows/workspaceMembers';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
+import { appendRunSummary } from './runSummaryLog';
 import { nextRunNumber } from './runNumbers';
 import { host } from '../host';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
@@ -152,6 +153,10 @@ export interface FlowRuntimeStartArgs {
   /// Fixing that branch's red build: merge its default branch in even when
   /// it merges cleanly, since the host built the two merged (mergeOnConflict.ts).
   mergeWhenBehind?: boolean;
+  /// The repos the pull request it continues is in. Only these get the
+  /// default branch merged in: another repo of the workspace that happens to
+  /// have a branch of the same name is not this run's to merge.
+  mergeRepos?: string[];
   /// Set when a Schedule fired this run. Routes the run's terminal state back
   /// to the scheduler (which clears the overlap guard and notifies).
   scheduleId?: UUID;
@@ -226,6 +231,34 @@ export interface FlowRuntimeStartArgs {
 
 /// What a policy refusal tells the model. Without the second half it retried
 /// the same call, then wrote up the work as blocked by file permissions.
+/// A repo's names as its origin's address gives them, lower-cased: `app` and
+/// `acme/app` for https://github.com/acme/app.git or git@github.com:acme/app.git.
+export function remoteRepoKeys(remote: string | undefined): string[] {
+  const parts = (remote ?? '').trim().replace(/\.git\/?$/, '').replace(/\/+$/, '').split(/[/:]/).filter(Boolean);
+  if (!parts.length) return [];
+  const last = parts[parts.length - 1].toLowerCase();
+  return parts.length > 1 ? [last, `${parts[parts.length - 2]}/${parts[parts.length - 1]}`.toLowerCase()] : [last];
+}
+
+/// The places a continued run merges the default branch into: those of the
+/// pull request's repos (`mergeRepos`, as the host names them), matched on
+/// the place's name, its clone's folder, or its origin's address. None
+/// matching is a naming mismatch, not "no repo": then every place, so the
+/// merge isn't silently skipped.
+export function scopeMergePlaces<P extends { name: string; projectPath: string; remote?: string }>(
+  places: P[],
+  mergeRepos: string[] | undefined,
+): { scoped: P[]; unmatched: boolean } {
+  if (!mergeRepos?.length) return { scoped: places, unmatched: false };
+  const only = new Set(mergeRepos.flatMap((n) => {
+    const key = n.trim().toLowerCase();
+    return key.includes('/') ? [key, key.split('/').pop()!] : [key];
+  }));
+  const keys = (p: P) => [p.name.toLowerCase(), basename(p.projectPath).toLowerCase(), ...remoteRepoKeys(p.remote)];
+  const scoped = places.filter((p) => keys(p).some((k) => only.has(k)));
+  return scoped.length ? { scoped, unmatched: false } : { scoped: places, unmatched: places.length > 0 };
+}
+
 export function refusalForModel(why: string): string {
   return (
     `Refused by policy, not by a person: ${why} ` +
@@ -652,6 +685,9 @@ export class FlowRuntimeImpl {
   /// it. The server sets it for the repos it cloned; the desktop leaves a
   /// person's own checkout alone.
   beforeFork?: (repoPaths: string[]) => Promise<void>;
+  /// Readies fresh checkouts before the run starts in them: the server runs
+  /// each connected repo's setup (`npm ci`) there (org/repoSetup.ts).
+  afterFork?: (checkouts: Array<{ projectPath: string; worktreePath: string }>, progress: (message: string) => void) => Promise<void>;
   /// The backends this machine can run. Set, a flow's step on any other
   /// backend moves to one of these at the same tier when its run starts.
   /// Whether a worker runs through its flows' own checkpoints. Set by the
@@ -966,7 +1002,9 @@ export class FlowRuntimeImpl {
                   : guarded
                     ? refusalForModel(`${tool} is given to this step only to post a comment on a pull request, and this call does something else. Say in your reply what you meant to do; a person can do it.`)
                   : ofRole
-                    ? refusalForModel(`${tool} is one of this worker's role tools, but this run started on its own and its manager hasn't allowed its role's tools in runs like that. Say what you were about to do; its manager can approve the work, or turn on "Always allow its role's tools".`)
+                    ? refusalForModel(`${tool} is one of this worker's tools, but this run started on its own and its manager hasn't allowed its tools in runs like that. Say what you were about to do; its manager can approve the work, or turn on "Always allow its role's tools".`)
+                    : server
+                      ? refusalForModel(`${tool} is refused because this worker doesn't have the ${server} tool: it isn't one of its own tools or its role's. Its manager can give it ${server}, or a role that has it, and send the work again. Editing a flow isn't needed. Say in your reply what you were about to do.`)
                       : refusalForModel(`${tool} is not among the tools this work was given (the worker's flow does not list it).`),
             );
             // Say so on the event itself before it reaches the renderer (this
@@ -981,6 +1019,9 @@ export class FlowRuntimeImpl {
                 ? `Denied automatically: this step may use ${tool} only to post a pull request comment.`
                 : `Denied automatically: this worker has no grant for external actions, and the step does not list ${tool} in its tools.`;
             if (!allow && !(run.refusedTools ?? []).includes(tool)) run.refusedTools = [...(run.refusedTools ?? []), tool];
+            // One it has, refused only because nobody let this run use it:
+            // a different fix from one it lacks (orgTuning.ts).
+            if (!allow && ofRole && server && !(run.refusedHeld ?? []).includes(server)) run.refusedHeld = [...(run.refusedHeld ?? []), server];
             this.checkpoint(run);
           }
         }
@@ -1294,6 +1335,8 @@ export class FlowRuntimeImpl {
         projectPath: args.projectPath,
         name: args.worktreeName || branchSlugFromPrompt(args.userPrompt, flow.id),
         baseBranch: args.baseBranch,
+        // Continuing a pushed branch: build on what origin has, so the push can add to it.
+        preferRemote: !!args.continues,
       });
       if (!forked.ok) return forked;
       if (forked.members) {
@@ -1322,8 +1365,15 @@ export class FlowRuntimeImpl {
       const places = workspaceWorktrees
         ? workspaceWorktrees.map((m) => ({ name: m.name, worktreePath: m.worktreePath, projectPath: m.projectPath }))
         : [{ name: basename(args.projectPath), worktreePath: worktreeMeta!.worktreePath, projectPath: args.projectPath }];
+      // The pull request's repos come as the host names them; a repo
+      // connected under another name is matched by its origin's address.
+      const remotes = args.mergeRepos?.length
+        ? await Promise.all(places.map(async (p) => ({ ...p, remote: await runGitAsync(['remote', 'get-url', 'origin'], p.projectPath).then((r) => (r.exitCode === 0 ? r.stdout.trim() : undefined)).catch(() => undefined) })))
+        : places;
+      const { scoped, unmatched } = scopeMergePlaces(remotes, args.mergeRepos);
+      if (unmatched) log('warn', 'flows', `${args.continues}: none of ${places.map((p) => p.name).join(', ')} matches its pull request's repos (${args.mergeRepos!.join(', ')}), so the default branch is checked in all of them.`);
       const merging = await mergeDefaultInto(
-        await Promise.all(places.map(async (p) => ({ name: p.name, worktreePath: p.worktreePath, defaultBranch: await detectBaseBranchAsync(p.projectPath) }))),
+        await Promise.all(scoped.map(async (p) => ({ name: p.name, worktreePath: p.worktreePath, defaultBranch: await detectBaseBranchAsync(p.projectPath) }))),
         (gitArgs, at) => runGitAsync(gitArgs, at),
         { whenBehind: args.mergeWhenBehind === true },
       ).catch((err: unknown) => {
@@ -1419,6 +1469,7 @@ export class FlowRuntimeImpl {
       state: firstPauseReason
         ? { kind: 'paused', nextStepId: firstStep.id, reason: firstPauseReason }
         : { kind: 'running', currentStepId: firstStep.id },
+      ...(firstPauseReason ? { pausedSteps: [{ stepId: firstStep.id, reason: firstPauseReason, at: Date.now() }] } : {}),
       createdAt: Date.now(),
       attempts: [],
       worktreePath: worktreeMeta?.worktreePath,
@@ -1577,6 +1628,9 @@ export class FlowRuntimeImpl {
       for (const key of this.pointerRejections.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.pointerRejections.delete(key);
       }
+      // Its last word in the all-time log first: a run restored from disk
+      // whose line predates the pull request count has it written now.
+      appendRunSummary(victim);
       deleteRunFromDisk(victim.id);
       clearAttachments(victim.id);
     }
@@ -1741,6 +1795,7 @@ export class FlowRuntimeImpl {
       const gate = next ? pauseReasonBeforeStep(run, next) : null;
       if (gate) {
         run.state = { kind: 'paused', nextStepId, reason: gate };
+        notePause(run, nextStepId, gate);
         this.emitRunUpdate(run);
         this.checkpoint(run);
         return { ok: true };
@@ -2620,6 +2675,7 @@ export class FlowRuntimeImpl {
         resolver?.();
       }
     }
+    appendRunSummary(run);
     deleteRunFromDisk(args.runId);
     clearAttachments(args.runId);
     // Tell the renderer so its in-memory `runs` map evicts in lockstep.
@@ -4140,6 +4196,7 @@ export class FlowRuntimeImpl {
     const pauseReason = pauseReasonBeforeStep(run, next);
     if (pauseReason) {
       run.state = { kind: 'paused', nextStepId: next.id, reason: pauseReason };
+      notePause(run, next.id, pauseReason);
       this.emitRunUpdate(run);
       this.checkpoint(run); // boundary — paused state is resumable across restart
       return;
@@ -5010,6 +5067,8 @@ export class FlowRuntimeImpl {
     projectPath: string;
     name: string;
     baseBranch?: string;
+    /// Each checkout starts from origin's copy of its branch (CreateWorktreeArgs.preferRemote).
+    preferRemote?: boolean;
   }): Promise<
     | {
         ok: true;
@@ -5091,6 +5150,7 @@ export class FlowRuntimeImpl {
             agentName: wtNameBase,
             baseBranch,
             branchPrefix,
+            preferRemote: args.preferRemote,
           });
           pending.delete(p.name);
           timings.push({ name: p.name, ms: Date.now() - memberStartedAt });
@@ -5121,6 +5181,7 @@ export class FlowRuntimeImpl {
           branchName: ok.branchName,
         };
       });
+      await this.prepareCheckouts(args.projectPath, minted);
       return { ok: true, members: minted };
     } else {
       // Single-project worktree (original behavior). Async git so the
@@ -5143,12 +5204,25 @@ export class FlowRuntimeImpl {
         agentName: wtName,
         baseBranch,
         branchPrefix,
+        preferRemote: args.preferRemote,
       });
       if (!result.ok) {
         return { ok: false, error: `Failed to create worktree: ${result.error}` };
       }
       this.emitLaunchProgress(args.projectPath, { completed: 1, total: 1, message: 'Worktree ready' });
+      await this.prepareCheckouts(args.projectPath, [{ projectPath: args.projectPath, worktreePath: result.worktreePath }]);
       return { ok: true, worktreePath: result.worktreePath, branchName: result.branchName };
+    }
+  }
+
+  /// Never stops a launch: a checkout whose setup fails still runs, and the
+  /// run is told (afterFork's owner keeps what happened).
+  private async prepareCheckouts(launchPath: string, checkouts: Array<{ projectPath: string; worktreePath: string }>): Promise<void> {
+    if (!this.afterFork) return;
+    try {
+      await this.afterFork(checkouts, (message) => this.emitLaunchProgress(launchPath, { completed: checkouts.length, total: checkouts.length, message }));
+    } catch (err) {
+      log('warn', 'flows', `Couldn't ready the checkouts: ${(err as Error).message}`);
     }
   }
 
@@ -5399,6 +5473,13 @@ export { resolveStepEffect, runGrantCovers, stepOutsideTools } from './stepEffec
 /// else to reach outside through, what its instructions say can't act. A
 /// shipping step, one marked external, or one listing Bash or any tool
 /// outside the role still asks.
+/// Note a stop for a person's OK on the run (FlowRun.pausedSteps), the newest
+/// fifty: what Setup → Tuning reads for steps that always stop and are always
+/// approved.
+function notePause(run: FlowRun, stepId: string, reason: string): void {
+  run.pausedSteps = [...(run.pausedSteps ?? []), { stepId, reason, at: Date.now() }].slice(-50);
+}
+
 export function roleToolsCoverStep(
   run: Partial<Pick<FlowRun, 'workerId' | 'roleTools' | 'roleToolsCleared'>>,
   step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect'>,

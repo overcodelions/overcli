@@ -7,8 +7,9 @@
 // worker engine, runs in the runtime; this is a policy gate in front of both,
 // returning plain data each surface renders in its own way.
 
-import { roleNamed, roleToolsFor } from '../../shared/org/roleTools';
-import { KITS, type KitDef, type KitId, type Toolchain, type ToolchainService } from './toolchains';
+import { SERVER_TOOL, roleNamed, roleToolsFor, workerRunTools } from '../../shared/org/roleTools';
+import { KITS, type KitDef, type KitId, type KitUse, type Toolchain, type ToolchainService } from './toolchains';
+import type { CheckTrial } from './repoSetup';
 import { collectKnownSecretValues, redactSecrets, scrubOutbound } from '../secretScrub';
 import type { LoginResult } from './toolLogin';
 import { draftPrompt, generalize, readDraft, readShape, readToolCall, setupPrompt } from './watchSetup';
@@ -49,11 +50,12 @@ import {
   type OrgPolicy,
   type OrgRole, inAudience, type Audience } from '../../shared/org/policy';
 import { buildThreads, nowLine, summarize, type WorkThread } from './workThreads';
-import { LANDED_ARTIFACT, pullRequestsIn, type LandedPullRequest } from './landBranches';
+import { LANDED_ARTIFACT, pullRequestsIn, pullRequestsOpened, type LandedPullRequest } from './landBranches';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
 import { stepsARunGrantCovers } from '../flows/stepEffect';
 import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import { copyFlowId, describeFlowEdit, holdFlowEdit, stepsOf, type FlowStepView } from './flowEdit';
+import { ORG_TUNING_DAYS, orgTuning, type OrgTuningSuggestion } from './orgTuning';
 import { defaultWorkerPicture, initialsPicture } from '../../shared/flows/avatars';
 import { readActivity, type ReviewInput, type ReviewResult, type ReviewedAnswer, type ReviewedRun } from './workerReview';
 import type { TuningWatchStartStore, WorkerReview, WorkerReviewStore } from './orgStores';
@@ -65,7 +67,7 @@ import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, 
 import { resolveShortNames } from '../../shared/shortName';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
 import { CARRIED_LIMITS, SHARE_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
-import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
+import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_LIMITS, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
 import { OVERDB_TOOL, parseOverdbConnection } from '../../shared/overdbConnection';
 import { overapiToolName, parseApiPush } from '../../shared/overapiProject';
 import type { Attachment, Backend, UUID } from '../../shared/types';
@@ -78,7 +80,7 @@ import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTo
 import type { Discovery, SignInSummary } from './toolSignIn';
 import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
 import { argsFor, LISTEN_RULES, untrusted } from './triggers';
-import { newPullRequestLink, prFlowId as prFlowIdFor, prFlowYaml as prFlowFor, workspaceFlowId, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
+import { checkGrantWarning, newPullRequestLink, prFlowId as prFlowIdFor, prFlowYaml as prFlowFor, workspaceFlowId, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 import type { ModelProvider, SecretStatus } from './secrets/service';
 import type { ToolTrouble } from './toolHealth';
 import { HANDBOOK_MAX, WORKER_VERSIONS_KEPT } from './orgStores';
@@ -204,6 +206,11 @@ export interface WorkerSummary {
   /// its questions, approvals and test-mode answers go.
   managerOnSlack?: boolean;
   reportsTo?: { id: UUID; name: string };
+  /// It may hand work to colleagues (`caps.canDelegate`).
+  canDelegate?: true;
+  /// Exactly who it may hand work to, when picked; absent is anyone working
+  /// in the same place.
+  delegatesTo?: Array<{ id: UUID; name: string }>;
   visibility: WorkerVisibility;
   /// Its picture, when it has one; initials otherwise.
   avatarUrl?: string;
@@ -879,6 +886,9 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
     /// (`FlowRuntimeImpl.chatWithRun`). Absent: follow-ups go to the worker.
     chatWithRun?(args: { runId: UUID; text: string; attachments?: Attachment[] }): Promise<{ ok: true; reply: string } | { ok: false; error: string }>;
   };
+  /// The all-time run log (`runSummaryLog`): what an evicted run opened,
+  /// for the pull requests on the Reports page. Absent: live runs only.
+  runSummaries?(): ReadonlyArray<{ id: string; workerId?: string; createdAt?: number; terminalAt: number; wallClockMs: number; pullRequestsOpened?: number }>;
   rejectRun(runId: UUID): { ok: true } | { ok: false; error: string };
   /// Stop a worker's run that is going: its batch, so nothing queued behind
   /// it starts either. Absent: runs can't be stopped from here.
@@ -976,7 +986,7 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   stopBatch?(id: UUID): { ok: true } | { ok: false; error: string };
   /// JDKs downloaded onto the server for workers and repo tests (Setup →
   /// Toolchains). Absent: not offered here.
-  toolchains?: Pick<ToolchainService, 'state' | 'install' | 'remove' | 'setDefault' | 'setRepoPick' | 'askedByRepos'>;
+  toolchains?: Pick<ToolchainService, 'state' | 'install' | 'remove' | 'setDefault' | 'setRepoPick' | 'askedByRepos'> & Partial<Pick<ToolchainService, 'gapsByRepo'>>;
   /// Repos workers may change, landing work as pull requests. Absent: none.
   repos?: {
     list(): ConnectedRepo[];
@@ -997,6 +1007,12 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
     /// Fixes a red CI build gets from its worker before its manager hears.
     ciRounds?(): number;
     setCiRounds?(n: number): Result;
+    /// A repo's setup (run in each checkout) and the checks its workers may run.
+    setChecks?(name: string, input: { setup?: string; checks?: string[] }): Result<{ repo: ConnectedRepo }>;
+    /// Try a repo's saved setup and checks in a throwaway checkout, in the background.
+    tryChecks?(name: string): Result<{ trial: CheckTrial }>;
+    /// The last trial of a repo's checks, running or done.
+    checkTrial?(name: string): CheckTrial | undefined;
     /// What every branch a worker pushes starts with (`agent/`).
     branchPrefix?(): string;
     setBranchPrefix?(prefix: string): void;
@@ -1095,6 +1111,9 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   /// (reviseFlowFromPrompt). Held to what the flow allowed after
   /// (flowEdit.ts). Absent: no such help on this host.
   reviseFlow?(args: { flow: Flow; ask: string }): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
+  /// One change routed across a worker's job and its flow, the desktop's
+  /// worker editor (reviseWorkerFromPrompt). Absent: no such help on this host.
+  reviseWorker?(args: { jobDescription: string; instruction: string; flow?: Flow }): Promise<{ ok: true; jobDescription?: string; flow?: Flow; note: string } | { ok: false; error: string }>;
   /// Read how a worker has been doing and suggest changes (workerReview.ts).
   /// Null: no usable review. Absent: no such help on this host.
   reviewWork?(input: ReviewInput): Promise<ReviewResult | null>;
@@ -1421,6 +1440,11 @@ export function autonomousWithoutGrant(roster: Worker[]): Worker[] {
 /// The artifacts a run report shows, in this order, each clipped to REPORT_CLIP.
 const REPORT_ARTIFACTS = ['plan.md', 'pull-request.md', 'pull-requests.md', 'review.md', 'ci.md', 'pr-replies.md', 'ticket-update.md'];
 const REPORT_CLIP = 4000;
+/// An org import lets the server answer others every this many workers or teams.
+const IMPORT_YIELD_EVERY = 10;
+/// An org file stays under what an import takes (the control plane reads up
+/// to 64 MB for one), with room for its setup and processes.
+export const ORG_EXPORT_MAX_BYTES = 56_000_000;
 
 export interface RunReport {
   worker: string;
@@ -1485,12 +1509,20 @@ export class OrgService {
     // Runs by worker, read once: one worker's summary keeps only its own.
     const scoped: FlowRun[] = [];
     const runsBy = new Map<UUID, FlowRun[]>();
-    for (const r of this.deps.runs.listRuns()) {
+    const allRuns = this.deps.runs.listRuns();
+    for (const r of allRuns) {
       if (!r.workerId || (onlyId && r.workerId !== onlyId)) continue;
       scoped.push(r);
       const list = runsBy.get(r.workerId);
       if (list) list.push(r);
       else runsBy.set(r.workerId, [r]);
+    }
+    const prsBy = new Map<UUID, Array<{ at: number; opened: number }>>();
+    for (const p of this.prRuns(allRuns)) {
+      if (onlyId && p.workerId !== onlyId) continue;
+      const list = prsBy.get(p.workerId);
+      if (list) list.push(p);
+      else prsBy.set(p.workerId, [p]);
     }
     const waiting = this.waitingCounts(scoped, onlyId);
     // The rest is read on first use, so a summary that doesn't need it
@@ -1557,11 +1589,15 @@ export class OrgService {
           ...(w.manager?.slackUserId ? { managerSlackUserId: w.manager.slackUserId } : {}),
           ...(manager?.slackUserId ? { managerOnSlack: true } : {}),
           ...(boss ? { reportsTo: { id: boss.id, name: boss.name } } : {}),
+          ...(w.caps.canDelegate ? { canDelegate: true as const } : {}),
+          ...(w.delegatesTo?.length
+            ? { delegatesTo: w.delegatesTo.flatMap((id) => { const c = roster.find((x) => x.id === id); return c ? [{ id: c.id, name: c.name }] : []; }) }
+            : {}),
           visibility: w.visibility ?? 'private',
           ...(w.avatarUrl ? { avatarUrl: w.avatarUrl } : {}),
           budgetUSDPerMonth: w.budgetUSDPerMonth,
           spentThisMonthUSD: spent.get(w.id) ?? 0,
-          month: this.monthOf(runsBy.get(w.id) ?? []),
+          month: this.monthOf(runsBy.get(w.id) ?? [], prsBy.get(w.id) ?? []),
           last30: this.last30Of(runsBy.get(w.id) ?? []),
           waiting: waiting.get(w.id) ?? 0,
           youManage: canManage(policy, roster, w.id, caller),
@@ -1694,19 +1730,13 @@ export class OrgService {
       return d.getTime();
     })() : 0;
     const priorPrRuns: Array<{ workerId: UUID; ms: number; opened: number }> = [];
-    for (const r of this.deps.runs.listRuns()) {
-      if (!r.workerId) continue;
-      if (r.createdAt < sinceMs) {
-        if (span > 0 && r.createdAt >= priorSince) {
-          const opened = OrgService.prsOpened(r);
-          if (opened) priorPrRuns.push({ workerId: r.workerId, ms: OrgService.agentMs(r), opened });
-        }
+    for (const r of this.prRuns()) {
+      if (r.at < sinceMs) {
+        if (span > 0 && r.at >= priorSince) priorPrRuns.push(r);
         continue;
       }
-      const opened = OrgService.prsOpened(r);
-      if (!opened) continue;
-      prs.set(r.workerId, (prs.get(r.workerId) ?? 0) + opened);
-      prRuns.push({ workerId: r.workerId, ms: OrgService.agentMs(r) });
+      prs.set(r.workerId, (prs.get(r.workerId) ?? 0) + r.opened);
+      prRuns.push(r);
     }
     const roster = this.deps.workers.roster();
     const policy = this.policy();
@@ -2020,7 +2050,20 @@ export class OrgService {
       return { ok: false, error: "Only this worker's manager can do that." };
     }
     if (pauseKind(run) !== want) {
-      return { ok: false, error: want === 'question' ? 'That run is not waiting on an answer.' : 'That run is not waiting on an approval.' };
+      // Usually a card left open while someone else (its manager, from
+      // Slack) answered first. Say what happened, not that the click was wrong.
+      const s = run.state;
+      const already =
+        s.kind === 'running'
+          ? 'someone already answered it, and it’s going again'
+          : s.kind === 'done'
+            ? 'it has finished'
+            : s.kind === 'aborted'
+              ? 'it was stopped'
+              : s.kind === 'paused'
+                ? want === 'approval' ? 'it’s waiting on something else now' : 'it’s waiting on an approval now, not an answer'
+                : 'it moved on';
+      return { ok: false, error: `It isn’t waiting any more: ${already}. Refresh to see where it is.` };
     }
     return { ok: true, run };
   }
@@ -3818,6 +3861,11 @@ export class OrgService {
       audience?: Audience | null;
       /// Slack channel IDs where it answers without being named; null for none.
       slackHomeChannels?: string[] | null;
+      /// It may hand work to colleagues. Its manager's call.
+      canDelegate?: boolean;
+      /// Exactly who it may hand work to, by id or name; null or [] for anyone
+      /// working in the same place again.
+      delegatesTo?: string[] | null;
     },
   ): Result<{ worker: WorkerSummary }> {
     const found = this.managed(caller, idOrName);
@@ -4019,6 +4067,26 @@ export class OrgService {
       }
       if (Object.keys(scopes).length) next.toolScopes = scopes;
       else delete next.toolScopes;
+    }
+    if (patch.canDelegate !== undefined) {
+      if (patch.canDelegate) next.caps.canDelegate = true;
+      else delete next.caps.canDelegate;
+    }
+    if (patch.delegatesTo !== undefined) {
+      const picked: UUID[] = [];
+      for (const ref of patch.delegatesTo ?? []) {
+        const c = this.resolve(caller, String(ref));
+        if (!c) return { ok: false, error: `No worker called "${ref}" that you can see.` };
+        if (c.id === w.id) return { ok: false, error: `${w.name} can't hand work to itself.` };
+        // A handoff is the colleague's work on the colleague's budget: lending
+        // it is that colleague's manager's call. One already picked may stay.
+        if (!(w.delegatesTo ?? []).includes(c.id) && !canManage(policy, this.deps.workers.roster(), c.id, caller)) {
+          return { ok: false, error: `Handing work to ${c.name} spends ${c.name}'s budget: ${c.name}'s manager or an admin can add it.` };
+        }
+        if (!picked.includes(c.id)) picked.push(c.id);
+      }
+      if (picked.length) next.delegatesTo = picked;
+      else delete next.delegatesTo;
     }
     if (patch.slackHomeChannels !== undefined) {
       const ids = [...new Set((patch.slackHomeChannels ?? []).map((c) => String(c).trim().toUpperCase()))];
@@ -5065,9 +5133,11 @@ export class OrgService {
     // be carrying words written by anyone, and on the desktop those words
     // land in a chat with the manager's own browser and sign-ins.
     const ask = run.parentOrchestrationId ? this.allAsks().find((a) => a.orchestrationId === run.parentOrchestrationId) : undefined;
-    const managersOwn = !!ask && ask.via !== 'trigger' && !ask.untrusted && (ask.slackUserId ? ask.slackUserId === manager.slackUserId : ask.by === manager.name);
+    // By Slack id only: a name is whatever a token or sign-in was called, so
+    // anyone could go by the manager's.
+    const managersOwn = !!ask && ask.via !== 'trigger' && !ask.untrusted && !!ask.slackUserId && ask.slackUserId === manager.slackUserId;
     if (!managersOwn) {
-      const why = !ask ? 'your own schedule' : ask.via === 'trigger' ? 'a trigger or a Slack message' : `${ask.by}, not ${manager.name}`;
+      const why = !ask ? 'your own schedule' : ask.via === 'trigger' ? 'a trigger or a Slack message' : ask.slackUserId ? `${ask.by}, not ${manager.name}` : `${ask.by}, who isn’t signed in as ${manager.name}`;
       return { ok: false, error: `This work came from ${why}, so it can’t go to ${manager.name}’s desktop: only work ${manager.name} asked you for can. Say what you couldn’t do, and ${manager.name} can ask you directly.` };
     }
     const task = req.task.trim();
@@ -5094,8 +5164,10 @@ export class OrgService {
     const store = this.deps.desktopTasks;
     if (!store) return { ok: true, tasks: [] };
     if (!caller.slackUserId) return { ok: true, tasks: [] };
-    const all = tidyDesktopTasks(store.load().tasks, this.now());
-    store.save({ tasks: all });
+    const stored = store.load().tasks;
+    const all = tidyDesktopTasks(stored, this.now());
+    // A desktop asks every refresh: write only when something lapsed.
+    if (all !== stored) store.save({ tasks: all });
     return { ok: true, tasks: all.filter((t) => t.forSlackUserId === caller.slackUserId && (t.status === 'waiting' || t.status === 'claimed')).sort((a, b) => a.at - b.at) };
   }
 
@@ -5105,7 +5177,10 @@ export class OrgService {
     const all = tidyDesktopTasks(store.load().tasks, this.now());
     const task = all.find((t) => t.id === id);
     if (!task || !caller.slackUserId || task.forSlackUserId !== caller.slackUserId) return { ok: false, error: 'No task by that id for your desktop.' };
-    if (!want.includes(task.status)) return { ok: false, error: task.status === 'expired' ? 'That task lapsed: nobody picked it up within a day.' : `That task is already ${task.status}.` };
+    if (!want.includes(task.status)) {
+      const lapsed = task.claimedAt ? 'That task lapsed: it was allowed but nothing came back within three days.' : 'That task lapsed: nobody picked it up within a day.';
+      return { ok: false, error: task.status === 'expired' ? lapsed : `That task is already ${task.status}.` };
+    }
     return { ok: true, task, all };
   }
 
@@ -5136,15 +5211,22 @@ export class OrgService {
     if (!got.ok) return got;
     const text = result.trim();
     if (!text) return { ok: false, error: 'Send back what came of it.' };
-    const task = { ...got.task, status: 'done' as const, doneAt: this.now(), result: text.slice(0, MAX_DESKTOP_RESULT_CHARS) };
-    this.deps.desktopTasks!.save({ tasks: got.all.map((t) => (t.id === id ? task : t)) });
-    this.record(caller, `Sent back ${task.workerName}’s desktop task`);
-    const note = this.desktopReply(
+    const sent = text.slice(0, MAX_DESKTOP_RESULT_CHARS);
+    // Handed over first: if the worker can't take it (paused, say), the task
+    // stays open on the desktop with the text still in the box, rather than
+    // closing with the result where the worker never sees it.
+    const failed = this.desktopReply(
       caller,
-      task,
-      `${caller.name} did the task you handed to their desktop ("${task.task.slice(0, 200)}") and sent back:\n\n${task.result}\n\nCarry on with what you were doing, using this. If whoever asked you is waiting in Slack, tell them with your notify call.`,
+      got.task,
+      `${caller.name} did the task you handed to their desktop ("${got.task.task.slice(0, 200)}") and sent back:\n\n${sent}\n\nCarry on with what you were doing, using this. If whoever asked you is waiting in Slack, tell them with your notify call.`,
     );
-    return { ok: true, task, ...(note ? { note } : {}) };
+    if (failed) return { ok: false, error: `${failed} It’s still open here: send it again once ${got.task.workerName} can take it.` };
+    const task = { ...got.task, status: 'done' as const, doneAt: this.now(), result: sent };
+    // Read again: the hand-over may have taken a moment, and others' tasks moved.
+    const latest = tidyDesktopTasks(this.deps.desktopTasks!.load().tasks, this.now());
+    this.deps.desktopTasks!.save({ tasks: latest.some((t) => t.id === id) ? latest.map((t) => (t.id === id ? task : t)) : [...latest, task] });
+    this.record(caller, `Sent back ${task.workerName}’s desktop task`);
+    return { ok: true, task };
   }
 
   /// The reply to the worker, in the thread that asked. Why not, when it
@@ -5455,11 +5537,30 @@ export class OrgService {
 
   /// Pull requests a run opened (not ones it only added to, or found open).
   private static prsOpened(r: FlowRun): number {
-    return pullRequestsIn(r.artifacts?.[LANDED_ARTIFACT]?.body ?? '').filter((p) => p.state === 'open' || p.state === 'draft').length;
+    return pullRequestsOpened(r.artifacts?.[LANDED_ARTIFACT]?.body ?? '');
+  }
+
+  /// Every worker run that opened a pull request: when it started, its agent
+  /// time, how many. Live runs, and from the all-time run log the ones the
+  /// runtime has since evicted (it keeps the newest 200 worker runs), or a
+  /// busy month's count would shrink as its older runs left the disk.
+  private prRuns(runs: readonly FlowRun[] = this.deps.runs.listRuns()): Array<{ workerId: UUID; at: number; ms: number; opened: number }> {
+    const out: Array<{ workerId: UUID; at: number; ms: number; opened: number }> = [];
+    const live = new Set<string>();
+    for (const r of runs) {
+      live.add(r.id);
+      const opened = r.workerId ? OrgService.prsOpened(r) : 0;
+      if (opened) out.push({ workerId: r.workerId!, at: r.createdAt, ms: OrgService.agentMs(r), opened });
+    }
+    for (const s of this.deps.runSummaries?.() ?? []) {
+      if (live.has(s.id) || !s.workerId || !s.pullRequestsOpened) continue;
+      out.push({ workerId: s.workerId, at: s.createdAt ?? s.terminalAt, ms: s.wallClockMs, opened: s.pullRequestsOpened });
+    }
+    return out;
   }
 
   /// A worker's month so far, from its runs: started, failed, PRs opened.
-  private monthOf(runs: FlowRun[]): WorkerSummary['month'] {
+  private monthOf(runs: FlowRun[], prs: ReadonlyArray<{ at: number; opened: number }>): WorkerSummary['month'] {
     const start = new Date(this.now());
     start.setDate(1);
     start.setHours(0, 0, 0, 0);
@@ -5468,7 +5569,7 @@ export class OrgService {
     return {
       runs: mine.length,
       failed: ended.filter((r) => OrgService.runOutcome(r) === 'failed').length,
-      pullRequests: mine.reduce((n, r) => n + OrgService.prsOpened(r), 0),
+      pullRequests: prs.reduce((n, p) => n + (p.at >= start.getTime() ? p.opened : 0), 0),
     };
   }
 
@@ -6168,7 +6269,7 @@ export class OrgService {
     if (!flow.ok) return flow;
     let base = flow.flow;
     if (args.yaml) {
-      const held = this.readFlowEdit(flow.flow, args.yaml, isAdmin(this.policy(), caller), w.mcpServers);
+      const held = this.readFlowEdit(flow.flow, args.yaml, isAdmin(this.policy(), caller), this.toolsOf(w));
       if (!held.ok) return held;
       base = held.flow;
     }
@@ -6267,17 +6368,100 @@ export class OrgService {
     const admin = isAdmin(this.policy(), caller);
     let base = flow.flow;
     if (yaml) {
-      const held = this.readFlowEdit(flow.flow, yaml, admin, found.worker.mcpServers);
+      const held = this.readFlowEdit(flow.flow, yaml, admin, this.toolsOf(found.worker));
       if (!held.ok) return held;
       base = held.flow;
     }
     const revised = await this.deps.reviseFlow({ flow: base, ask: change.slice(0, ASK_MAX) }).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }));
     if (!revised.ok) return { ok: false, error: `Couldn’t write a new version just now: ${revised.error}` };
-    const held = holdFlowEdit(flow.flow, revised.flow, { admin, servers: found.worker.mcpServers });
+    const held = holdFlowEdit(flow.flow, revised.flow, { admin, servers: this.toolsOf(found.worker) });
     if (!held.ok) return held;
     const changes = describeFlowEdit(flow.flow, held.flow);
     if (!changes.length) return { ok: false, error: 'That didn’t change any of its steps. Try saying it another way.' };
     return { ok: true, flowId: flow.flow.id, yaml: serializeFlow(held.flow), steps: stepsOf(held.flow), changes };
+  }
+
+  /// The tools a flow edit may use: its role's and its own. Held to its own
+  /// alone, a QA worker's flow couldn't name the test-systems its role gives it.
+  private toolsOf(w: Worker): string[] {
+    return workerRunTools(roleToolsFor(w, this.policy().roles), w.mcpServers);
+  }
+
+  /// One change, said once, routed to whichever of its job and its usual flow
+  /// (or the one named) it needs, as the desktop's worker editor does. A
+  /// manager asking for "screenshots with test-systems" edited the job, and
+  /// the flow that actually runs never heard. Nothing is saved: the job comes
+  /// back as text, the flow as a held edit to save with saveFlowEdit, and any
+  /// tool the new flow needs that the worker lacks, to give it first.
+  async reviseWorker(
+    caller: OrgCaller,
+    idOrName: string,
+    ask: string,
+    opts: { job?: string; flowId?: string } = {},
+  ): Promise<Result<{ name: string; note: string; job?: string; flow?: { flowId: string; name: string; yaml: string; steps: FlowStepView[]; changes: string[]; sharedWith: string[]; othersNotYours: string[] }; flowProblem?: string; needsTools?: string[] }>> {
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    if (!this.deps.reviseWorker) return { ok: false, error: 'Changing a worker this way isn’t set up on this server. Change it by hand.' };
+    const change = ask.trim();
+    if (change.length < 3) return { ok: false, error: 'Say what should change.' };
+    const w = found.worker;
+    const flowId = opts.flowId || w.preferredFlowId || w.flowIds[0];
+    const own = flowId ? this.ownFlow(w, flowId) : null;
+    if (own && !own.ok && opts.flowId) return own;
+    const before = own?.ok ? own.flow : undefined;
+    const job = (opts.job ?? w.jobDescription).trim();
+    const res = await this.deps
+      .reviseWorker({ jobDescription: job, instruction: change.slice(0, ASK_MAX), ...(before ? { flow: before } : {}) })
+      .catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }));
+    if (!res.ok) return { ok: false, error: `Couldn’t work out the change just now: ${res.error}` };
+    const out: { name: string; note: string; job?: string; flow?: { flowId: string; name: string; yaml: string; steps: FlowStepView[]; changes: string[]; sharedWith: string[]; othersNotYours: string[] }; flowProblem?: string; needsTools?: string[] } = {
+      name: w.name,
+      note: res.note,
+      ...(res.jobDescription && res.jobDescription !== job ? { job: res.jobDescription } : {}),
+    };
+    if (res.flow && !before) out.flowProblem = `${w.name} has no flow to change here. Its job changed; change how it works by hand.`;
+    if (res.flow && before) {
+      // A tool the new steps name that it has nowhere: the flow can't be
+      // kept until it's given, so say which, for a "Give it" button.
+      const have = new Set([...this.toolsOf(w), SERVER_TOOL]);
+      const had = new Set(before.steps.flatMap((s) => s.tools ?? []));
+      const needs = [
+        ...new Set(
+          res.flow.steps
+            .flatMap((s) => s.tools ?? [])
+            .filter((t) => !had.has(t))
+            .flatMap((t) => {
+              const server = parseMcpToolName(t)?.server ?? /^mcp__(.+)$/.exec(t)?.[1];
+              return server && !have.has(server) ? [server] : [];
+            }),
+        ),
+      ];
+      if (needs.length) {
+        out.needsTools = needs;
+        out.flowProblem = `How it works would use ${needs.join(' and ')}, which ${w.name} doesn’t have yet. Give it ${needs.length === 1 ? 'that' : 'those'}, then rewrite again.`;
+      } else {
+        const held = holdFlowEdit(before, res.flow, { admin: isAdmin(this.policy(), caller), servers: this.toolsOf(w) });
+        if (!held.ok) out.flowProblem = held.error;
+        else {
+          const changes = describeFlowEdit(before, held.flow);
+          if (changes.length) {
+            const roster = this.deps.workers.roster();
+            const others = roster.filter((x) => x.id !== w.id && (x.flowIds.includes(before.id) || x.wrapUpFlowId === before.id));
+            out.flow = {
+              flowId: before.id,
+              name: before.name,
+              yaml: serializeFlow(held.flow),
+              steps: stepsOf(held.flow),
+              changes,
+              sharedWith: others.map((x) => x.name),
+              othersNotYours: others.filter((x) => !canManage(this.policy(), roster, x.id, caller)).map((x) => x.name),
+            };
+          }
+        }
+      }
+    }
+    if (!out.job && !out.flow && !out.flowProblem) return { ok: false, error: 'That didn’t change its job or how it works. Try saying it another way.' };
+    return { ok: true, ...out };
   }
 
   /// Save a suggested change. A flow other workers run changes for them
@@ -6290,7 +6474,7 @@ export class OrgService {
     const w = found.worker;
     const flow = this.ownFlow(w, flowId);
     if (!flow.ok) return flow;
-    const held = this.readFlowEdit(flow.flow, yaml, isAdmin(this.policy(), caller), w.mcpServers);
+    const held = this.readFlowEdit(flow.flow, yaml, isAdmin(this.policy(), caller), this.toolsOf(w));
     if (!held.ok) return held;
     const changes = describeFlowEdit(flow.flow, held.flow);
     if (!changes.length) return { ok: false, error: 'Nothing changed.' };
@@ -6999,17 +7183,24 @@ export class OrgService {
   // ---- REPOS ------------------------------------------------------------
 
   /// Connected repos, and who works in each.
-  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; ticketStatus?: string; branchPrefix?: string; lastRefreshedAt?: number }> {
+  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string; toolchainGaps?: KitUse[]; checkTrial?: { ok?: boolean; finishedAt: number } }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; ticketStatus?: string; branchPrefix?: string; lastRefreshedAt?: number; checksWarning?: string }> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!canHire(this.policy(), caller)) return { ok: false, error: 'Only people who may hire workers can see the repos.' };
     const roster = this.deps.workers.roster();
     const repos = this.deps.repos;
     const testsOff = repos.testsOff?.();
+    // What each repo builds with that its runs don't get.
+    const gaps = this.deps.toolchains?.gapsByRepo?.() ?? {};
+    // Standing, not only on the save that set them: checks run the repo's
+    // own scripts, which a worker that isn't its own user can edit and run.
+    const checksWarning = checkGrantWarning(repos.list());
     return {
       ok: true,
+      ...(checksWarning ? { checksWarning } : {}),
       repos: repos.list().map((r) => {
         const tokenEnv = repos.tokenFor(r);
-        return { ...r, canPush: repos.canPush(r), ...(tokenEnv ? { tokenEnv } : {}), workers: roster.filter((w) => w.projectPath === r.path).map((w) => w.name) };
+        const trial = repos.checkTrial?.(r.name);
+        return { ...r, canPush: repos.canPush(r), ...(tokenEnv ? { tokenEnv } : {}), ...(gaps[r.name] ? { toolchainGaps: gaps[r.name] } : {}), ...(trial?.finishedAt ? { checkTrial: { ...(trial.ok !== undefined ? { ok: trial.ok } : {}), finishedAt: trial.finishedAt } } : {}), workers: roster.filter((w) => w.projectPath === r.path).map((w) => w.name) };
       }),
       workspaces: repos.workspaces().map((ws) => ({ ...ws, workers: roster.filter((w) => w.projectPath === ws.rootPath).map((w) => w.name) })),
       ...(testsOff ? { testsOff } : {}),
@@ -7102,6 +7293,41 @@ export class OrgService {
     const res = repos.setCiRounds(n);
     if (res.ok) this.record(caller, n ? `Set CI failures to go back to the worker up to ${n} ${n === 1 ? 'time' : 'times'}.` : 'Set CI failures to go straight to the manager.');
     return res;
+  }
+
+  /// A repo's setup and checks. Admins. Its workers' flows are rewritten so
+  /// their next runs may run the checks; runs under way keep theirs.
+  setRepoChecks(caller: OrgCaller, name: string, input: { setup?: string; checks?: string[] }): Result<{ repo: ConnectedRepo }> {
+    const repos = this.deps.repos;
+    if (!repos?.setChecks) return { ok: false, error: 'Repos are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change what runs in a repo.' };
+    const res = repos.setChecks(name, input);
+    if (!res.ok) return res;
+    repos.changed();
+    this.refreshRepoFlows();
+    const r = res.repo;
+    const said = [r.setup ? `setup ${r.setup}` : 'no setup', r.checks?.length ? `checks ${r.checks.join(', ')}` : 'no checks'].join(', ');
+    this.record(caller, `Set ${name} to ${said}.`);
+    return res;
+  }
+
+  /// Try a repo's saved setup and checks, as a worker's checkout would get
+  /// them. Admins. It runs in the background: read it with repoCheckTrial.
+  tryRepoChecks(caller: OrgCaller, name: string): Result<{ trial: CheckTrial }> {
+    const repos = this.deps.repos;
+    if (!repos?.tryChecks) return { ok: false, error: 'Checks can’t be tried on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can try a repo’s checks.' };
+    const res = repos.tryChecks(name);
+    if (res.ok) this.record(caller, `Tried the checks of ${name}.`);
+    return res;
+  }
+
+  repoCheckTrial(caller: OrgCaller, name: string): Result<{ trial?: CheckTrial }> {
+    const repos = this.deps.repos;
+    if (!repos?.checkTrial) return { ok: false, error: 'Checks can’t be tried on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can see a repo’s check trials.' };
+    const trial = repos.checkTrial(name);
+    return { ok: true, ...(trial ? { trial } : {}) };
   }
 
   disconnectRepo(caller: OrgCaller, name: string): Result {
@@ -7246,7 +7472,7 @@ export class OrgService {
     kits: readonly KitDef[];
     toolchains: Toolchain[];
     defaults: Partial<Record<KitId, string>>;
-    repos: Array<{ name: string; picks: Partial<Record<KitId, string>>; asks: Partial<Record<KitId, string>> }>;
+    repos: Array<{ name: string; picks: Partial<Record<KitId, string>>; asks: Partial<Record<KitId, string>>; gaps: KitUse[] }>;
     /// What a custom kit's archive must be built for: `linux/arm64`.
     platform: string;
   }> {
@@ -7255,6 +7481,7 @@ export class OrgService {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can see the toolchains.' };
     const s = tc.state();
     const asked = tc.askedByRepos();
+    const gaps = tc.gapsByRepo?.() ?? {};
     // The default a run falls back to: the one picked, else the first ready.
     const defaults: Partial<Record<KitId, string>> = {};
     for (const k of KITS) {
@@ -7267,7 +7494,7 @@ export class OrgService {
       kits: KITS,
       toolchains: s.toolchains,
       defaults,
-      repos: (this.deps.repos?.list() ?? []).map((r) => ({ name: r.name, picks: s.repoPicks[r.name] ?? {}, asks: asked[r.name] ?? {} })),
+      repos: (this.deps.repos?.list() ?? []).map((r) => ({ name: r.name, picks: s.repoPicks[r.name] ?? {}, asks: asked[r.name] ?? {}, gaps: gaps[r.name] ?? [] })),
       platform: `${process.platform}/${process.arch}`,
     };
   }
@@ -7457,11 +7684,18 @@ export class OrgService {
     if (!this.deps.shareWorker) return { ok: false, error: 'Workers can’t be exported from this server.' };
     const policy = this.policy();
     const roster = this.deps.workers.roster();
+    // What an import won't take, refused here rather than there.
+    if (roster.length > ORG_BUNDLE_LIMITS.workers) return { ok: false, error: `This org has ${roster.length} workers; one org file holds ${ORG_BUNDLE_LIMITS.workers} at most. Retire the ones you don’t need, then export again.` };
     const left = new Set<string>(['Secret values: each tool’s keys are entered again on the new server.', 'Webhook addresses: each webhook trigger gets a new one there.']);
-    const workers: OrgBundleWorker[] = roster.map((w) => {
+    let bytes = 0;
+    const workers: OrgBundleWorker[] = [];
+    for (const w of roster) {
       const file = this.portableFile(w, { learned: true, journal: true, whole: true });
+      if (file.yaml.length > ORG_BUNDLE_LIMITS.workerFile) return { ok: false, error: `${w.name}’s worker file is too large to move (${Math.ceil(file.yaml.length / 1_000_000)} MB; ${ORG_BUNDLE_LIMITS.workerFile / 1_000_000} MB at most). Trim what it knows, then export again.` };
+      bytes += Buffer.byteLength(file.yaml, 'utf8');
+      if (bytes > ORG_EXPORT_MAX_BYTES) return { ok: false, error: `The org is too large for one file (over ${ORG_EXPORT_MAX_BYTES / 1_000_000} MB, mostly workers’ journals and what they know). Retire workers you don’t need, or trim what they know, then export again.` };
       for (const l of file.left) left.add(`${w.name}: ${l}`);
-      return {
+      workers.push({
         sourceId: w.id,
         yaml: file.yaml,
         trust: w.trust,
@@ -7469,8 +7703,8 @@ export class OrgService {
         ...(w.manager ? { manager: { ...w.manager } } : {}),
         ...(w.reportsTo ? { reportsTo: w.reportsTo } : {}),
         ...(w.visibility ? { visibility: w.visibility } : {}),
-      };
-    });
+      });
+    }
     const ids = new Set(roster.map((w) => w.id));
     const teams: OrgBundleTeam[] = (this.deps.teams?.list().teams ?? [])
       .filter((t) => !t.disbanded && t.members.every((m) => ids.has(m.workerId)))
@@ -7483,6 +7717,7 @@ export class OrgService {
         ...(t.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
         members: t.members.map((m) => ({ sourceId: m.workerId, role: m.role })),
       }));
+    if (teams.length > ORG_BUNDLE_LIMITS.teams) return { ok: false, error: `This org has ${teams.length} teams; one org file holds ${ORG_BUNDLE_LIMITS.teams} at most. Disband the ones you don’t need, then export again.` };
     this.record(caller, `Exported the org: ${workers.length} workers and ${teams.length} teams.`);
     return {
       ok: true,
@@ -7615,32 +7850,56 @@ export class OrgService {
   }
 
   /// Whether an org file's trust, managers and reporting lines come along.
-  /// Only a Slack workspace id that matches this server's says so on its own.
-  /// Anything else the file says about where it came from is unchecked, so
-  /// without a match it keeps trust only when the importer vouches for it
-  /// (`keepTrust`: the desktop's own move, or `--keep-trust`). A file from
-  /// another workspace's org always lands as any share does: each worker a
-  /// hire on probation managed by the admin.
+  /// Everything a file says about where it came from is the file's word,
+  /// workspace id included: anyone can write any id into one. So trust
+  /// comes along only when the admin importing it vouches for it
+  /// (`keepTrust`: the desktop's own move, the console's “This is our own
+  /// org”, or `--keep-trust`). The workspace id can only take trust away: a
+  /// file naming another workspace lands as any share does, each worker a
+  /// hire on probation managed by the admin, vouched for or not.
   private orgTrust(caller: OrgCaller, bundle: Pick<OrgBundle, 'source'>, keepTrust = false): { keeps: boolean; why: string } {
     const theirs = bundle.source.slackTeamId;
     const ours = this.policy().slackTeamId;
     if (theirs && ours && theirs !== ours) {
       return { keeps: false, why: 'It comes from another Slack workspace’s org, so each worker starts on probation with you as its manager.' };
     }
-    if (theirs && ours) return { keeps: true, why: 'Same Slack workspace: trust, managers and who reports to whom come along.' };
-    if (keepTrust) return { keeps: true, why: `${bundle.source.kind === 'desktop' ? 'From an overcli app' : 'From a server that can’t be matched by Slack workspace'}, moved by ${caller.name}, an admin here: trust and reporting lines come along.` };
+    if (keepTrust) {
+      const from = theirs && ours ? 'From this Slack workspace' : bundle.source.kind === 'desktop' ? 'From an overcli app' : 'From a server that can’t be matched by Slack workspace';
+      return { keeps: true, why: `${from}, vouched for by ${caller.name}, an admin here: trust, managers and who reports to whom come along.` };
+    }
+    if (theirs && ours) return { keeps: false, why: 'The file says it’s from this Slack workspace, but a file can say anything, so each worker starts on probation with you as its manager, and its rules stay out. If it’s an export of your own org, vouch for it: tick “This is our own org”, or pass --keep-trust.' };
     return { keeps: false, why: 'Nothing in the file shows it is from this org, so each worker starts on probation with you as its manager, and its rules stay out. If it is your own org, vouch for it: tick “This is our own org”, or pass --keep-trust.' };
   }
 
   /// An org file onto this server, for an admin. Workers it already took
   /// (by their id where they came from) are left as they are, so importing
-  /// again is safe. Workers land paused unless `start`: the old copy is
+  /// again is safe, but for what an earlier run couldn't set (see
+  /// `repairLanded`). Workers land paused unless `start`: the old copy is
   /// likely still running. `dryRun` writes nothing and says what would land.
-  importOrg(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {}): Result<{ report: OrgImportReport }> {
+  /// Up to 500 workers: it stops every few to let the server answer others.
+  async importOrg(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean } = {}): Promise<Result<{ report: OrgImportReport }>> {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can import an org.' };
     if (!this.deps.importWorker) return { ok: false, error: 'This server cannot take published workers.' };
     if (bundle.teams.length && !this.deps.teams?.save) return { ok: false, error: 'Teams are not running on this server.' };
+    if (opts.dryRun) return this.importOrgNow(caller, bundle, opts);
+    // Two at once would each find a worker not here yet, and hire it twice.
+    if (this.importingOrg) return { ok: false, error: 'An org import is already running on this server. Wait for it to finish, then run this one again.' };
+    this.importingOrg = true;
+    try {
+      return await this.importOrgNow(caller, bundle, opts);
+    } finally {
+      this.importingOrg = false;
+    }
+  }
+
+  private importingOrg = false;
+
+  private async importOrgNow(caller: OrgCaller, bundle: OrgBundle, opts: { dryRun?: boolean; start?: boolean; keepTrust?: boolean }): Promise<Result<{ report: OrgImportReport }>> {
     const dryRun = !!opts.dryRun;
+    let n = 0;
+    const breathe = async () => {
+      if (++n % IMPORT_YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r));
+    };
     const trust = this.orgTrust(caller, bundle, !!opts.keepTrust);
     const policy = this.policy();
     const me: WorkerManager = { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
@@ -7651,6 +7910,7 @@ export class OrgService {
     const placed = new Map<string, UUID | 'planned'>();
 
     for (const bw of bundle.workers) {
+      await breathe();
       const parsed = parseWorkerYaml(bw.yaml);
       const name = parsed.ok ? parsed.bundle.worker.name : bw.sourceId;
       // A manager is someone here only by their Slack id in the same workspace.
@@ -7661,8 +7921,10 @@ export class OrgService {
       report.workers.push(row);
       const here = this.publishedWorker(bw.sourceId);
       if (here) {
-        Object.assign(row, { status: 'alreadyHere', id: here, trust: this.deps.workers.get(here)?.trust ?? landingTrust, paused: !this.deps.workers.get(here)?.enabled });
+        const cur = this.deps.workers.get(here);
+        Object.assign(row, { status: 'alreadyHere', id: here, trust: cur?.trust ?? landingTrust, manager: cur?.manager?.name ?? manager.name, paused: !cur?.enabled });
         placed.set(bw.sourceId, here);
+        if (trust.keeps && cur) this.repairLanded(cur, bw, me, row, dryRun);
         continue;
       }
       if (!parsed.ok) {
@@ -7733,7 +7995,8 @@ export class OrgService {
         if (!bw.reportsTo || !id || row.status === 'failed') continue;
         const now = id === 'planned' ? undefined : this.deps.workers.get(id);
         const repair = row.status === 'alreadyHere';
-        if (repair && (!now || now.reportsTo)) continue;
+        // A line to a worker no longer here is as good as none.
+        if (repair && (!now || (now.reportsTo && this.deps.workers.get(now.reportsTo)))) continue;
         if (!boss) {
           row.notes.push('Its manager worker didn’t come, so it reports to nobody.');
           continue;
@@ -7745,6 +8008,7 @@ export class OrgService {
     }
 
     for (const t of bundle.teams) {
+      await breathe();
       const missing = t.members.filter((m) => !placed.has(m.sourceId));
       if (missing.length || !t.members.length) {
         report.teams.push({ name: t.name, status: 'failed', error: t.members.length ? `${missing.length} of its members didn’t come.` : 'It has no members.' });
@@ -7776,6 +8040,32 @@ export class OrgService {
       this.record(caller, `Imported ${added} worker${added === 1 ? '' : 's'} and ${report.teams.filter((t) => t.status !== 'failed').length} teams from ${bundle.source.org ?? (bundle.source.kind === 'desktop' ? 'an overcli app' : 'another server')}.`);
     }
     return { ok: true, report };
+  }
+
+  /// A worker an earlier import landed, when this one keeps trust: an earlier
+  /// run the admin didn't vouch for landed it on probation under them. If it
+  /// is still exactly that, it takes the file's trust and manager now. If it
+  /// is on probation for any other reason (someone moved it there by hand,
+  /// say), it is left alone and the report says so. Run again, nothing more
+  /// changes.
+  private repairLanded(cur: Worker, bw: OrgBundleWorker, me: WorkerManager, row: OrgImportReport['workers'][number], dryRun: boolean): void {
+    if (cur.trust !== 'probation' || bw.trust === 'probation') return;
+    const isMe = (m?: WorkerManager) => !!m && (me.slackUserId ? m.slackUserId === me.slackUserId : !m.slackUserId && m.name === me.name);
+    const theirs = bw.manager?.slackUserId ? bw.manager : undefined;
+    if (!theirs || isMe(theirs) || !isMe(cur.manager)) {
+      row.notes.push(`It’s on probation here, ${bw.trust} in the file. If that’s right, raise it on its page.`);
+      return;
+    }
+    if (dryRun) {
+      Object.assign(row, { trust: bw.trust, manager: theirs.name });
+      row.notes.push('An earlier import landed it on probation under you: its trust and manager from the file would be set.');
+      return;
+    }
+    this.deps.workers.save({ ...structuredClone(cur), manager: { ...theirs } });
+    row.manager = theirs.name;
+    const set = this.applyTrust(cur.id, bw.trust);
+    if (set.ok) row.trust = bw.trust;
+    row.notes.push(set.ok ? 'An earlier import landed it on probation under you: its trust and manager from the file are set now.' : `Its manager is set now; its trust didn’t come: ${set.error}`);
   }
 
   /// An exported worker's setup, onto the worker it landed as: scopes no
@@ -9477,6 +9767,73 @@ export class OrgService {
     for (const a of this.allAsks()) if (a.via !== 'trigger' && a.slackUserId) used({ name: a.by, slackUserId: a.slackUserId }, a.workerName, a.at);
     for (const t of this.deps.teams?.list().tasks ?? []) if (t.requestedBy?.slackUserId) used({ name: t.requestedBy.name, slackUserId: t.requestedBy.slackUserId }, t.teamName, t.createdAt);
     return { ok: true, people: [...rows.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+
+  /// Setup → Tuning: what goes wrong across every worker's runs, with the
+  /// org-level fix for each (orgTuning.ts). Admins only: the fixes are theirs.
+  orgTuning(caller: OrgCaller): Result<{ suggestions: OrgTuningSuggestion[]; days: number; runsRead: number }> {
+    const policy = this.policy();
+    if (!isAdmin(policy, caller)) return { ok: false, error: 'Only admins can tune the org.' };
+    const roster = this.deps.workers.roster();
+    const label = (id: string) => (id ? id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]+/g, ' ') : id);
+    const runs = this.deps.runs
+      .listRuns()
+      .filter((r) => r.workerId && !r.trial)
+      .map((r) => ({
+        id: r.id,
+        workerId: r.workerId!,
+        flowId: r.flowId,
+        createdAt: r.createdAt,
+        ...(r.refusedTools?.length ? { refusedTools: r.refusedTools } : {}),
+        ...(r.refusedHeld?.length ? { refusedHeld: r.refusedHeld } : {}),
+        ...(r.pausedSteps?.length ? { pausedSteps: r.pausedSteps } : {}),
+        ranSteps: r.attempts.map((a) => a.stepId),
+        stepLabels: Object.fromEntries(r.flowSnapshot.steps.map((s) => [s.id, label(s.id)])),
+        flowName: r.flowSnapshot.name,
+      }));
+    const suggestions = orgTuning({
+      now: this.now(),
+      runs,
+      workers: roster.map((w) => ({
+        id: w.id,
+        name: w.name,
+        managerKey: w.manager?.slackUserId ?? w.manager?.name ?? '',
+        tools: this.toolsOf(w),
+        roleToolsAlways: w.caps.roleToolsAlways === true,
+        alwaysAllow: w.caps.alwaysAllow ?? [],
+      })),
+      cleared: policy.allowedMcpServers ?? [],
+      ...(this.deps.tools ? { installed: this.deps.tools.list([]).tools.map((t) => t.name) } : {}),
+    });
+    return { ok: true, suggestions, days: ORG_TUNING_DAYS, runsRead: runs.length };
+  }
+
+  /// Apply one of orgTuning's worker fixes, found afresh by its id: a tool
+  /// given, its tools let loose, a step always allowed. The org rule (any
+  /// manager may give a tool) is the control plane's, through the rules.
+  applyOrgTuning(caller: OrgCaller, id: string): Result<{ done: string; rule?: { allowedMcpServers: string[] } }> {
+    const found = this.orgTuning(caller);
+    if (!found.ok) return found;
+    const s = found.suggestions.find((x) => x.id === id);
+    if (!s) return { ok: false, error: 'That’s already sorted, or no longer applies. Refresh to see what’s left.' };
+    const a = s.action;
+    if (a.kind === 'clearTool') {
+      return { ok: true, done: s.title, rule: { allowedMcpServers: [...new Set([...(this.policy().allowedMcpServers ?? []), a.tool])] } };
+    }
+    const ids = a.kind === 'alwaysAllowStep' ? [a.workerId] : a.workerIds;
+    for (const wid of ids) {
+      const w = this.deps.workers.get(wid);
+      if (!w) continue;
+      const res =
+        a.kind === 'giveTool'
+          ? this.update(caller, w.id, { mcpServers: [...new Set([...(w.mcpServers ?? []), a.tool])] })
+          : a.kind === 'useOwnTools'
+            ? this.update(caller, w.id, { roleToolsAlways: true })
+            : this.update(caller, w.id, { alwaysAllow: [...new Set([...(w.caps.alwaysAllow ?? []), a.key])] });
+      if (!res.ok) return { ok: false, error: `${w.name}: ${res.error}` };
+    }
+    this.record(caller, `Tuning: ${s.title}.`);
+    return { ok: true, done: s.title };
   }
 
   health(caller: OrgCaller): Result<{

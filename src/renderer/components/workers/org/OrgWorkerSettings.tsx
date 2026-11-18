@@ -31,6 +31,8 @@ export interface SettingsWorker extends OrgWorker {
   alwaysAllow?: string[];
   writesCode?: boolean;
   slackHomeChannels?: string[];
+  canDelegate?: boolean;
+  delegatesTo?: Array<{ id: string; name: string }>;
   answersAtOnce?: number;
   role?: string;
   tools?: Array<{ name: string; ok: boolean; scope?: Scope; scopeFrom?: 'default' | 'own'; fromRole?: string }>;
@@ -91,6 +93,8 @@ interface Form {
   prCommentAuthors: string;
   skipCheckpoints: boolean;
   alwaysAllow: string[];
+  canDelegate: boolean;
+  delegatesTo: string[];
 }
 
 const LABELS: Partial<Record<keyof Form, string>> = {
@@ -98,6 +102,7 @@ const LABELS: Partial<Record<keyof Form, string>> = {
   start: 'Starts work for', startAudience: 'Starts work for', approve: 'Approves the rest', approvers: 'Approves the rest', trust: 'Trust', when: 'When it runs', time: 'When it runs',
   every: 'When it runs', budget: 'Budget', role: 'Role', tools: 'Tools', scopes: 'Tools', writesCode: 'Writes code', flow: 'Preferred flow', answersAtOnce: 'Conversations at once',
   homeChannels: 'Home channels', desktopHandOff: 'Your desktop', continueOpenPrs: 'Team pull requests', prAuthors: 'Team pull requests', prCommentAuthors: 'Team pull requests', skipCheckpoints: 'Checkpoints', alwaysAllow: 'Always allowed',
+  canDelegate: 'Handing work on', delegatesTo: 'Handing work on',
 };
 
 function formOf(d: SettingsDetail): Form {
@@ -136,6 +141,8 @@ function formOf(d: SettingsDetail): Form {
     prCommentAuthors: (w.prCommentAuthors ?? []).join(', '),
     skipCheckpoints: !!w.skipCheckpoints,
     alwaysAllow: w.alwaysAllow ?? [],
+    canDelegate: !!w.canDelegate,
+    delegatesTo: (w.delegatesTo ?? []).map((x) => x.id),
   };
 }
 
@@ -193,6 +200,8 @@ export function patchOf(f: Form, i: Form): { patch: Record<string, unknown>; tru
   if (f.prCommentAuthors !== i.prCommentAuthors) patch.prCommentAuthors = list(f.prCommentAuthors);
   if (f.skipCheckpoints !== i.skipCheckpoints) patch.skipCheckpoints = f.skipCheckpoints;
   if (!same(f.alwaysAllow, i.alwaysAllow)) patch.alwaysAllow = f.alwaysAllow;
+  if (f.canDelegate !== i.canDelegate) patch.canDelegate = f.canDelegate;
+  if (!same(f.delegatesTo, i.delegatesTo)) patch.delegatesTo = f.delegatesTo.length ? f.delegatesTo : null;
   return { patch, ...(f.trust !== i.trust ? { trust: f.trust } : {}) };
 }
 
@@ -346,6 +355,34 @@ export function OrgWorkerSettings({ server, detail, onChanged, top = 0 }: { serv
                 </button>
               ))}
             </div>
+            <SubHead title="Handing work on" className="mt-6" />
+            <Check
+              checked={f.canDelegate}
+              onChange={(v) => set('canDelegate', v)}
+              label="Let it hand work to colleagues"
+              help={`When something it finds is another worker's job, it asks them to take it, and in Slack the thread sees the ask and their answer. The work runs on the colleague's budget.${f.canDelegate && f.trust === 'probation' ? ' Not while it asks before work: trust it first.' : ''}`}
+            />
+            {f.canDelegate && (
+              <fieldset className="mt-3">
+                <legend className="text-sm text-ink">Who it may hand work to</legend>
+                <p className={hint + ' mb-2'}>
+                  {f.delegatesTo.length
+                    ? 'Exactly the ticked colleagues. Untick them all to go back to anyone working in the same place.'
+                    : 'Anyone working in the same place (its repo or workspace); it picks by their jobs. Tick names to choose exactly who. A colleague someone else manages needs their OK.'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(workers ?? []).filter((x) => x.id !== w.id).map((x) => {
+                    const on = f.delegatesTo.includes(x.id);
+                    return (
+                      <label key={x.id} className={'inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs ' + (on ? 'border-accent bg-accent/10 text-ink' : 'border-card-strong bg-surface text-ink-muted')}>
+                        <input type="checkbox" checked={on} onChange={(e) => set('delegatesTo', e.target.checked ? [...f.delegatesTo, x.id] : f.delegatesTo.filter((id) => id !== x.id))} />
+                        {x.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            )}
           </section>
 
           <section id="org-set-tools" className={card}>
@@ -679,25 +716,63 @@ function ChannelEditor({ value, onChange }: { value: string[]; onChange: (v: str
   );
 }
 
-/// Its job, folded, with the console's rewrite: say what should change, read
-/// the rewrite over, then save (with everything else) or undo.
+/// What `/revise` hands back: its job rewritten, how it works changed, or
+/// both, and any tool the new steps need that it doesn't have.
+interface Revision {
+  note?: string;
+  job?: string;
+  flow?: { flowId: string; name: string; yaml: string; changes: string[]; sharedWith: string[]; othersNotYours: string[] };
+  flowProblem?: string;
+  needsTools?: string[];
+}
+
+/// Its job, folded, with the console's rewrite: say what should change once,
+/// and it's routed to its job, how it works, or both. The job saves with
+/// everything else; a change to how it works saves on its own, now.
 function JobEditor({ serverId, workerId, name, job, initial, onJob, disabled }: { serverId: string; workerId: string; name: string; job: string; initial: string; onJob: (j: string) => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [ask, setAsk] = useState('');
   const [busy, setBusy] = useState(false);
   const [before, setBefore] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rev, setRev] = useState<(Revision & { ask: string }) | null>(null);
+  const [everyone, setEveryone] = useState(false);
+  const [flowSaved, setFlowSaved] = useState<string | null>(null);
+  const [given, setGiven] = useState<Record<string, string>>({});
   const rewrite = () => {
     if (!ask.trim()) return;
     setBusy(true);
     setError(null);
-    void orgCall(serverId, 'POST', `/api/workers/${enc(workerId)}/suggest-job`, { ask: ask.trim(), job }).then((r) => {
+    setFlowSaved(null);
+    void orgCall(serverId, 'POST', `/api/workers/${enc(workerId)}/revise`, { ask: ask.trim(), job }).then((r) => {
       setBusy(false);
       if (!r.ok) return setError(r.error);
-      setBefore(job);
-      onJob(String((r.data as { job?: string }).job ?? job));
-      setOpen(true);
+      const x = r.data as Revision;
+      setRev({ ...x, ask: ask.trim() });
+      setEveryone(false);
+      setGiven({});
+      if (x.job) {
+        setBefore(job);
+        onJob(x.job);
+        setOpen(true);
+      }
       setAsk('');
+    });
+  };
+  const useFlow = () => {
+    if (!rev?.flow) return;
+    setBusy(true);
+    void orgCall(serverId, 'POST', `/api/workers/${enc(workerId)}/how-it-works`, { flowId: rev.flow.flowId, yaml: rev.flow.yaml, everyone }).then((r) => {
+      setBusy(false);
+      if (!r.ok) return setError(r.error);
+      setFlowSaved((r.data as { copied?: boolean }).copied ? `Saved as ${name}’s own copy. Its next run works this way.` : 'Saved. Its next run works this way.');
+      setRev({ ...rev, flow: undefined });
+    });
+  };
+  const give = (tool: string) => {
+    void orgCall(serverId, 'POST', `/api/workers/${enc(workerId)}/tools/request`, { tool, why: `For: ${rev?.ask ?? 'a change to how it works'}` }).then((r) => {
+      if (!r.ok) return setGiven((g) => ({ ...g, [tool]: r.error }));
+      setGiven((g) => ({ ...g, [tool]: (r.data as { given?: boolean }).given ? 'Given. Rewrite it again to change how it works too.' : 'Asked the admins. Rewrite it again once it’s given.' }));
     });
   };
   return (
@@ -730,6 +805,38 @@ function JobEditor({ serverId, workerId, name, job, initial, onJob, disabled }: 
       )}
       {error && <div role="alert" className="mt-1 text-xs text-red-700 dark:text-red-300">{error}</div>}
       {job.trim() !== initial.trim() && before === null && <div className="mt-1 text-xs text-ink-faint">Changed; saves with the rest. {name} reads the new job from its next run.</div>}
+      {rev && (rev.note || rev.flow || rev.flowProblem) && (
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-card bg-surface px-4 py-3 text-sm">
+          {rev.note && <p className="text-ink-muted">{rev.note}</p>}
+          {!rev.job && <p className="text-xs text-ink-faint">Its job stays as it is.</p>}
+          {rev.flowProblem && <p className="text-xs text-amber-700 dark:text-amber-300">{rev.flowProblem}</p>}
+          {(rev.needsTools ?? []).map((t) => (
+            <div key={t} className="flex items-center gap-3">
+              <button type="button" disabled={!!given[t]} onClick={() => give(t)} className={btn}>Give it {t}</button>
+              {given[t] && <span className="text-xs text-ink-muted">{given[t]}</span>}
+            </div>
+          ))}
+          {rev.flow && (
+            <>
+              <h4 className="text-xs font-semibold text-ink">How it works changes too: {rev.flow.name}</h4>
+              <ul className="list-disc pl-5 text-xs text-ink-muted">
+                {rev.flow.changes.map((c) => <li key={c}>{c}</li>)}
+              </ul>
+              {rev.flow.sharedWith.length > 0 && (
+                <label className="flex items-center gap-2 text-xs text-ink-muted">
+                  <input type="checkbox" checked={everyone} disabled={rev.flow.othersNotYours.length > 0} onChange={(e) => setEveryone(e.target.checked)} />
+                  Change it for {rev.flow.sharedWith.join(', ')} too. Left unticked, {name} gets its own copy.
+                </label>
+              )}
+              <div className="flex gap-2">
+                <button type="button" disabled={busy || disabled} onClick={useFlow} className={btn}>Use this</button>
+                <button type="button" onClick={() => setRev({ ...rev, flow: undefined })} className="text-xs text-accent hover:underline">Keep how it works as it is</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {flowSaved && <div className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">{flowSaved}</div>}
     </div>
   );
 }

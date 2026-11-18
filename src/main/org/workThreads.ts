@@ -8,6 +8,7 @@
 
 import type { FlowRun } from '../../shared/flows/schema';
 import { flowRunTitle } from '../../shared/flows/schema';
+import { parseMcpToolName } from '../../shared/flows/mcpTools';
 import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem } from '../../shared/flows/orchestration';
 import type { WorkerJournalEntry } from '../../shared/flows/worker';
 import type { AskRecord } from './orgStores';
@@ -47,6 +48,10 @@ export interface ThreadRun {
   /// The pull requests landing it opened, updated or left a link for.
   pullRequests?: LandedPullRequest[];
   error?: string;
+  /// The tools (MCP servers) a call to which was refused in it, once each:
+  /// for the console to offer the fix (give it the tool, or let it use its
+  /// own) where its manager reads the result, instead of in the worker's prose.
+  refused?: string[];
   /// The journal entry its result was filed under, for "was this useful?".
   entryId?: string;
   rating?: { useful: boolean; by: string; note?: string };
@@ -193,6 +198,7 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
   // A journal line that only says nothing was pushed doesn't say what it found.
   const filedSays = f && f.title && f.title !== title && !(landed && /^nothing to push\b/i.test(f.title)) ? f.title : undefined;
   const summary = filedSays ?? (artifact && /\.(md|markdown|txt)$/i.test(artifact.name) ? summarize(artifact.body) : undefined);
+  const refused = [...new Set((r.refusedTools ?? []).map((t) => parseMcpToolName(t)?.server).filter((s): s is string => !!s))];
   return {
     runId: r.id,
     title,
@@ -222,6 +228,7 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
     ...(landed ? { landed } : {}),
     ...(pullRequests.length ? { pullRequests } : {}),
     ...(state === 'failed' && failedAttempt?.errorMessage ? { error: failedAttempt.errorMessage.slice(0, 400) } : {}),
+    ...(refused.length ? { refused } : {}),
     ...(f ? { entryId: f.entryId, ...(f.rating ? { rating: f.rating } : {}) } : {}),
   };
 }

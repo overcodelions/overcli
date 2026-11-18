@@ -277,6 +277,19 @@ export interface RoomFollow {
   status?: { ts: string; text: string };
 }
 
+/// A worker answering in a thread handed part of it to a colleague (see
+/// `FrontDoor.referred`). `conversation` is the thread's, `slack:<channel>:<ts>`.
+export type DoorReferral = {
+  conversation: string;
+  from: { workerId: string; workerName: string; avatarUrl?: string };
+  to: { workerId: string; workerName: string; avatarUrl?: string };
+  instruction: string;
+} & (
+  | { phase: 'sent' }
+  | { phase: 'done'; reply: string; orchestrationId?: string; launched: boolean; choices?: string[]; withheld?: boolean }
+  | { phase: 'failed'; error: string }
+);
+
 /// Work started from a thread, followed until it ends.
 export interface DoorFollow {
   orchestrationId: string;
@@ -891,6 +904,8 @@ export class FrontDoor {
   /// A count: a reply handed on (declined, or a run that can't be carried
   /// on) is still the same reply being written.
   private replying = new Map<string, { n: number; queued: FrontDoorRequest[] }>();
+  /// Handoffs made while a thread's answer is being written, shown once it is posted.
+  private readonly referralsWaiting = new Map<string, DoorReferral[]>();
   private pollingRooms = false;
   private finishing = new Set<DoorFollow>();
 
@@ -1734,6 +1749,15 @@ export class FrontDoor {
     const r = this.replying.get(key);
     if (!r || --r.n > 0) return;
     this.replying.delete(key);
+    // Handoffs made while answering go after the answer, in the order made:
+    // "Joe, can you take this?" before Ada has said what she found reads backwards.
+    const waiting = this.referralsWaiting.get(key);
+    if (waiting) {
+      this.referralsWaiting.delete(key);
+      void (async () => {
+        for (const w of waiting) await this.referred(w);
+      })().catch((err: unknown) => this.deps.log(`Front door: a handoff could not be shown: ${String(err)}`));
+    }
     if (r.queued.length) void this.sendQueued(key, r.queued).catch((err: unknown) => this.deps.log(`Front door: what was said meanwhile could not be passed on: ${String(err)}`));
   }
 
@@ -2027,7 +2051,9 @@ export class FrontDoor {
     // newest part when it is long: that is what a follow-up refers to.
     const said = messages
       .filter((m) => m.ts !== req.ts && !req.also?.includes(m.ts))
-      .map((m) => (m.bot_id ? `(posted here earlier, by this app) ${m.text}` : `<@${m.user ?? 'someone'}>: ${m.text}`))
+      // A worker's post says which worker: a colleague's answer in the thread
+      // (a handoff) is not the reader's own.
+      .map((m) => (m.bot_id ? `(posted here earlier, by this app${m.username ? `, as ${m.username}` : ''}) ${m.text}` : `<@${m.user ?? 'someone'}>: ${m.text}`))
       .join('\n');
     const thread = said.length > 6000 ? `…${said.slice(-6000)}` : said;
     const all = [...files, ...messages.flatMap((m) => m.files ?? [])];
@@ -2247,6 +2273,54 @@ export class FrontDoor {
   /// what it said it would (a chart, a write-up): its reply is the answer,
   /// with the files it names. The run's own output, as it is, only when that
   /// can't happen or fails.
+  /// A worker answering in a thread handed part of it to a colleague: the
+  /// thread hears the ask in the sender's voice, then the colleague's answer
+  /// in theirs, and work the colleague started is followed there like any
+  /// other. Workers never read each other's Slack messages (the bridge
+  /// ignores bots, so two of them can't talk each other into a loop): the
+  /// handoff itself is the engine's, with its trust and budget checks, and
+  /// this only shows it where it was asked.
+  async referred(r: DoorReferral): Promise<void> {
+    if (!r.conversation.startsWith('slack:')) return;
+    const key = r.conversation.slice('slack:'.length);
+    const cut = key.indexOf(':');
+    if (cut <= 0 || !this.state.threads.some((t) => t.key === key)) return;
+    if (this.replying.has(key)) {
+      const waiting = this.referralsWaiting.get(key) ?? [];
+      waiting.push(r);
+      this.referralsWaiting.set(key, waiting);
+      return;
+    }
+    const channel = key.slice(0, cut);
+    const threadTs = key.slice(cut + 1);
+    const from: PostAs = { name: r.from.workerName, ...(r.from.avatarUrl ? { iconUrl: r.from.avatarUrl } : {}) };
+    const to: PostAs = { name: r.to.workerName, ...(r.to.avatarUrl ? { iconUrl: r.to.avatarUrl } : {}) };
+    if (r.phase === 'sent') {
+      const ask = slackMarkup(clip(r.instruction, 1500)).split('\n').map((l) => `>${l}`).join('\n');
+      await this.deps.slack.post(channel, `*${escapeMrkdwn(r.to.workerName)}*, can you take this?\n${ask}`, threadTs, from);
+      return;
+    }
+    if (r.phase === 'failed') {
+      await this.deps.slack.post(channel, `${r.to.workerName} couldn't take it: ${r.error}`, threadTs, from);
+      return;
+    }
+    // Asked by someone who doesn't manage the sender: the colleague's answer
+    // is for whoever could have asked it directly, so the thread only hears
+    // that it was taken, and nothing it starts is followed here.
+    if (r.withheld) {
+      await this.deps.slack.post(channel, `${r.to.workerName} has it. Their answer goes to whoever manages them, not this thread.`, threadTs, to);
+      return;
+    }
+    if (r.reply.trim()) {
+      await deliverText(this.io(), channel, threadTs, r.to.workerName, r.reply, `${slug(r.to.workerName)}-answer.md`, r.to.workerId, to);
+      await this.notify(channel, threadTs, r.to.workerName, r.reply);
+    }
+    if (r.launched && r.orchestrationId && !this.state.follows.some((f) => f.orchestrationId === r.orchestrationId)) {
+      this.state.follows.push({ orchestrationId: r.orchestrationId, channel, threadTs, workerName: r.to.workerName, since: this.now(), workerId: r.to.workerId, ...(r.to.avatarUrl ? { avatarUrl: r.to.avatarUrl } : {}) });
+      this.save();
+    }
+  }
+
   private async finished(f: DoorFollow, p: ErrandProgress): Promise<void> {
     const ok = p.items.some((i) => i.status === 'done');
     const thread = ok ? this.state.threads.find((t) => t.key === `${f.channel}:${f.threadTs}`) : undefined;

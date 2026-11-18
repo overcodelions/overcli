@@ -185,7 +185,7 @@ interface ServicesState {
   /// What a model made of a failure the rules could not explain, keyed like
   /// the logs. Never fetched on its own: the user asks for it, because it
   /// costs a subprocess and a model call and its answer is a guess.
-  suggestions: Record<string, { status: 'asking' } | { status: 'answered'; backend: string; text: string; command?: string } | { status: 'failed'; error: string }>;
+  suggestions: Record<string, { status: 'asking' } | { status: 'answered'; backend: string; text: string; command?: string; run?: string[] } | { status: 'failed'; error: string }>;
   /// What each service will actually start with, keyed like the logs. Fetched
   /// on selection, because it depends on the base's options and the machine
   /// values as much as on the service itself.
@@ -1011,7 +1011,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
       suggestions: {
         ...s.suggestions,
         [key]: result.ok
-          ? { status: 'answered', backend: result.backend, text: result.text, command: result.command }
+          ? { status: 'answered', backend: result.backend, text: result.text, command: result.command, run: result.run }
           : { status: 'failed', error: result.error },
       },
     }));

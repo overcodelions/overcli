@@ -111,3 +111,31 @@ describe('workerSpendSince', () => {
     expect(store.workerSpendSince('missing', 0)).toBe(0);
   });
 });
+
+describe('appendRunSummary · pull requests opened', () => {
+  const note = (n: number) => ({
+    'pull-requests.md': {
+      name: 'pull-requests.md',
+      kind: 'markdown' as const,
+      producedByStepId: 'overcli',
+      producedAt: 1,
+      body: Array.from({ length: n }, (_, i) => `- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/${i + 1} (branch fix/acme-${i + 1})`).join('\n'),
+    },
+  });
+
+  it('writes the line again when the landing note arrives after the run ended, and not otherwise', async () => {
+    const store = await freshStore();
+    store.appendRunSummary(makeRun({ workerId: 'w' }));
+    store.appendRunSummary(makeRun({ workerId: 'w' }));
+    expect(store.loadRunSummaries()).toMatchObject([{ id: 'run-1', pullRequestsOpened: 0 }]);
+    store.appendRunSummary(makeRun({ workerId: 'w', artifacts: note(2) } as Partial<FlowRun>));
+    store.appendRunSummary(makeRun({ workerId: 'w', artifacts: note(2) } as Partial<FlowRun>));
+    expect(store.loadRunSummaries()).toMatchObject([{ id: 'run-1', pullRequestsOpened: 2, createdAt: 1 }]);
+    const lines = fs.readFileSync(path.join(userDataDir, 'flow-run-summaries.jsonl'), 'utf-8').trim().split('\n');
+    expect(lines).toHaveLength(2);
+    // A restart reads the newest line back, so it doesn't write a third.
+    const again = await freshStore();
+    again.appendRunSummary(makeRun({ workerId: 'w', artifacts: note(2) } as Partial<FlowRun>));
+    expect(fs.readFileSync(path.join(userDataDir, 'flow-run-summaries.jsonl'), 'utf-8').trim().split('\n')).toHaveLength(2);
+  });
+});

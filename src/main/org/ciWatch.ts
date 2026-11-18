@@ -119,6 +119,44 @@ export const continueBranchOf = (prompt: string): string | null => /\[continue-b
 
 const tail = (s: string, n = LOG_TAIL) => (s.length > n ? `…${s.slice(-n)}` : s);
 
+/// A line that says what failed: a linter's `ERROR:`, a test runner's
+/// `FAILED`, a compiler's `error TS…`. A long log's end is mostly progress
+/// and warnings, and the one line that matters can sit far above it.
+const FLAGGED = /(?:^|[\s[])(?:ERROR|FAILED|FAIL)(?:[\]:]|\s|$)|\berror TS\d+|\berror:|\bError:/;
+const FLAGGED_MAX = 30;
+/// The most of an unfinished line held between chunks. A log that never
+/// writes a newline (a progress bar redrawn with `\r`, a minified dump) would
+/// otherwise grow it without bound and re-split all of it on every chunk.
+export const PARTIAL_MAX = 64 * 1024;
+
+/// Cut streamed text into lines, handing each finished one to `onLine`. What
+/// is left of a line still arriving is held, but only its last `max`
+/// characters: a line that long is no one's error message.
+export function lineSplitter(onLine: (line: string) => void, max = PARTIAL_MAX): { push: (text: string, final?: boolean) => void; held: () => number } {
+  let partial = '';
+  return {
+    push(text, final = false) {
+      const lines = (partial + text).split('\n');
+      partial = final ? '' : lines.pop() ?? '';
+      if (partial.length > max) partial = partial.slice(-max);
+      for (const line of lines) onLine(line);
+    },
+    held: () => partial.length,
+  };
+}
+
+/// The flagged lines of a log the tail doesn't already show, at most FLAGGED_MAX.
+function flaggedAbove(lines: string[], shown: string): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || !FLAGGED.test(t) || shown.includes(t) || out.includes(t.slice(0, 300))) continue;
+    out.push(t.slice(0, 300));
+    if (out.length >= FLAGGED_MAX) break;
+  }
+  return out;
+}
+
 // ---- reading a host's verdict -----------------------------------------------
 
 export function authFor(repo: ConnectedRepo, env: (n: string) => string | undefined): Record<string, string> | null {
@@ -176,11 +214,25 @@ export function cantRead(repo: ConnectedRepo, env: (n: string) => string | undef
 async function getTail(fetchImpl: Fetch, url: string, headers: Record<string, string>, n = LOG_TAIL): Promise<string> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), LOG_READ_MS);
+  // Lines that say what failed, from anywhere in the log: kept as it streams,
+  // since the tail alone can start after the one that matters.
+  const flagged: string[] = [];
+  const { push: scan } = lineSplitter((line) => {
+    if (flagged.length < FLAGGED_MAX * 4 && FLAGGED.test(line)) flagged.push(line);
+  });
+  const withFlagged = (end: string) => {
+    const above = flaggedAbove(flagged, end);
+    return above.length ? `Lines that say what failed, from the whole log:\n${above.join('\n')}\n\n${end}` : end;
+  };
   try {
     const res = await fetchImpl(url, { headers, redirect: 'follow', signal: ctl.signal });
     if (!res.ok) return '';
     const body = res.body as { getReader?: () => ReadableStreamDefaultReader<Uint8Array> } | null;
-    if (!body || typeof body.getReader !== 'function') return tail(await res.text(), n);
+    if (!body || typeof body.getReader !== 'function') {
+      const whole = await res.text();
+      scan(whole, true);
+      return withFlagged(tail(whole, n));
+    }
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let kept = '';
@@ -189,18 +241,23 @@ async function getTail(fetchImpl: Fetch, url: string, headers: Record<string, st
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        kept += decoder.decode(value, { stream: true });
+        const text = decoder.decode(value, { stream: true });
+        scan(text);
+        kept += text;
         if (kept.length > n * 2) {
           kept = kept.slice(-n);
           cut = true;
         }
       }
-      kept += decoder.decode();
+      const rest = decoder.decode();
+      scan(rest, true);
+      kept += rest;
     } catch {
       // Cut off (the timer) or dropped mid-way: what came is kept.
+      scan('', true);
       cut = true;
     }
-    return cut || kept.length > n ? `…${kept.slice(-n)}` : kept;
+    return withFlagged(cut || kept.length > n ? `…${kept.slice(-n)}` : kept);
   } catch {
     return '';
   } finally {
@@ -451,6 +508,23 @@ export class CiWatcher {
     return next;
   }
 
+  /// Red, but someone has pushed the branch past it since (a teammate's fix,
+  /// a merge on the host): the build that counts is the tip's, so this one is
+  /// done with. Green at the tip, it's recorded as passed; red or still
+  /// running there, it's dropped quietly, since that push isn't the worker's
+  /// to answer for. False when the tip is this commit or can't be read.
+  private async supersede(w: CiWatch, repo: ConnectedRepo): Promise<boolean> {
+    const tip = await readTip(repo, w.branch, this.deps).catch(() => null);
+    if (!tip || tip.sha === w.sha || tip.sha.startsWith(w.sha) || w.sha.startsWith(tip.sha)) return false;
+    const at = await readVerdict(repo, tip.sha, this.deps).catch(() => null);
+    const green = at?.state === 'passed';
+    const { fixDue: _due, detail: _detail, ...rest } = w;
+    this.put({ ...rest, status: green ? 'passed' : 'timed-out', checkedAt: this.now(), summary: green ? `Green at ${tip.sha.slice(0, 10)}, pushed since.` : `Superseded by ${tip.sha.slice(0, 10)}, pushed since.` });
+    this.record(w, [green ? `Failed, but the branch has since moved on to ${tip.sha.slice(0, 10)}, and CI is green there. Nothing for ${w.workerName} to fix.` : `Failed, but the branch has since moved on to ${tip.sha.slice(0, 10)}, which overcli didn't push, so it stopped watching this commit.`]);
+    this.deps.log(`CI on ${w.repo} ${w.branch}: ${w.sha.slice(0, 10)} failed, but the branch moved on to ${tip.sha.slice(0, 10)} (${green ? 'green' : at?.state ?? 'unknown'}); no fix asked.`);
+    return true;
+  }
+
   /// Red, a fix asked for, and no push on its branch since.
   private fixPending(all: CiWatch[], w: CiWatch): boolean {
     return !!w.followedUp && w.status === 'failed' && !all.some((x) => x.repo === w.repo && x.branch === w.branch && x.startedAt > w.startedAt);
@@ -509,6 +583,9 @@ export class CiWatcher {
       for (const w of this.load().filter((x) => x.status === 'waiting')) await this.check(w);
       const all = this.load();
       for (const w of all.filter((x) => this.fixPending(all, x) && this.now() - (x.followedUpAt ?? x.checkedAt ?? x.startedAt) > FIX_WAIT_MS)) {
+        // Fixed by someone else's push meanwhile: nothing to hand anyone.
+        const repo = this.deps.repo(w.repo);
+        if (repo && (await this.supersede(w, repo))) continue;
         await this.noFix(w, `no fix was pushed within ${FIX_WAIT_MS / 3_600_000} hours`);
       }
       await this.settle();
@@ -578,6 +655,8 @@ export class CiWatcher {
       }
       return;
     }
+    // Red, on a commit the branch has already moved past: not the worker's to fix.
+    if (await this.supersede(w, repo)) return;
     // Red: what it says is kept, and the fix waits for the run's other repos.
     const failing = verdict.checks.filter((c) => c.state === 'failed');
     const detail = this.deps.rounds() > w.round ? await readFailure(repo, w.sha, this.deps) : '';

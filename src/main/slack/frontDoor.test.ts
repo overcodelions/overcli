@@ -702,6 +702,55 @@ describe('the front door', () => {
     expect(h.posts.at(-1)).toBe('D0ACME@12.0: [as Triage https://api.dicebear.com/9.x/thumbs/png?seed=abc] Done.');
   });
 
+  it("shows a handoff in the thread it came from: asked in the sender's voice after its answer, answered in the colleague's", async () => {
+    const h = harness({ gate: true, reply: 'Found it: the CSV writer drops the header.' });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '14.0', user: 'U1', text: '<@B0BOT> Triage look at the export bug', dm: false, mentioned: true });
+    await tick();
+    const ref = {
+      conversation: 'slack:C0ACME:14.0',
+      from: { workerId: 'w-triage', workerName: 'Triage', avatarUrl: 'https://acme.example/triage.png' },
+      to: { workerId: 'w-vantage', workerName: 'Vantage', avatarUrl: 'https://acme.example/vantage.png' },
+      instruction: 'Make a ticket for the CSV header bug.',
+    };
+    // Sent while Triage is still answering: it waits for the answer.
+    await h.door.referred({ ...ref, phase: 'sent' });
+    expect(h.posts.some((p) => p.includes('can you take this?'))).toBe(false);
+    h.release();
+    for (let i = 0; i < 4; i++) await tick();
+    const answer = h.posts.findIndex((p) => p.includes('Found it'));
+    const asked = h.posts.findIndex((p) => p.includes('can you take this?'));
+    expect(answer).toBeGreaterThanOrEqual(0);
+    expect(asked).toBeGreaterThan(answer);
+    expect(h.posts[asked]).toBe('C0ACME@14.0: [as Triage https://acme.example/triage.png] *Vantage*, can you take this?\n>Make a ticket for the CSV header bug.');
+    // The colleague's answer, under its own name, and the work it started followed here.
+    await h.door.referred({ ...ref, phase: 'done', reply: 'Filed ACME-77.', orchestrationId: 'orch-v', launched: true });
+    expect(h.posts.at(-1)).toBe('C0ACME@14.0: [as Vantage https://acme.example/vantage.png] Filed ACME-77.');
+    expect(h.state().follows).toMatchObject([{ orchestrationId: 'orch-v', workerName: 'Vantage', channel: 'C0ACME', threadTs: '14.0' }]);
+  });
+
+  it("keeps a colleague's answer out of the thread when the asker doesn't manage the sender", async () => {
+    const h = harness({ reply: 'Found it.' });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '16.0', user: 'U1', text: 'Triage look at the export bug', dm: true });
+    await tick();
+    const base = { conversation: 'slack:D0ACME:16.0', from: { workerId: 'w-triage', workerName: 'Triage' }, to: { workerId: 'w-vantage', workerName: 'Vantage' }, instruction: 'Make a ticket.' };
+    await h.door.referred({ ...base, phase: 'done', reply: '', launched: false, withheld: true, orchestrationId: 'orch-hidden' });
+    expect(h.posts.at(-1)).toBe('D0ACME@16.0: [as Vantage] Vantage has it. Their answer goes to whoever manages them, not this thread.');
+    expect(h.state().follows.some((f) => f.orchestrationId === 'orch-hidden')).toBe(false);
+  });
+
+  it('says in the thread when a colleague could not take a handoff, and ignores conversations that are not a thread it knows', async () => {
+    const h = harness({ reply: 'Found it.' });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '15.0', user: 'U1', text: 'Triage look at the export bug', dm: true });
+    await tick();
+    const base = { from: { workerId: 'w-triage', workerName: 'Triage' }, to: { workerId: 'w-vantage', workerName: 'Vantage' }, instruction: 'Make a ticket.' };
+    const n = h.posts.length;
+    await h.door.referred({ ...base, conversation: 'desk:abc', phase: 'sent' });
+    await h.door.referred({ ...base, conversation: 'slack:C0OTHER:9.9', phase: 'sent' });
+    expect(h.posts).toHaveLength(n);
+    await h.door.referred({ ...base, conversation: 'slack:D0ACME:15.0', phase: 'failed', error: 'Vantage has spent its budget for the month.' });
+    expect(h.posts.at(-1)).toBe("D0ACME@15.0: [as Triage] Vantage couldn't take it: Vantage has spent its budget for the month.");
+  });
+
   it('keeps one card in the thread up to date while the work runs, and settles it when it ends', async () => {
     const h = harness({ reply: 'Starting the audit.', orchestrationId: 'orch-s', progress: { done: false, items: [{ title: 'SEO audit', status: 'running', step: { index: 1, total: 2, name: 'crawl' }, startedAt: Date.now() - 6 * 60_000, said: 'Crawling 49 pages now.' }], files: [], links: [] } });
     await h.door.onMessage({ channel: 'D0ACME', ts: '13.0', user: 'U1', text: 'Vantage audit <http://acme.example|acme.example>', dm: true });

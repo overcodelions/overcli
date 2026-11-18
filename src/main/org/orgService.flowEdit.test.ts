@@ -171,3 +171,65 @@ describe('how a worker works, changed by saying so', () => {
     expect(h.workers.get('triage')!.flowIds).toEqual(['fix']);
   });
 });
+
+describe('a worker changed by saying so once: its job, how it works, or both', () => {
+  const deps = (h: ReturnType<typeof harness>) => (h.svc as unknown as { deps: Record<string, unknown> }).deps;
+  const shoot = (f: Flow): Flow => ({ ...f, steps: [...f.steps, step('screenshots', { tools: ['Read', 'mcp__test-systems__open_system', 'mcp__test-systems__browser_take_screenshot'] })] });
+
+  it('routes one ask to the job and the flow, saving nothing until asked', async () => {
+    const h = harness([worker('triage')], [fix]);
+    deps(h).reviseWorker = async (a: { jobDescription: string; flow?: Flow }) => ({ ok: true, jobDescription: `${a.jobDescription} Takes screenshots of what it checks.`, flow: addCheck(a.flow!).flow, note: 'Both.' });
+    const r = await h.svc.reviseWorker(pat, 'Triage', 'check it and take screenshots');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.job).toContain('Takes screenshots');
+    expect(r.flow).toMatchObject({ flowId: 'fix', changes: ['Adds “Check” after “Change”.'], sharedWith: [] });
+    expect(h.saved).toHaveLength(0);
+    expect(h.svc.saveFlowEdit(pat, 'Triage', 'fix', r.flow!.yaml, false)).toMatchObject({ ok: true });
+  });
+
+  it('names a tool the new flow needs that the worker lacks, instead of failing', async () => {
+    const h = harness([worker('triage')], [fix]);
+    deps(h).reviseWorker = async (a: { flow?: Flow }) => ({ ok: true, flow: shoot(a.flow!), note: 'Flow.' });
+    const r = await h.svc.reviseWorker(pat, 'Triage', 'take screenshots with test-systems');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.needsTools).toEqual(['test-systems']);
+    expect(r.flowProblem).toContain('doesn’t have yet');
+    expect(r.flow).toBeUndefined();
+  });
+
+  it('counts its role’s tools as its own', async () => {
+    const h = harness([worker('triage', { role: 'QA' })], [fix]);
+    deps(h).policy = () => ({ ...DEFAULT_ORG_POLICY, roles: [{ name: 'QA', job: 'Tests.', tools: ['test-systems'], budgetUSDPerMonth: 100 }] });
+    deps(h).reviseWorker = async (a: { flow?: Flow }) => ({ ok: true, flow: shoot(a.flow!), note: 'Flow.' });
+    const r = await h.svc.reviseWorker(pat, 'Triage', 'take screenshots with test-systems');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.needsTools).toBeUndefined();
+    expect(r.flow?.changes.join(' ')).toContain('Screenshots');
+    expect(h.svc.saveFlowEdit(pat, 'Triage', 'fix', r.flow!.yaml, false)).toMatchObject({ ok: true });
+  });
+
+  it('is its manager’s to ask', async () => {
+    const h = harness([worker('triage')], [fix]);
+    deps(h).reviseWorker = async () => ({ ok: true, jobDescription: 'x', note: '' });
+    expect((await h.svc.reviseWorker(sam, 'Triage', 'do more')).ok).toBe(false);
+  });
+});
+
+describe('org tuning, applied', () => {
+  const refusedRun = (workerId: string) =>
+    ({ id: `r-${workerId}`, workerId, flowId: 'fix', createdAt: 0, attempts: [], refusedTools: ['mcp__test-systems__open_system'], flowSnapshot: fix, state: { kind: 'done', success: true } }) as unknown as Flow;
+
+  it('is for admins, gives the refused tool, and then the suggestion is gone', () => {
+    const h = harness([worker('triage')], [fix]);
+    (h.svc as unknown as { deps: Record<string, unknown> }).deps.runs = { listRuns: () => [refusedRun('triage')], getRun: () => null };
+    expect(h.svc.orgTuning(pat).ok).toBe(false);
+    const t = h.svc.orgTuning(admin);
+    if (!t.ok) throw new Error(t.error);
+    expect(t.suggestions.map((s) => s.id)).toEqual(['give:test-systems']);
+    expect(h.svc.applyOrgTuning(admin, 'give:test-systems')).toMatchObject({ ok: true, done: 'Give test-systems to Triage' });
+    expect(h.workers.get('triage')!.mcpServers).toContain('test-systems');
+    const after = h.svc.orgTuning(admin);
+    expect(after.ok && after.suggestions).toEqual([]);
+    expect(h.svc.applyOrgTuning(admin, 'give:test-systems').ok).toBe(false);
+  });
+});

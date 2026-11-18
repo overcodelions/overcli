@@ -26,28 +26,84 @@ export function pictureAllowed(raw: string): boolean {
   return ALLOWED.some((a) => u.hostname === a.host && a.path.test(u.pathname));
 }
 
-const cache = new Map<string, string | null>();
+/// A picture, or null for initials. A failure that may pass (no network, a
+/// timeout, the service busy or down) is kept only a minute, so a face comes
+/// back once the service does; an answer that won't change (not a picture,
+/// too big, gone) is kept as a picture is.
+interface Cached {
+  value: string | null;
+  until?: number;
+}
+const RETRY_MS = 60_000;
+const cache = new Map<string, Cached>();
+/// One fetch per picture at a time: a page full of the same face asks once.
+const inFlight = new Map<string, Promise<string | null>>();
 
-export async function orgPicture(url: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+/// Forget every picture. For tests.
+export function clearOrgPictures(): void {
+  cache.clear();
+  inFlight.clear();
+}
+
+export async function orgPicture(url: string, fetchImpl: typeof fetch = fetch, now: () => number = Date.now): Promise<string | null> {
   if (!pictureAllowed(url)) return null;
-  if (cache.has(url)) return cache.get(url) ?? null;
-  let out: string | null = null;
+  const hit = cache.get(url);
+  if (hit && (hit.until === undefined || hit.until > now())) return hit.value;
+  const pending = inFlight.get(url);
+  if (pending) return pending;
+  const p = fetchPicture(url, fetchImpl)
+    .catch(() => ({ value: null, lasting: false }))
+    .then(({ value, lasting }) => {
+      if (!cache.has(url) && cache.size >= MAX_CACHED) cache.delete(cache.keys().next().value as string);
+      cache.set(url, lasting ? { value } : { value, until: now() + RETRY_MS });
+      return value;
+    })
+    .finally(() => inFlight.delete(url));
+  inFlight.set(url, p);
+  return p;
+}
+
+/// `lasting`: whether the answer would be the same if asked again soon.
+async function fetchPicture(url: string, fetchImpl: typeof fetch): Promise<{ value: string | null; lasting: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const res = await fetchImpl(url, { redirect: 'error', signal: controller.signal, headers: { Accept: 'image/*' } });
+    // Busy, rate-limited or down: worth asking again later.
+    if (res.status === 408 || res.status === 429 || res.status >= 500) return { value: null, lasting: false };
     const type = res.headers.get('content-type') ?? '';
     const size = Number(res.headers.get('content-length') ?? 0);
-    if (res.ok && TYPES.test(type) && size <= MAX_BYTES) {
-      const body = Buffer.from(await res.arrayBuffer());
-      if (body.length <= MAX_BYTES) out = `data:${type.split(';')[0].toLowerCase()};base64,${body.toString('base64')}`;
-    }
+    if (!res.ok || !TYPES.test(type) || size > MAX_BYTES) return { value: null, lasting: true };
+    const body = await readCapped(res, MAX_BYTES);
+    if (!body) return { value: null, lasting: true };
+    return { value: `data:${type.split(';')[0].toLowerCase()};base64,${body.toString('base64')}`, lasting: true };
   } catch {
-    out = null;
+    // No network, a timeout, a refused redirect: try again later.
+    return { value: null, lasting: false };
   } finally {
     clearTimeout(timer);
   }
-  if (cache.size >= MAX_CACHED) cache.delete(cache.keys().next().value as string);
-  cache.set(url, out);
-  return out;
+}
+
+/// The body, or null once it passes `max` bytes: read no further than that,
+/// whatever length the server said it was.
+async function readCapped(res: Response, max: number): Promise<Buffer | null> {
+  if (!res.body) {
+    const all = Buffer.from(await res.arrayBuffer());
+    return all.length <= max ? all : null;
+  }
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    parts.push(value);
+  }
+  return Buffer.concat(parts);
 }

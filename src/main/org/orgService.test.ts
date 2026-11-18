@@ -389,6 +389,50 @@ describe('a worker’s home channels', () => {
   });
 });
 
+describe('handing work on', () => {
+  const setup = () =>
+    harness({
+      roster: [
+        worker('ada', { manager: { name: 'Pat', slackUserId: PAT } }),
+        worker('joe', { manager: { name: 'Pat', slackUserId: PAT } }),
+        worker('kim', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org' }),
+      ],
+    });
+
+  it('is turned on and off by its manager, and shown on the worker', () => {
+    const { svc, roster } = setup();
+    expect(svc.update(sam, 'ada', { canDelegate: true }).ok).toBe(false);
+    const on = svc.update(pat, 'ada', { canDelegate: true });
+    if (!on.ok) throw new Error(on.error);
+    expect(on.worker.canDelegate).toBe(true);
+    expect(roster.get('ada')!.caps.canDelegate).toBe(true);
+    const off = svc.update(pat, 'ada', { canDelegate: false });
+    if (!off.ok) throw new Error(off.error);
+    expect(off.worker.canDelegate).toBeUndefined();
+    expect(roster.get('ada')!.caps.canDelegate).toBeUndefined();
+  });
+
+  it('picks colleagues by name, lends only ones the caller manages, and clears with null', () => {
+    const { svc, roster } = setup();
+    const admin: OrgCaller = { slackUserId: 'U0ADMIN', name: 'Robin', admin: true };
+    const picked = svc.update(pat, 'ada', { delegatesTo: ['Joe', 'joe'] });
+    if (!picked.ok) throw new Error(picked.error);
+    expect(roster.get('ada')!.delegatesTo).toEqual(['joe']);
+    expect(picked.worker.delegatesTo).toEqual([{ id: 'joe', name: 'Joe' }]);
+    // Kim is Sam's: a handoff spends Kim's budget, so Pat can't lend it.
+    const theirs = svc.update(pat, 'ada', { delegatesTo: ['joe', 'kim'] });
+    expect(theirs.ok).toBe(false);
+    if (!theirs.ok) expect(theirs.error).toContain("Kim's manager");
+    expect(svc.update(admin, 'ada', { delegatesTo: ['joe', 'kim'] }).ok).toBe(true);
+    // Once lent, Pat may keep Kim while changing the rest.
+    expect(svc.update(pat, 'ada', { delegatesTo: ['kim'] }).ok).toBe(true);
+    expect(svc.update(pat, 'ada', { delegatesTo: ['ada'] }).ok).toBe(false);
+    expect(svc.update(pat, 'ada', { delegatesTo: ['nobody'] }).ok).toBe(false);
+    expect(svc.update(pat, 'ada', { delegatesTo: null }).ok).toBe(true);
+    expect(roster.get('ada')!.delegatesTo).toBeUndefined();
+  });
+});
+
 describe('a picture picked for a worker', () => {
   const setup = (pick: string | null, over: Partial<Worker> = {}) => {
     const h = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, ...over }), worker('other', { avatarUrl: 'https://img.acme.example/owl.png' })] });

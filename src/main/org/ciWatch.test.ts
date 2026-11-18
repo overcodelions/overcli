@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CiWatcher, FIX_ASK_MS, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
+import { CiWatcher, FIX_ASK_MS, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, lineSplitter, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
 import type { ConnectedRepo } from './repos';
 
 const bb: ConnectedRepo = { name: 'billing', url: 'https://bitbucket.org/acme/billing.git', path: '/data/repos/billing', defaultBranch: 'main', host: 'bitbucket', addedBy: 'Pat', at: 1 };
@@ -278,6 +278,37 @@ describe('closing the loop', () => {
     expect(pushed.told.join('\n')).not.toContain('no fix was pushed');
   });
 
+  it('asks no fix, and tells no one, when the branch has moved on to a green commit', async () => {
+    const NEWER = 'fedcba9876543210';
+    let tip = SHA;
+    const f = bitbucket(['FAILED']);
+    const route: typeof fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes('/refs/branches/')) return new Response(JSON.stringify({ target: { hash: tip, parents: [] } }));
+      if (u.includes(`/commit/${NEWER}/statuses`)) return new Response(JSON.stringify({ values: [{ state: 'SUCCESSFUL', name: 'build' }] }));
+      return f(url, init);
+    };
+    // Red on the watched commit, the tip still there: a fix is asked for.
+    const h = harness({ fetchImpl: route });
+    h.watch();
+    await h.ci.poll();
+    expect(h.asked).toHaveLength(1);
+    // A teammate pushes a green commit; six hours on, no complaint about the old one.
+    tip = NEWER;
+    h.advance(FIX_WAIT_MS + 1);
+    await h.ci.poll();
+    expect(h.told.join('\n')).not.toContain('no fix was pushed');
+    expect(h.all()[0]).toMatchObject({ status: 'passed', summary: expect.stringContaining('Green at fedcba9876') });
+
+    // Already moved on when its red build is first read: no fix asked at all.
+    const late = harness({ fetchImpl: route });
+    late.watch();
+    await late.ci.poll();
+    expect(late.asked).toEqual([]);
+    expect(late.told).toEqual([]);
+    expect(late.all()[0].status).toBe('passed');
+  });
+
   it('stops watching a repo whose CI never reports', async () => {
     const h = harness({ fetchImpl: fakeFetch((url) => (url.includes('/statuses') ? { values: [] } : undefined)) });
     h.watch();
@@ -364,6 +395,25 @@ describe('the store and the log', () => {
     expect(h.all().filter((w) => w.status === 'passed')).toHaveLength(1);
   });
 
+  it('keeps the lines that say what failed, however far above the end they are', async () => {
+    const big = `ERROR: src/app/app.routes.ts:1240:75 - no-invalid-template-strings\n${'WARNING: noise\n'.repeat(20_000)}1 error(s), 20000 warning(s)`;
+    const chunks = [big.slice(0, 100_000), big.slice(100_000, 200_000), big.slice(200_000)].map((c) => new TextEncoder().encode(c));
+    const f = bitbucket(['FAILED']);
+    const streaming: typeof fetch = async (url, init) => {
+      if (!String(url).endsWith('/log')) return f(url, init);
+      let i = 0;
+      const body = new ReadableStream<Uint8Array>({ pull: (c) => (i < chunks.length ? c.enqueue(chunks[i++]) : c.close()) });
+      return new Response(body, { status: 200 });
+    };
+    const h = harness({ fetchImpl: streaming });
+    h.watch();
+    await h.ci.poll();
+    const prompt = h.asked[0].prompt;
+    expect(prompt).toContain('ERROR: src/app/app.routes.ts:1240:75 - no-invalid-template-strings');
+    expect(prompt).toContain('1 error(s), 20000 warning(s)');
+    expect(prompt.length).toBeLessThan(20_000);
+  });
+
   it('keeps only the end of a streamed CI log', async () => {
     const big = `${'x'.repeat(200_000)}\nFAILED: the last line`;
     const chunks = [big.slice(0, 70_000), big.slice(70_000, 140_000), big.slice(140_000)].map((c) => new TextEncoder().encode(c));
@@ -381,5 +431,29 @@ describe('the store and the log', () => {
     expect(prompt).toContain('FAILED: the last line');
     expect(prompt).toContain('…');
     expect(prompt.length).toBeLessThan(20_000);
+  });
+});
+
+describe('lineSplitter', () => {
+  it('hands over whole lines across chunks', () => {
+    const seen: string[] = [];
+    const split = lineSplitter((l) => seen.push(l));
+    split.push('comp');
+    split.push('iling\nERROR: bro');
+    expect(seen).toEqual(['compiling']);
+    split.push('ken\ntail');
+    expect(seen).toEqual(['compiling', 'ERROR: broken']);
+    split.push('', true);
+    expect(seen).toEqual(['compiling', 'ERROR: broken', 'tail']);
+  });
+
+  it('holds no more than its cap of a line that never ends, and still reads the next one', () => {
+    const seen: string[] = [];
+    const split = lineSplitter((l) => seen.push(l), 1024);
+    for (let i = 0; i < 100; i++) split.push('#'.repeat(500));
+    expect(split.held()).toBeLessThanOrEqual(1024);
+    split.push('\nERROR: acme build broke\n');
+    expect(seen[seen.length - 1]).toBe('ERROR: acme build broke');
+    expect(seen[0].length).toBeLessThanOrEqual(1024);
   });
 });

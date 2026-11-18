@@ -418,3 +418,28 @@ describe('the console script', () => {
     expect(() => new Function(CONSOLE_JS)).not.toThrow();
   });
 });
+
+describe('the best worker for an ask', () => {
+  const from = CONSOLE_JS.indexOf('var FIT_SKIP =');
+  const to = CONSOLE_JS.indexOf('// end askFit');
+  const fit = (text: string, workers: Array<{ id: string; name: string; tagline?: string; role?: string }>) =>
+    new Function('text', 'workers', `${CONSOLE_JS.slice(from, to)}\nreturn askFit(text, workers);`)(text, workers) as Array<{ id: string; score: number }>;
+  const crew = [
+    { id: 'quinn', name: 'Quinn', role: 'QA', tagline: 'tests a ticket’s AC in the sandbox and posts screenshot evidence' },
+    { id: 'helper', name: 'Helper Dev', tagline: 'makes small scoped code and doc changes for the acme app' },
+    { id: 'ada', name: 'Ada', tagline: 'explains how the acme code works and who knows it' },
+  ];
+
+  it('puts the worker whose line matches the ask first', () => {
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    expect(fit('take screenshots of the sandbox admin pages', crew)[0]).toEqual({ id: 'quinn', score: 2 });
+    expect(fit('how does the partner code work?', crew)[0].id).toBe('ada');
+  });
+
+  it('lets a worker named outright win, and finds nothing in filler words', () => {
+    expect(fit('ask helper dev to fix the readme', crew)[0].id).toBe('helper');
+    expect(fit('can you please take a look', crew)).toEqual([]);
+    expect(fit('', crew)).toEqual([]);
+  });
+});

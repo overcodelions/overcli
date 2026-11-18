@@ -975,6 +975,14 @@ export function createOrgControl(
   });
   slack.setFrontDoor(frontDoor);
   frontDoor.start();
+  // A worker answering in a Slack thread hands part of it to a colleague: the
+  // thread sees the ask and the colleague's answer, each under their name.
+  const face = (id: string, name: string) => engines.workerEngine.get(id)?.avatarUrl ?? initialsPicture(id, name);
+  engines.workerEngine.onReferral((e) => {
+    void frontDoor
+      .referred({ ...e, from: { ...e.from, avatarUrl: face(e.from.workerId, e.from.workerName) }, to: { ...e.to, avatarUrl: face(e.to.workerId, e.to.workerName) } })
+      .catch((err: unknown) => log('warn', 'slack', `Front door: a handoff could not be shown: ${String(err)}`));
+  });
   org.setTellManager((workerId, text) => triggers.tell(workerId, text));
   // A worker's message to a person or a channel, sent here (the tool
   // gateway's built-in notify): the bot's token never reaches a worker.

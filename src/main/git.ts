@@ -506,6 +506,7 @@ export async function baseBranchExistsAsync(
 async function resolveBaseBranchStartPointAsync(
   projectPath: string,
   baseBranch: string,
+  preferRemote = false,
 ): Promise<string | null> {
   const candidates: string[] = [];
   const seen = new Set<string>();
@@ -515,6 +516,7 @@ async function resolveBaseBranchStartPointAsync(
     seen.add(trimmed);
     candidates.push(trimmed);
   };
+  if (preferRemote) push(`refs/remotes/origin/${baseBranch}`);
   push(baseBranch);
   push(`refs/heads/${baseBranch}`);
   push(`origin/${baseBranch}`);
@@ -563,6 +565,11 @@ export interface CreateWorktreeArgs {
   agentName: string;
   baseBranch: string;
   branchPrefix: string;
+  /// Start from `origin/<baseBranch>` when there is one, ahead of a local
+  /// branch of that name. A run continuing a pushed branch wants what origin
+  /// has: a local copy left behind by an earlier run can be commits short,
+  /// and work built on it can't be added to the branch it continues.
+  preferRemote?: boolean;
 }
 
 function numberedWorktreeName(base: string, ordinal: number): string {
@@ -668,7 +675,7 @@ export async function createWorktreeAsync(
       error: `${args.projectPath} isn't a git repo. Initialize one (\`git init\`) or pick a different project.`,
     };
   }
-  const startPoint = await resolveBaseBranchStartPointAsync(args.projectPath, args.baseBranch);
+  const startPoint = await resolveBaseBranchStartPointAsync(args.projectPath, args.baseBranch, args.preferRemote === true);
   if (!startPoint) {
     return {
       ok: false,

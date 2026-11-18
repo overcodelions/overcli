@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { credentialEnv, extraEnv, type TestSystem } from '../../shared/testSystems';
-import { BLANK_RETRY_MS, blockedAddress, LIKELY_BLANK_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
+import { BLANK_RETRY_MS, blockedAddress, LIKELY_BLANK_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, MAX_VIDEO_BYTES, parseSetCookies, resultValue, screenshotName, videoName, type BrowserChild, type ToolResult } from './testSystemsSession';
 
 const billing: TestSystem = {
   id: 'billing',
@@ -62,8 +62,9 @@ describe('the test-systems tool', () => {
     const { child, calls } = fakeBrowser(() => page('https://x'));
     const s = session([billing], child);
     const names = (await s.listTools()).map((t) => t.name);
-    expect(names).toEqual(['list_systems', 'open_system', 'sign_in_again', 'browser_navigate', 'browser_click', 'browser_snapshot']);
-    for (const blocked of ['browser_evaluate', 'browser_run_code_unsafe', 'browser_cookie_list', 'browser_storage_state']) {
+    expect(names).toEqual(['list_systems', 'open_system', 'sign_in_again', 'start_video', 'stop_video', 'browser_navigate', 'browser_click', 'browser_snapshot']);
+    // devtools is on for video; the rest of it stays with this side.
+    for (const blocked of ['browser_evaluate', 'browser_run_code_unsafe', 'browser_cookie_list', 'browser_storage_state', 'browser_annotate', 'browser_start_video', 'browser_start_tracing', 'browser_video_show_actions']) {
       expect((await s.call(blocked, {})).isError).toBe(true);
     }
     expect(calls).toEqual([]);
@@ -383,5 +384,105 @@ describe('screenshots', () => {
     expect(said(res)).toContain('almost empty');
     expect(said(res)).toContain('Don’t use it as evidence');
     t.done();
+  });
+});
+
+describe('videos', () => {
+  /// A browser that records: start remembers the file, stop writes it.
+  function recorder(opts: { bytes?: number; startError?: string } = {}) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-video-'));
+    const files = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-evidence-'));
+    let recording: string | null = null;
+    const { child, calls } = fakeBrowser((name, args) => {
+      if (name === 'browser_start_video') {
+        if (opts.startError) return { content: [{ type: 'text', text: opts.startError }], isError: true };
+        recording = String(args.filename);
+        return { content: [{ type: 'text', text: 'Video recording started.' }] };
+      }
+      if (name === 'browser_stop_video') {
+        if (!recording) return { content: [{ type: 'text', text: 'No videos were recorded.' }] };
+        if (opts.bytes && opts.bytes > 1_000_000) {
+          fs.writeFileSync(recording, '');
+          fs.truncateSync(recording, opts.bytes);
+        } else fs.writeFileSync(recording, Buffer.alloc(opts.bytes ?? 40_000, 7));
+        const was = recording;
+        recording = null;
+        return { content: [{ type: 'text', text: `### Result\n- [Video](${was})` }] };
+      }
+      if (name === 'browser_run_code_unsafe') return { content: [{ type: 'text', text: '### Result\n"https://staging.billing.acme.dev/home"' }] };
+      return page(String(args.url ?? 'https://staging.billing.acme.dev/home'));
+    });
+    const s = new TestSystemsSession({ systems: () => [billing], secret: (n) => SECRETS[n], startBrowser: async () => child, tempDir: () => tmp, sleep: async () => {}, filesDir: files });
+    return { s, calls, tmp, files, done: () => [tmp, files].forEach((d) => fs.rmSync(d, { recursive: true, force: true })) };
+  }
+  const said = (res: ToolResult) => res.content.map((c) => c.text ?? '').join(' ');
+
+  it('are named, never placed', () => {
+    expect(videoName('/data/x/BILL-123 checkout.mp4')).toBe('BILL-123-checkout.webm');
+    expect(videoName(undefined, 42)).toBe('video-42.webm');
+  });
+
+  it('are recorded in the browser’s own folder and kept with the run’s files', async () => {
+    const r = recorder();
+    const started = await r.s.call('start_video', { name: '../../BILL-123' });
+    expect(started.isError).toBeUndefined();
+    const start = r.calls.find((c) => c.name === 'browser_start_video')!;
+    expect(start.args).toMatchObject({ filename: path.join(r.tmp, 'BILL-123.webm'), cursor: true, size: { width: 1280, height: 720 } });
+    expect((await r.s.call('start_video', {})).isError).toBe(true);
+    const res = await r.s.call('stop_video', {});
+    expect(res.isError).toBeFalsy();
+    expect(fs.statSync(path.join(r.files, 'BILL-123.webm')).size).toBe(40_000);
+    // Out of the browser's folder, which is never named to the worker.
+    expect(fs.existsSync(path.join(r.tmp, 'BILL-123.webm'))).toBe(false);
+    expect(said(res)).toContain(path.join(r.files, 'BILL-123.webm'));
+    expect(said(res)).not.toContain(r.tmp);
+    expect((await r.s.call('stop_video', {})).isError).toBe(true);
+    // A second with the same name doesn't replace the first.
+    await r.s.call('start_video', { name: 'BILL-123', cursor: false });
+    expect(r.calls.filter((c) => c.name === 'browser_start_video')[1].args.cursor).toBe(false);
+    await r.s.call('stop_video', {});
+    expect(fs.existsSync(path.join(r.files, 'BILL-123-2.webm'))).toBe(true);
+    r.done();
+  });
+
+  it('never record signing in: the part before is kept, and recording carries on after', async () => {
+    const r = recorder();
+    await r.s.call('start_video', { name: 'BILL-9' });
+    const opened = await r.s.call('open_system', { system: 'billing' });
+    expect(opened.isError).toBeUndefined();
+    expect(said(opened)).toContain('still recording');
+    const order = r.calls.map((c) => c.name);
+    const signIn = order.indexOf('browser_run_code_unsafe');
+    expect(order.slice(0, signIn)).toEqual(['browser_start_video', 'browser_stop_video']);
+    expect(order[signIn + 1]).toBe('browser_start_video');
+    expect(r.calls[signIn + 1].args.filename).toBe(path.join(r.tmp, 'BILL-9-part2.webm'));
+    const res = await r.s.call('stop_video', {});
+    expect(said(res)).toContain('2 parts');
+    expect(fs.existsSync(path.join(r.files, 'BILL-9.webm'))).toBe(true);
+    expect(fs.existsSync(path.join(r.files, 'BILL-9-part2.webm'))).toBe(true);
+    r.done();
+  });
+
+  it('say why when one couldn’t be kept or started', async () => {
+    const big = recorder({ bytes: MAX_VIDEO_BYTES + 1 });
+    await big.s.call('start_video', { name: 'long' });
+    const res = await big.s.call('stop_video', {});
+    expect(res.isError).toBe(true);
+    expect(said(res)).toContain('wasn’t kept');
+    expect(fs.readdirSync(big.files)).toEqual([]);
+    big.done();
+    const noFfmpeg = recorder({ startError: 'Error: Executable doesn’t exist at /ms-playwright/ffmpeg-1013/ffmpeg-linux' });
+    const failed = await noFfmpeg.s.call('start_video', {});
+    expect(failed.isError).toBe(true);
+    expect(said(failed)).toContain('can’t record video');
+    noFfmpeg.done();
+  });
+
+  it('keeps a video still recording when the run ends', async () => {
+    const r = recorder();
+    await r.s.call('start_video', { name: 'left-on' });
+    await r.s.close();
+    expect(fs.existsSync(path.join(r.files, 'left-on.webm'))).toBe(true);
+    r.done();
   });
 });

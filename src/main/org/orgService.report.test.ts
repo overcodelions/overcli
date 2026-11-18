@@ -34,7 +34,7 @@ function run(workerId: string, costUSD: number, at = NOW - 60_000): WorkerRunFac
   return { workerId, completed: true, turns: 1, inputTokens: 10, outputTokens: 5, costUSD, wallClockMs: 120_000, terminalAt: at };
 }
 
-function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[]; flowRuns?: FlowRun[] } = {}) {
+function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[]; flowRuns?: FlowRun[]; summaries?: OrgServiceDeps['runSummaries'] } = {}) {
   const roster = [
     worker('ana', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 15 }),
     worker('ben', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org' }),
@@ -59,6 +59,7 @@ function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[]; flowRuns
       workerNames: () => roster.map((w) => w.name),
     },
     runs: { listRuns: () => opts.flowRuns ?? [], getRun: () => null, steerRun: () => ({ ok: true }), resumeRun: () => ({ ok: true }) },
+    ...(opts.summaries ? { runSummaries: opts.summaries } : {}),
     rejectRun: () => ({ ok: true }),
     policy: () => ({ ...DEFAULT_ORG_POLICY }),
     draft: async () => ({ ok: false, error: 'not in this test' }),
@@ -90,6 +91,30 @@ describe('OrgService.report', () => {
     expect(month.report.totals.pullRequests).toBe(2);
     const all = svc.report(admin, 0);
     expect(all.ok && all.report.totals.pullRequests).toBe(4);
+  });
+
+  it('still counts the pull requests of runs the runtime has evicted, once each', () => {
+    const live = { id: 'a1', workerId: 'ana', createdAt: NOW - 3_600_000, state: { kind: 'done', success: true }, attempts: [], flowSnapshot: { name: 'f', steps: [] },
+      artifacts: { 'pull-requests.md': { name: 'pull-requests.md', body: '- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/1 (branch fix/acme-1)', producedAt: NOW } } } as unknown as FlowRun;
+    const { svc } = harness({
+      flowRuns: [live],
+      summaries: () => [
+        // Live too: counted once, from the run.
+        { id: 'a1', workerId: 'ana', createdAt: NOW - 3_600_000, terminalAt: NOW, wallClockMs: 60_000, pullRequestsOpened: 1 },
+        // Evicted: only the log has it.
+        { id: 'a0', workerId: 'ana', createdAt: NOW - 5 * 86_400_000, terminalAt: NOW - 5 * 86_400_000, wallClockMs: 60_000, pullRequestsOpened: 2 },
+        // Evicted, before the window.
+        { id: 'a9', workerId: 'ana', createdAt: NOW - 90 * 86_400_000, terminalAt: NOW - 90 * 86_400_000, wallClockMs: 60_000, pullRequestsOpened: 4 },
+        // A line from before the field existed.
+        { id: 'a8', workerId: 'ana', terminalAt: NOW - 86_400_000, wallClockMs: 60_000 },
+      ],
+    });
+    const month = svc.report(pat, 30);
+    if (!month.ok) throw new Error(month.error);
+    expect(month.report.byWorker.find((r) => r.workerId === 'ana')!.pullRequests).toBe(3);
+    expect(month.saved.prRuns).toBe(2);
+    const all = svc.report(admin, 0);
+    expect(all.ok && all.report.totals.pullRequests).toBe(7);
   });
 
   it('counts time saved at 1.5× agent time, and a run that opened a pull request at 6× or 1 hour, whichever is more', () => {

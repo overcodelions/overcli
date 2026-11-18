@@ -22,6 +22,7 @@ import path from 'node:path';
 import { stripSecrets } from './secrets';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 import { DEFAULT_PR_MODE, PR_MODES, type PrMode } from './prOpen';
+import { activeWorkerUser } from './workerUser';
 
 export type RepoHost = 'github' | 'bitbucket' | 'other';
 
@@ -42,8 +43,91 @@ export interface ConnectedRepo {
   host?: RepoHost;
   /// The repo's test command, run before the branch is pushed. Absent: none.
   testCommand?: string;
+  /// Run by the server in every fresh checkout before the worker starts, as
+  /// the worker's own user: `npm ci`. The worker isn't given it to run.
+  setup?: string;
+  /// Commands the worker may run in its checkout to check its own change
+  /// before it finishes: `npm run lint-changed`, `npm test`. Each becomes a
+  /// narrowed grant, `Bash(<command>:*)`.
+  checks?: string[];
   addedBy: string;
   at: number;
+}
+
+/// The most checks a repo may have.
+export const MAX_REPO_CHECKS = 6;
+
+/// Setup and checks as typed on the Repos page: each one plain command,
+/// like a test command. Blank lines and repeats go.
+export function checkRepoChecks(input: { setup?: string; checks?: string[] }): Result<{ setup?: string; checks: string[] }> {
+  // Quotes too: a check is written into the flow as a quoted grant.
+  const plain = (raw: string | undefined) => (/["']/.test(raw ?? '') ? { ok: false as const, error: 'Give one plain command, without quotes.' } : checkTestCommand(raw));
+  const setup = plain(input.setup);
+  if (!setup.ok) return { ok: false, error: `Setup: ${setup.error}` };
+  const checks: string[] = [];
+  for (const raw of input.checks ?? []) {
+    const c = plain(raw);
+    if (!c.ok) return { ok: false, error: `Check "${raw.trim()}": ${c.error}` };
+    if (c.command && !checks.includes(c.command)) checks.push(c.command);
+  }
+  if (checks.length > MAX_REPO_CHECKS) return { ok: false, error: `Give at most ${MAX_REPO_CHECKS} checks.` };
+  if (/^(?:nvm|sdk|pyenv|asdf)\b/.test(setup.command ?? '') || checks.some((c) => /^(?:nvm|sdk|pyenv|asdf)\b/.test(c))) {
+    return { ok: false, error: 'No version manager is needed: the server puts the version the repo asks for (.nvmrc and the like) on PATH. Install it on Setup → Toolchains.' };
+  }
+  return { ok: true, ...(setup.command ? { setup: setup.command } : {}), checks };
+}
+
+/// Why a repo's checks are a risk on this server, or undefined when they
+/// aren't. A check grant (`Bash(npm test:*)`) sits beside Edit and Write in
+/// acceptEdits mode, and the command it names runs what the repo says it
+/// runs: a worker steered by something it read can edit the test script,
+/// then run it. Its environment has no stored secrets (stripSecrets, as for
+/// setup), but without OVERCLI_WORKER_UID it runs as the server's own user,
+/// which can read the data directory. The checks still work; the admin
+/// should know, and isolate workers.
+export function checkGrantWarning(repos: Array<Pick<ConnectedRepo, 'checks'>>, isolated: boolean = !!activeWorkerUser()): string | undefined {
+  const checks = [...new Set(repos.flatMap((r) => r.checks ?? []))];
+  if (!checks.length || isolated) return undefined;
+  return (
+    `Workers run as the server's own user here, and a worker allowed to edit files and run ${checks.join(', ')} ` +
+    'can change what that command runs (a package.json script, a Makefile target) and run it, so a worker misled by ' +
+    'something it read could run any code as the server and read its data directory. Its environment carries no stored ' +
+    'secrets. Set OVERCLI_WORKER_UID to run workers as a user of their own (deploy/docs/security.md).'
+  );
+}
+
+/// The grants a repo's checks become.
+export function checkTools(repos: Array<Pick<ConnectedRepo, 'checks'>>): string[] {
+  return [...new Set(repos.flatMap((r) => (r.checks ?? []).map((c) => `Bash(${c}:*)`)))];
+}
+
+/// What happened when the server ran a repo's setup in a checkout.
+export interface SetupOutcome {
+  repo: string;
+  command: string;
+  ok: boolean;
+  /// The end of what it printed, when it failed.
+  tail?: string;
+}
+
+/// Said to every step of a worker's run on connected repos: which toolchain
+/// it has, what setup did, and which checks it may run. Empty when there's
+/// nothing to say beyond the toolchains.
+/// `tools`: what each checkout has on PATH and lacks (toolchainNote).
+export function repoChecksNote(members: Array<Pick<ConnectedRepo, 'name' | 'setup' | 'checks'>>, outcomes: SetupOutcome[], tools: string[] = []): string {
+  const multi = members.length > 1;
+  const lines = tools.length ? [...tools] : ['There is no nvm, sdkman or pyenv here, and none is needed; do not try to install toolchains.'];
+  for (const r of members) {
+    const o = outcomes.find((x) => x.repo === r.name);
+    const where = multi ? ` in ${r.name}` : '';
+    if (o?.ok) lines.push(`Before the run started, overcli ran ${o.command}${where}, so dependencies are installed. Do not install them again.`);
+    else if (o) lines.push(`Before the run started, overcli ran ${o.command}${where} and it failed, so dependencies may be missing and checks that need them may fail too. Say so in your reply. It printed:\n${o.tail ?? ''}`);
+    if (r.checks?.length) {
+      const how = r.checks.map((c) => (multi ? `cd ${r.name} && ${c}` : c)).join(', ');
+      lines.push(`To check your change${where}, you may run ${how}. Run ${r.checks.length === 1 ? 'it' : 'them'} before you finish and fix what ${r.checks.length === 1 ? 'it reports' : 'they report'} in the code you changed. No other commands are allowed.`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /// Connected repos grouped so one worker or team can change them together —
@@ -94,6 +178,9 @@ export interface RepoDeps {
   /// store so runs fork a worktree per repo. Null removes it.
   registerWorkspace(ws: { id: string; name: string; repos: Array<{ name: string; path: string }>; instructions?: string } | { id: string; remove: true }): { ok: true; rootPath: string } | { ok: false; error: string };
   env(name: string): string | undefined;
+  /// Whether workers run as a user of their own (OVERCLI_WORKER_UID).
+  /// Absent: whether this process turned that on.
+  workersIsolated?(): boolean;
   log?(message: string): void;
   now?(): number;
 }
@@ -365,6 +452,20 @@ export class RepoService {
     return { ok: true, repo };
   }
 
+  /// A repo's setup and checks. Both replace what was there; empty clears.
+  /// `warning`: the checks are set, but workers aren't isolated (checkGrantWarning).
+  setChecks(name: string, input: { setup?: string; checks?: string[] }): Result<{ repo: ConnectedRepo; warning?: string }> {
+    const repo = this.get(name);
+    if (!repo) return { ok: false, error: `No connected repo is called ${name}.` };
+    const checked = checkRepoChecks(input);
+    if (!checked.ok) return checked;
+    const { setup: _s, checks: _c, ...rest } = repo;
+    const next: ConnectedRepo = { ...rest, ...(checked.setup ? { setup: checked.setup } : {}), ...(checked.checks.length ? { checks: checked.checks } : {}) };
+    this.save({ repos: this.list().map((r) => (r.name === name ? next : r)) });
+    const warning = checkGrantWarning([next], this.deps.workersIsolated?.());
+    return { ok: true, repo: next, ...(warning ? { warning } : {}) };
+  }
+
   /// Forget a repo. The clone stays on disk until someone deletes it: a
   /// worker's branch may still be in it.
   disconnect(name: string): Result {
@@ -474,7 +575,7 @@ export class RepoService {
   /// server commits and pushes (landBranches.ts), and the hook runs tests.
   codeTools(): string[] {
     if (!this.list().length) return [];
-    return [...new Set([...READ_GIT_TOOLS, ...this.workspaces().flatMap((w) => workspaceGitTools(w.repos))])];
+    return [...new Set([...READ_GIT_TOOLS, ...this.workspaces().flatMap((w) => workspaceGitTools(w.repos)), ...checkTools(this.list())])];
   }
 
   /// Bring the clones at these paths up to date with origin before a run
@@ -577,8 +678,9 @@ function pullRequestStep(inputs: string, what: string): string[] {
 /// push a branch and hand back the link to open a pull request. The push is
 /// external, so it waits for a yes until the worker is trusted with it; the
 /// clone's pre-push hook runs the repo's tests and refuses a failing push.
-export function prFlowYaml(repo: ConnectedRepo): string {
+export function prFlowYaml(repo: ConnectedRepo, opts: { isolated?: boolean } = {}): string {
   const test = repo.testCommand;
+  const warning = checkGrantWarning([repo], opts.isolated);
   return [
     `name: Change ${repo.name} and push a branch`,
     'description: |',
@@ -600,22 +702,39 @@ export function prFlowYaml(repo: ConnectedRepo): string {
       'say exactly what is missing instead of planning.',
     ]),
     '    output: plan.md',
+    ...warningComment(warning),
     '  - id: build',
     `    model: { backend: claude, model: ${WORK_MODEL} }`,
     '    role: implementer',
     '    inputs: [user_prompt, plan.md]',
-    `    tools: [${q(['Read', 'Edit', 'Write', 'Grep', 'Glob', ...READ_GIT_TOOLS])}]`,
+    `    tools: [${q(['Read', 'Edit', 'Write', 'Grep', 'Glob', ...READ_GIT_TOOLS, ...checkTools([repo])])}]`,
     '    permission_mode: acceptEdits',
     '    system_prompt: |',
     indent([
       'Make the change the plan describes. Keep it small and in the style of the code around it.',
       'Add or update tests for it. Write only files that belong in the change: no notes or reports in',
       'the repo. Do not commit, branch or push: overcli does, once the change is approved.',
+      ...(repo.checks?.length ? [`Before you finish, run ${repo.checks.join(', ')} and fix what ${repo.checks.length === 1 ? 'it reports' : 'they report'} in the code you changed.`] : []),
     ]),
     '    output: diff',
     ...pullRequestStep('user_prompt, plan.md, diff', 'files'),
     '',
   ].join('\n');
+}
+
+/// A warning as YAML comment lines above the step it is about, wrapped.
+function warningComment(warning: string | undefined): string[] {
+  if (!warning) return [];
+  const lines: string[] = [];
+  let line = '';
+  for (const word of `Warning: ${warning}`.split(' ')) {
+    if (line && line.length + word.length + 1 > 96) {
+      lines.push(`  # ${line}`);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(`  # ${line}`);
+  return lines;
 }
 
 export function prFlowId(repo: Pick<ConnectedRepo, 'name'>): string {
@@ -627,10 +746,12 @@ export function prFlowId(repo: Pick<ConnectedRepo, 'name'>): string {
 /// folder and named after the repos. It plans across them, changes them, then
 /// pushes a branch in every repo it changed — git runs each repo's tests
 /// first — and hands back one link per repo to open its pull request.
-export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): string {
+export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[], opts: { isolated?: boolean } = {}): string {
   const members = ws.repos.map((n) => repos.find((r) => r.name === n)).filter((r): r is ConnectedRepo => !!r);
-  const layout = members.map((r) => `- ${r.name}/: ${r.url}, pull requests against ${r.defaultBranch}${r.testCommand ? `, tests: ${r.testCommand}` : ''}`);
+  const warning = checkGrantWarning(members, opts.isolated);
+  const layout = members.map((r) => `- ${r.name}/: ${r.url}, pull requests against ${r.defaultBranch}${r.testCommand ? `, tests: ${r.testCommand}` : ''}${r.checks?.length ? `, checks: ${r.checks.join(', ')}` : ''}`);
   const git = workspaceGitTools(members.map((r) => r.name));
+  const checked = members.filter((r) => r.checks?.length);
   return [
     `name: Change the ${ws.name} workspace and push branches`,
     'description: |',
@@ -661,11 +782,12 @@ export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): str
       'instead of planning.',
     ]),
     '    output: plan.md',
+    ...warningComment(warning),
     '  - id: build',
     `    model: { backend: claude, model: ${WORK_MODEL} }`,
     '    role: implementer',
     '    inputs: [user_prompt, plan.md]',
-    `    tools: [${q(['Read', 'Edit', 'Write', 'Grep', 'Glob', ...git])}]`,
+    `    tools: [${q(['Read', 'Edit', 'Write', 'Grep', 'Glob', ...git, ...checkTools(members)])}]`,
     '    permission_mode: acceptEdits',
     '    system_prompt: |',
     indent([
@@ -673,6 +795,7 @@ export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): str
       'style of the code around it, and keep the repos consistent with each other. Add or update',
       'tests. Write only files that belong in the change: no notes or reports in the repos. Do not',
       'commit, branch or push: overcli does, once the change is approved.',
+      ...(checked.length ? [`Before you finish, run the checks of each repo you changed, from inside it (${checked.map((r) => r.checks!.map((c) => `cd ${r.name} && ${c}`).join(', ')).join('; ')}), and fix what they report.`] : []),
     ]),
     '    output: diff',
     ...pullRequestStep('user_prompt, plan.md, diff', 'repos'),

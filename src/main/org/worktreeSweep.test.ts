@@ -37,8 +37,18 @@ function untouchedFor(wt: string, msAgo: number) {
     if (fs.statSync(p).isDirectory()) for (const e of fs.readdirSync(p)) walk(path.join(p, e));
     fs.utimesSync(p, t, t);
   };
+  // And its HEAD's history: each reflog entry carries its own time.
+  const reflog = path.join(git(wt, 'rev-parse', '--absolute-git-dir'), 'logs', 'HEAD');
+  if (fs.existsSync(reflog)) fs.writeFileSync(reflog, fs.readFileSync(reflog, 'utf8').replace(/\s(\d{9,11})(\s[+-]\d{4}\t)/g, ` ${Math.floor(t.getTime() / 1000)}$2`));
   walk(wt);
   walk(git(wt, 'rev-parse', '--absolute-git-dir'));
+}
+
+/// What git's own housekeeping does: gc rewrites the reflog and a status
+/// refreshes the index, both now, with nothing moved.
+function housekeep(wt: string) {
+  const gitDir = git(wt, 'rev-parse', '--absolute-git-dir');
+  for (const f of [path.join('logs', 'HEAD'), 'index']) fs.utimesSync(path.join(gitDir, f), new Date(), new Date());
 }
 
 const run = (r: ReturnType<typeof repo>, wt: string, name: string, endedMsAgo: number, state: FlowRun['state'] = { kind: 'done', success: true }) =>
@@ -89,6 +99,81 @@ describe('cleaning up finished runs’ checkouts', () => {
     expect(fs.existsSync(recent)).toBe(true);
     expect(fs.existsSync(stale)).toBe(false);
   }, 30_000);
+
+  it('doesn’t take git’s own housekeeping for someone working there', async () => {
+    const r = repo();
+    const old = r.wt('old');
+    untouchedFor(old, PUSHED_AFTER_MS * 10);
+    housekeep(old);
+    const res = await sweepWorktrees([run(r, old, 'old', PUSHED_AFTER_MS * 20)], () => undefined);
+    expect(res.removed).toBe(1);
+    expect(fs.existsSync(old)).toBe(false);
+  }, 30_000);
+
+  it('still counts a commit made after the run as someone working there', async () => {
+    const r = repo();
+    const carried = r.wt('carried');
+    untouchedFor(carried, PUSHED_AFTER_MS * 10);
+    git(carried, 'commit', '-q', '--allow-empty', '-m', 'later');
+    git(carried, 'push', '-q', 'origin', 'HEAD:refs/heads/run/carried');
+    git(carried, 'fetch', '-q', 'origin');
+    const res = await sweepWorktrees([run(r, carried, 'carried', PUSHED_AFTER_MS * 20)], () => undefined);
+    expect(res.removed).toBe(0);
+    expect(fs.existsSync(carried)).toBe(true);
+  }, 30_000);
+
+  it('removes checkouts no run knows once everything in them is on a remote, and only under the folder it is given', async () => {
+    const r = repo();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-root-'));
+    const at = (name: string) => {
+      fs.mkdirSync(path.join(root, 'main'), { recursive: true });
+      const p = path.join(root, 'main', name);
+      git(r.main, 'worktree', 'add', '-q', '-b', `run/${name}`, p, r.base);
+      return p;
+    };
+    const clean = at('clean');
+    const local = at('local');
+    fs.writeFileSync(path.join(local, 'c.txt'), 'c');
+    git(local, 'add', '.');
+    git(local, 'commit', '-qm', 'only here');
+    const recent = at('recent');
+    const known = at('known');
+    for (const p of [clean, local, known]) untouchedFor(p, TOUCHED_KEEP_MS + 60_000);
+    const res = await sweepWorktrees([run(r, known, 'known', 1000)], () => undefined, Date.now(), root);
+    expect(res.removed).toBe(1);
+    expect(fs.existsSync(clean)).toBe(false);
+    expect(git(r.main, 'branch', '--list', 'run/clean')).toBe('');
+    expect(fs.existsSync(local)).toBe(true);
+    expect(fs.existsSync(recent)).toBe(true);
+    expect(fs.existsSync(known)).toBe(true);
+    // Without the folder, none of that is looked at.
+    untouchedFor(recent, TOUCHED_KEEP_MS + 60_000);
+    expect((await sweepWorktrees([], () => undefined)).removed).toBe(0);
+    expect(fs.existsSync(recent)).toBe(true);
+  }, 30_000);
+
+  it('remembers a folder git cannot read, so a pile of them cannot starve the real orphans', async () => {
+    const r = repo();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-root-'));
+    // More broken `.git`s than one pass looks at, all ahead of the real one.
+    for (let i = 0; i < 160; i++) {
+      const bad = path.join(root, 'a-broken', `acme-${String(i).padStart(3, '0')}`);
+      fs.mkdirSync(bad, { recursive: true });
+      fs.writeFileSync(path.join(bad, '.git'), 'gitdir: /nowhere/acme\n');
+    }
+    fs.mkdirSync(path.join(root, 'b-main'));
+    const clean = path.join(root, 'b-main', 'clean');
+    git(r.main, 'worktree', 'add', '-q', '-b', 'run/clean', clean, r.base);
+    untouchedFor(clean, TOUCHED_KEEP_MS + 60_000);
+    const now = Date.now();
+    // Where the folders list in order, the first pass spends its whole budget
+    // on the broken ones; the next must skip them as remembered and reach the
+    // real orphan. (Listing order is the file system's, so only the end state
+    // is asserted.)
+    await sweepWorktrees([], () => undefined, now, root);
+    await sweepWorktrees([], () => undefined, now, root);
+    expect(fs.existsSync(clean)).toBe(false);
+  }, 60_000);
 
   it("leaves a checkout alone when a newer run has taken over its folder", async () => {
     const r = repo();

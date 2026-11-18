@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { defaultWorkerPicture } from '../../shared/flows/avatars';
-import { orgPicture, pictureAllowed } from './orgPictures';
+import { clearOrgPictures, orgPicture, pictureAllowed } from './orgPictures';
 
 describe('pictureAllowed', () => {
   it('takes the picture services the server uses, and nothing else', () => {
@@ -40,5 +40,44 @@ describe('orgPicture', () => {
     const never = vi.fn();
     expect(await orgPicture('https://intranet.acme.example/a.png', never as unknown as typeof fetch)).toBeNull();
     expect(never).not.toHaveBeenCalled();
+  });
+
+  it('asks again after a failure that may pass, but not after one that won’t', async () => {
+    clearOrgPictures();
+    let t = 1_000;
+    const clock = () => t;
+    const flaky = 'https://api.dicebear.com/9.x/pixel-art/svg?seed=t4';
+    const down = vi.fn(async () => {
+      throw new Error('offline');
+    });
+    expect(await orgPicture(flaky, down as unknown as typeof fetch, clock)).toBeNull();
+    const busy = vi.fn(async () => reply('busy', 'text/plain', 503));
+    expect(await orgPicture(flaky, busy as unknown as typeof fetch, clock)).toBeNull();
+    expect(busy).not.toHaveBeenCalled();
+    t += 61_000;
+    expect(await orgPicture(flaky, busy as unknown as typeof fetch, clock)).toBeNull();
+    expect(busy).toHaveBeenCalledTimes(1);
+    t += 61_000;
+    const back = vi.fn(async () => reply('<svg/>', 'image/svg+xml'));
+    expect(await orgPicture(flaky, back as unknown as typeof fetch, clock)).toMatch(/^data:image\/svg\+xml/);
+
+    const gone = 'https://api.dicebear.com/9.x/pixel-art/svg?seed=t5';
+    const missing = vi.fn(async () => reply('no', 'text/plain', 404));
+    expect(await orgPicture(gone, missing as unknown as typeof fetch, clock)).toBeNull();
+    t += 10 * 61_000;
+    expect(await orgPicture(gone, missing as unknown as typeof fetch, clock)).toBeNull();
+    expect(missing).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks once for the same picture wanted twice at once, and stops reading past the size cap', async () => {
+    clearOrgPictures();
+    const u = 'https://api.dicebear.com/9.x/pixel-art/svg?seed=t6';
+    const f = vi.fn(async () => reply('<svg/>', 'image/svg+xml'));
+    const [a, b] = await Promise.all([orgPicture(u, f as unknown as typeof fetch), orgPicture(u, f as unknown as typeof fetch)]);
+    expect(a).toBe(b);
+    expect(f).toHaveBeenCalledTimes(1);
+    // No length header: the cap is enforced while reading.
+    const chunked = vi.fn(async () => new Response(new ReadableStream({ start(c) { for (let i = 0; i < 10; i++) c.enqueue(new Uint8Array(100 * 1024)); c.close(); } }), { headers: { 'content-type': 'image/png' } }));
+    expect(await orgPicture('https://api.dicebear.com/9.x/pixel-art/png?seed=t7', chunked as unknown as typeof fetch)).toBeNull();
   });
 });

@@ -87,7 +87,7 @@ describe('a worker’s role tools on its runs', () => {
     h.ask('r-open', 'mcp__test-systems__open_system');
     h.ask('r-read', 'mcp__test-systems__list_systems');
     expect(h.answers).toEqual([['r-open', false], ['r-read', true]]);
-    expect(h.notes[0]).toContain('one of this worker\'s role tools');
+    expect(h.notes[0]).toContain('one of this worker\'s tools');
     expect(h.notes[0]).toContain('Always allow its role\'s tools');
   });
 
@@ -96,8 +96,12 @@ describe('a worker’s role tools on its runs', () => {
     h.rt.resumeRun({ runId: RUN_ID });
     await flush();
     h.ask('r-open', 'mcp__test-systems__open_system');
-    expect(h.answers).toEqual([['r-open', false]]);
-    expect(h.notes[0]).toContain('not among the tools this work was given');
+    h.ask('r-write', 'Write');
+    expect(h.answers).toEqual([['r-open', false], ['r-write', false]]);
+    // Not a flow edit: the worker doesn't have the tool, so say who can give it.
+    expect(h.notes[0]).toContain('doesn\'t have the test-systems tool');
+    expect(h.notes[0]).toContain('Editing a flow isn\'t needed');
+    expect(h.notes[1]).toContain('not among the tools this work was given');
   });
 });
 

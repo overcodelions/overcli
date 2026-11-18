@@ -10,6 +10,7 @@ import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
+import type { PrunedWorkerBatch } from '../../shared/flows/workerReport';
 
 import { runExists } from './runsStore';
 
@@ -191,22 +192,166 @@ export function loadAllOrchestrations(): Orchestration[] {
   return pruneOrchestrations(out);
 }
 
-/// Evict completed batches past `MAX_RETAINED_ORCHESTRATIONS`, oldest first.
+/// Which batches past the cap go, given newest first. A batch goes once it is
+/// finished: stamped complete, or a worker's desk turn that proposed nothing
+/// (written only after its turn ended, and never stamped, since nothing in it
+/// ever settles). Those used to be kept forever, so hundreds of them held the
+/// cap's slots while finished work behind them was deleted on every boot.
+export function prunePlan(all: Orchestration[], cap = MAX_RETAINED_ORCHESTRATIONS): { kept: Orchestration[]; gone: Orchestration[] } {
+  const kept: Orchestration[] = [];
+  const gone: Orchestration[] = [];
+  if (all.length <= cap) return { kept: all, gone };
+  all.forEach((o, index) => (index < cap || !(o.completedAt || o.items.length === 0) ? kept : gone).push(o));
+  return { kept, gone };
+}
+
+/// Evict finished batches past `MAX_RETAINED_ORCHESTRATIONS`, oldest first.
 /// Never evicts a batch still holding proposals or live items. Shared by the
 /// loader (every boot) and `saveOrchestration` (every write, throttled), so a
-/// session that never restarts still gets bounded.
+/// session that never restarts still gets bounded. A worker's batch with work
+/// in it goes into the all-time log first, so the Reports page still counts
+/// its jobs.
 export function pruneOrchestrations(all: Orchestration[]): Orchestration[] {
-  if (all.length <= MAX_RETAINED_ORCHESTRATIONS) return all;
-  const kept: Orchestration[] = [];
-  all.forEach((o, index) => {
-    if (index < MAX_RETAINED_ORCHESTRATIONS || !o.completedAt) {
-      kept.push(o);
-      return;
-    }
-    deleteOrchestration(o.id);
-  });
-  log('info', 'orchestrations', `Pruned ${all.length - kept.length} completed batches`);
+  const { kept, gone } = prunePlan(all);
+  if (!gone.length) return kept;
+  appendPrunedBatches(gone.flatMap((o) => prunedRecord(o) ?? []));
+  for (const o of gone) deleteOrchestration(o.id);
+  log('info', 'orchestrations', `Pruned ${gone.length} finished batches`);
   return kept;
+}
+
+/// What the all-time log keeps of a worker batch: its items' outcomes.
+/// Nothing for another kind of batch, or one that launched nothing.
+export function prunedRecord(o: Orchestration): PrunedWorkerBatch | null {
+  if (o.origin?.kind !== 'worker' || !o.items.length) return null;
+  return {
+    id: o.id,
+    workerId: o.origin.workerId,
+    createdAt: o.createdAt,
+    items: o.items.map((i) => ({ status: i.status, ...(i.finishedAt ? { finishedAt: i.finishedAt } : {}) })),
+  };
+}
+
+function prunedLogPath(): string {
+  return path.join(host().dataDir(), 'worker-batches.jsonl');
+}
+
+/// The parsed log, kept between calls: `loadPrunedBatches` runs on every
+/// worker report, and the file only ever grows. Valid while the file's size
+/// and mtime are what they were when it was read (or last appended to here),
+/// so an edit from outside is still picked up.
+interface PrunedCache {
+  file: string;
+  size: number;
+  mtimeMs: number;
+  byId: Map<string, PrunedWorkerBatch>;
+  list: PrunedWorkerBatch[] | null;
+}
+let prunedCache: PrunedCache | null = null;
+
+/// Rewrite the log deduped once it holds this many times more lines than
+/// batches, and at least `COMPACT_MIN_LINES` of them.
+const COMPACT_RATIO = 2;
+const COMPACT_MIN_LINES = 200;
+
+function statOf(file: string): { size: number; mtimeMs: number } | null {
+  try {
+    const st = fs.statSync(file);
+    return { size: st.size, mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function cacheFresh(file: string, st: { size: number; mtimeMs: number } | null): boolean {
+  return !!prunedCache && !!st && prunedCache.file === file && prunedCache.size === st.size && prunedCache.mtimeMs === st.mtimeMs;
+}
+
+/// Append records to the all-time log. Exported for tests.
+export function appendPrunedBatches(records: PrunedWorkerBatch[]): void {
+  if (!records.length) return;
+  const file = prunedLogPath();
+  const fresh = cacheFresh(file, statOf(file));
+  const payload = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  try {
+    fs.appendFileSync(file, payload, 'utf8');
+  } catch (err) {
+    log('warn', 'orchestrations', `Failed to log pruned batches: ${String(err)}`);
+    prunedCache = null;
+    return;
+  }
+  // Our own append: fold it into the cache rather than reading it all back,
+  // as long as the file grew by exactly what we wrote.
+  const st = statOf(file);
+  if (fresh && prunedCache && st && st.size === prunedCache.size + Buffer.byteLength(payload, 'utf8')) {
+    for (const r of records) prunedCache.byId.set(r.id, r);
+    prunedCache.list = null;
+    prunedCache.size = st.size;
+    prunedCache.mtimeMs = st.mtimeMs;
+  } else {
+    prunedCache = null;
+  }
+}
+
+/// Every worker batch ever pruned, one per id (the last line wins).
+export function loadPrunedBatches(): PrunedWorkerBatch[] {
+  const file = prunedLogPath();
+  const st = statOf(file);
+  if (!st) {
+    prunedCache = null;
+    return [];
+  }
+  if (!cacheFresh(file, st)) {
+    let raw = '';
+    try {
+      raw = fs.readFileSync(file, 'utf8');
+    } catch {
+      prunedCache = null;
+      return [];
+    }
+    const byId = new Map<string, PrunedWorkerBatch>();
+    let lines = 0;
+    for (const line of raw.split('\n')) {
+      if (!line) continue;
+      lines++;
+      try {
+        const r = JSON.parse(line) as PrunedWorkerBatch;
+        if (r && typeof r.id === 'string' && typeof r.workerId === 'string' && Array.isArray(r.items)) byId.set(r.id, r);
+      } catch {
+        // a torn line from a crash mid-append: skip it
+      }
+    }
+    let size = st.size;
+    let mtimeMs = st.mtimeMs;
+    if (lines >= COMPACT_MIN_LINES && lines > byId.size * COMPACT_RATIO) {
+      const compacted = compactPrunedLog(file, byId);
+      if (compacted) ({ size, mtimeMs } = compacted);
+    }
+    prunedCache = { file, size, mtimeMs, byId, list: null };
+  }
+  const cache = prunedCache!;
+  cache.list ??= [...cache.byId.values()];
+  return [...cache.list];
+}
+
+/// Rewrite the log with one line per batch, atomically. Nothing is lost: the
+/// last line per id is the one that counts, and that is the one kept.
+function compactPrunedLog(file: string, byId: Map<string, PrunedWorkerBatch>): { size: number; mtimeMs: number } | null {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    const body = [...byId.values()].map((r) => JSON.stringify(r)).join('\n');
+    fs.writeFileSync(tmp, body ? body + '\n' : '', 'utf8');
+    fs.renameSync(tmp, file);
+    return statOf(file);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // best-effort
+    }
+    log('warn', 'orchestrations', `Failed to compact the pruned batch log: ${String(err)}`);
+    return null;
+  }
 }
 
 export function deleteOrchestration(id: string): void {

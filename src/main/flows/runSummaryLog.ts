@@ -17,6 +17,7 @@ import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
 import { flowRunOwnerPath, type FlowRun } from '../../shared/flows/schema';
+import { LANDED_ARTIFACT, pullRequestsOpened } from '../org/landBranches';
 
 export interface RunSummary {
   id: string;
@@ -42,6 +43,13 @@ export interface RunSummary {
   /// attribute an evicted run to the project that launched it. Absent on
   /// lines written before this field existed.
   ownerPath?: string;
+  /// When the run started: the Reports window counts a run by this.
+  createdAt?: number;
+  /// Pull requests the run opened (its landing note), so the Reports page
+  /// still counts them once the run itself is evicted. The note lands after
+  /// the run ends, so the line is written again when this changes. Absent on
+  /// lines written before this field existed.
+  pullRequestsOpened?: number;
 }
 
 const COMPACT_BYTES = 1024 * 1024;
@@ -57,14 +65,21 @@ function filePath(): string {
   }
 }
 
-let summarizedIds: Set<string> | null = null;
+/// Each logged run id, with the pull requests its line says it opened.
+let summarizedIds: Map<string, number> | null = null;
 
-function ensureIndex(): Set<string> {
+function ensureIndex(): Map<string, number> {
   if (summarizedIds) return summarizedIds;
   const loaded = loadRunSummariesRaw();
   maybeCompact(loaded);
-  summarizedIds = new Set(loaded.map((s) => s.id));
+  summarizedIds = new Map();
+  // Raw lines oldest first, so the last line for an id wins, as on load.
+  for (const s of loaded) summarizedIds.set(s.id, s.pullRequestsOpened ?? 0);
   return summarizedIds;
+}
+
+function openedBy(run: FlowRun): number {
+  return pullRequestsOpened(run.artifacts?.[LANDED_ARTIFACT]?.body ?? '');
 }
 
 export function summarizeRun(run: FlowRun): RunSummary | null {
@@ -111,20 +126,25 @@ export function summarizeRun(run: FlowRun): RunSummary | null {
     workerId: run.workerId,
     ...(run.parentOrchestrationId ? { parentOrchestrationId: run.parentOrchestrationId } : {}),
     ownerPath: flowRunOwnerPath(run),
+    ...(run.createdAt ? { createdAt: run.createdAt } : {}),
+    pullRequestsOpened: openedBy(run),
   };
 }
 
 /// Idempotent. Appends a summary line for `run` if it isn't already in
 /// the log. Callers wire this into the runs-store save path so terminal
-/// runs are captured exactly once per id, even across restarts.
+/// runs are captured once per id, even across restarts — and once more when
+/// its landing note arrives (after the run ended) or changes how many pull
+/// requests it opened. Load keeps the last line per id.
 export function appendRunSummary(run: FlowRun): void {
   const ids = ensureIndex();
-  if (ids.has(run.id)) return;
+  const logged = ids.get(run.id);
+  if (logged !== undefined && logged === openedBy(run)) return;
   const summary = summarizeRun(run);
   if (!summary) return;
   try {
     fs.appendFileSync(filePath(), JSON.stringify(summary) + '\n', 'utf-8');
-    ids.add(run.id);
+    ids.set(run.id, summary.pullRequestsOpened ?? 0);
   } catch (err) {
     log('error', 'flows.appendRunSummary', `failed to append summary for ${run.id}`, err);
   }

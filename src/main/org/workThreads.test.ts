@@ -185,6 +185,16 @@ describe('work threads', () => {
     expect(nowLine(t, 'Marta')).toBeNull();
   });
 
+  it('names the tools a run was refused, by tool, once each, for the console to offer the fix', () => {
+    const r = run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000, {
+      refusedTools: ['mcp__test-systems__open_system', 'mcp__test-systems__browser_take_screenshot', 'Write', 'mcp__acme-tracker__create_issue'],
+    });
+    const t = buildThreads(input({ runs: [r] }));
+    expect(t[0].runs[0].refused).toEqual(['test-systems', 'acme-tracker']);
+    const clean = buildThreads(input({ runs: [run('r2', { kind: 'done', success: true } as FlowRun['state'], 3_000)] }));
+    expect(clean[0].runs[0].refused).toBeUndefined();
+  });
+
   it('keeps what the run wrote as its result when the lander attaches its note after', () => {
     const r = run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000, {
       artifacts: {

@@ -40,6 +40,7 @@ import {
 } from '../../shared/responseDirectives';
 import type { NotifyArgs } from '../host';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
+import { workerRunTools } from '../../shared/org/roleTools';
 import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem, type PrLink, type PrTarget } from '../../shared/flows/orchestration';
 import { flowRunTitle, type AdoptedWorktrees, type FlowRun } from '../../shared/flows/schema';
 import {
@@ -116,6 +117,7 @@ import {
   workerRejectedTitles,
 } from './workerJournal';
 import { loadRunSummaries, workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
+import { loadPrunedBatches } from './orchestrationsStore';
 import {
   archiveWorkerFiles,
   clearWorkerFiles,
@@ -129,7 +131,7 @@ import { reportsChain, wouldCycle } from '../../shared/flows/org';
 import { WORKER_COMPACTION_KEEP_DAYS, compactionCutoff, isCompactionDue } from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
 import type { Pool } from './pools';
-import { buildWorkerReport, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
+import { buildWorkerReport, type PrunedWorkerBatch, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
 /// a minute so sleep/clock-steps can't strand a timer.
@@ -177,6 +179,27 @@ const ERRAND_REPLY_CHARS = 8000;
 /// A filename, or one of the two keywords. Long enough for any name the
 /// filer produces, short enough that the field can't be used as storage.
 const WORKER_AUTO_RENDER_MAX = 200;
+
+/// A handoff, as the conversation it came from hears about it: sent, then
+/// answered or refused. `conversation` is the sender's own (a Slack thread's
+/// `slack:<channel>:<ts>`), so whoever is following that conversation can
+/// show the colleague being asked, and their answer, where it was asked.
+export type WorkerReferralEvent = {
+  conversation: string;
+  from: { workerId: UUID; workerName: string };
+  to: { workerId: UUID; workerName: string };
+  instruction: string;
+} & (
+  | { phase: 'sent' }
+  | { phase: 'done'; reply: string; orchestrationId?: string; launched: boolean; choices?: string[]; withheld?: true }
+  | { phase: 'failed'; error: string }
+);
+
+/// The conversation a handoff is told in. `withheld`: whoever asked there
+/// does not manage the sender, so the colleague's answer and any run it
+/// starts stay on the colleague's desk — asking one worker to hand on must
+/// not show the asker what they could not have asked the colleague directly.
+type ReferralThread = { conversation: string; withheld?: boolean };
 
 /// The slice of the orchestrator a worker shift drives. `parkProposal` runs
 /// the producer turn and records the batch; `get`/`list` let the engine fold
@@ -289,6 +312,8 @@ export interface WorkerEngineDeps {
   /// Every terminal run's cost/token/time record. Injected so the report is
   /// testable without the on-disk summary log.
   runFacts?: () => WorkerRunFact[];
+  /// Worker batches the store has pruned (`loadPrunedBatches`). Tests stub it.
+  prunedBatches?: () => PrunedWorkerBatch[];
   treasuryStore?: {
     load: () => Treasury | null;
     save: (t: Treasury) => void;
@@ -619,6 +644,25 @@ export class WorkerEngine {
 
   /// Every worker as held — no scorecards. For a caller that needs the crew's
   /// names and jobs (routing an errand) and not their stats.
+  private readonly referralListeners = new Set<(e: WorkerReferralEvent) => void>();
+
+  /// Hear about handoffs sent from a conversation (see WorkerReferralEvent).
+  /// Only handoffs whose sender was answering a conversation are reported.
+  onReferral(listener: (e: WorkerReferralEvent) => void): () => void {
+    this.referralListeners.add(listener);
+    return () => this.referralListeners.delete(listener);
+  }
+
+  private emitReferral(e: WorkerReferralEvent): void {
+    for (const l of this.referralListeners) {
+      try {
+        l(e);
+      } catch (err) {
+        log('warn', 'worker-handoff', `referral listener threw: ${String(err)}`);
+      }
+    }
+  }
+
   roster(): Worker[] {
     return [...this.workers.values()];
   }
@@ -740,6 +784,7 @@ export class WorkerEngine {
       workers: [...this.workers.values()],
       journal: (id) => this.journal.load(id),
       orchestrations: this.deps.parker.list(),
+      pruned: (this.deps.prunedBatches ?? loadPrunedBatches)(),
       runs: (this.deps.runFacts ?? loadRunSummaries)(),
       sinceMs: Math.max(0, sinceMs),
       generatedAt: this.now(),
@@ -1578,11 +1623,14 @@ export class WorkerEngine {
     return [...new Set([...(w.mcpServers ?? []), ...shared, ...role])];
   }
 
-  /// What a batch carries of its role: the role's tools, and whether it may
-  /// use them in runs it starts on its own.
-  roleOrigin(w: Worker): { roleTools?: string[]; roleToolsAlways?: boolean } {
-    const roleTools = this.deps.roleTools?.(w) ?? [];
-    return roleTools.length ? { roleTools, ...(w.caps.roleToolsAlways ? { roleToolsAlways: true } : {}) } : {};
+  /// What a batch carries of its tools: its role's and its own, and whether it
+  /// may use them in runs it starts on its own. `managerAsked`: its manager
+  /// typed this ask, which is that approval already: a manager who gave a
+  /// worker a tool, asked it to use it, and saw every run refuse it, had no
+  /// way through but a flow edit.
+  roleOrigin(w: Worker, managerAsked = false): { roleTools?: string[]; roleToolsAlways?: boolean } {
+    const roleTools = workerRunTools(this.deps.roleTools?.(w) ?? [], w.mcpServers);
+    return roleTools.length ? { roleTools, ...(w.caps.roleToolsAlways || managerAsked ? { roleToolsAlways: true } : {}) } : {};
   }
 
   /// The planning turn this worker is in, if any: since when, and for what.
@@ -2449,6 +2497,10 @@ export class WorkerEngine {
     // different speaker, and folding it into the manager's conversation would
     // let one worker read the other half of that conversation.
     const desk = from ? null : conversation ? this.threadSession(w, conversation) : this.deskThread(w, at);
+    // Its tools changed since this desk thread last spoke: say so on the
+    // resumed turn, or it answers from what it was refused before the change.
+    const heldTools = !conversation && desk?.sessionId ? w.deskSession?.tools : undefined;
+    const toolsChanged = heldTools !== undefined && heldTools !== this.toolsKey(w);
 
     this.deps.emit({
       type: 'workerShiftProgress',
@@ -2463,7 +2515,7 @@ export class WorkerEngine {
     const fire = (resumeSessionId?: string) => {
       const warm = !!resumeSessionId;
       return this.deps.parker.parkProposal({
-        origin: { ...workerOrigin(this.judged(w), 'errand', errand, from), ...this.roleOrigin(w), ...(prLinks?.length ? { prLinks } : {}) },
+        origin: { ...workerOrigin(this.judged(w), 'errand', errand, from), ...this.roleOrigin(w, !from && !untrusted), ...(prLinks?.length ? { prLinks } : {}) },
         projectPath: w.projectPath,
         // The pace directives lead every turn, warm or cold: they are two
         // lines, and a resumed session drifting back to essays because we
@@ -2471,7 +2523,7 @@ export class WorkerEngine {
         prompt: paced(
           w,
           warm
-            ? this.buildWarmPrompt(w, errand)
+            ? this.buildWarmPrompt(w, errand, toolsChanged)
             : this.withToolProblems(w, this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from)),
         ),
         // Replay is the fallback for a thread we cannot resume. A warm turn
@@ -2566,7 +2618,9 @@ export class WorkerEngine {
     // tag is explicit, it is answered on the desk you are watching, and the
     // reply says who it went to, so the name-in-passing risk the gate was for
     // does not arise.
-    const handoffs = from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
+    const handoffs = from
+      ? ''
+      : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId, conversation ? { conversation, ...(untrusted ? { withheld: true } : {}) } : undefined);
     // Path 3: the worker judged the errand too big for a prose answer and
     // found nothing on its contract that fits, so it asked for machinery. Only
     // honored when it proposed nothing — a turn that did both is confused, and
@@ -2765,6 +2819,7 @@ export class WorkerEngine {
       ...this.delegationBlock(w),
       ...this.runningBlock(w),
       ...this.flowsBlock(w),
+      ...this.toolsBlock(w),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -2824,6 +2879,21 @@ export class WorkerEngine {
   /// the right SIZE for the ask is the triage call, and a worker that never
   /// saw its flow sent "what do competitors charge for MDF?" through a
   /// six-step weekly report build.
+  /// The tools its runs have in every step, whatever the flow lists. Without
+  /// it a planner asked for screenshots, seeing no flow step that names the
+  /// screenshot tool, requested a new flow for it, and that flow, not being
+  /// one of its own, could never run: it told its manager it was blocked.
+  private toolsBlock(w: Worker): string[] {
+    const tools = workerRunTools(this.deps.roleTools?.(w) ?? [], w.mcpServers);
+    if (!tools.length) return [];
+    return [
+      '',
+      `YOUR TOOLS — in every step of every run of your flows, whether or not a step lists them: ${tools.join(', ')}.`,
+      'A candidate that needs one runs through your usual flow like any other; say in it which tool to use.',
+      w.caps.roleToolsAlways ? '' : 'In a run you start on your own, they wait for a person to approve the run first.',
+    ].filter((l, i) => i < 3 || l);
+  }
+
   private flowsBlock(w: Worker, errand = false): string[] {
     const min = errand ? 1 : 2;
     if (w.flowIds.length < min || !this.deps.flowsFor) return [];
@@ -3083,6 +3153,8 @@ export class WorkerEngine {
     proposed: number,
     at: number,
     orchestrationId: string | undefined,
+    /// The conversation the sender was answering, told about each referral.
+    thread?: ReferralThread,
   ): string {
     if (!canDelegate(sender)) return '';
     const requested = parseHandoffs(rawReply);
@@ -3098,7 +3170,7 @@ export class WorkerEngine {
     const sent: string[] = [];
     const failed: string[] = [];
     requested.slice(0, allowed).forEach((h, i) => {
-      const outcome = this.dispatchOne(sender, h, targets, `handoff-${sender.id}-${at}-${i}`, at, orchestrationId);
+      const outcome = this.dispatchOne(sender, h, targets, `handoff-${sender.id}-${at}-${i}`, at, orchestrationId, undefined, thread);
       (outcome.ok ? sent : failed).push(outcome.summary);
     });
 
@@ -3158,6 +3230,7 @@ export class WorkerEngine {
     orchestrationId: string | undefined,
     /// The run that wrote it, when a flow rather than a planning turn did.
     runId?: string,
+    thread?: ReferralThread,
   ): { ok: boolean; summary: string } {
     const title = errandLabel(h.instruction);
     const fromRun = runId ? { runId } : {};
@@ -3199,7 +3272,7 @@ export class WorkerEngine {
       return { ok: false, summary: `"${h.on}" is not a date it could wait for` };
     }
     if (when !== null) {
-      return this.holdHandoff(sender, target, h.instruction, title, when, entryId, at, orchestrationId, runId);
+      return this.holdHandoff(sender, target, h.instruction, title, when, entryId, at, orchestrationId, runId, { thread });
     }
     // Away: a run that was already going when you left can still hand work
     // on as it finishes. The colleague would start it with nobody watching,
@@ -3207,6 +3280,7 @@ export class WorkerEngine {
     if (this.away) {
       return this.holdHandoff(sender, target, h.instruction, title, at, entryId, at, orchestrationId, runId, {
         note: `Will hand to ${target.name} when you're back: ${h.instruction}`,
+        thread,
       });
     }
 
@@ -3220,6 +3294,7 @@ export class WorkerEngine {
     if (pending >= MAX_PENDING_REFERRALS && runId) {
       return this.holdHandoff(sender, target, h.instruction, title, at + HELD_RETRY_MS, entryId, at, orchestrationId, runId, {
         note: `Will hand to ${target.name} once they have room: ${h.instruction}`,
+        thread,
       });
     }
     if (pending >= MAX_PENDING_REFERRALS) {
@@ -3239,7 +3314,7 @@ export class WorkerEngine {
       orchestrationId,
       ...fromRun,
     });
-    this.sendReferral(sender, target, h.instruction, title, entryId, orchestrationId);
+    this.sendReferral(sender, target, h.instruction, title, entryId, orchestrationId, thread);
     return { ok: true, summary: target.name };
   }
 
@@ -3252,8 +3327,15 @@ export class WorkerEngine {
     title: string,
     entryId: string,
     orchestrationId: string | undefined,
+    thread?: ReferralThread,
+    /// The thread already heard it was sent (it was put back on hold after).
+    announced = false,
   ): void {
     this.pendingReferrals.set(target.id, (this.pendingReferrals.get(target.id) ?? 0) + 1);
+    const told = thread
+      ? { conversation: thread.conversation, from: { workerId: sender.id, workerName: sender.name }, to: { workerId: target.id, workerName: target.name }, instruction }
+      : null;
+    if (told && !announced) this.emitReferral({ ...told, phase: 'sent' });
     const awayAtSend = this.away?.since;
     // `manual` so the receiver's funding gate reports back as an error rather
     // than swallowing the errand and stamping cadence — a referral that died
@@ -3272,7 +3354,7 @@ export class WorkerEngine {
       // away ("send now") was meant to go, so it does.
       deferIfAway: () => {
         if (!this.away || this.away.since === awayAtSend) return false;
-        this.reholdForAway(sender, target, instruction, title, entryId, orchestrationId);
+        this.reholdForAway(sender, target, instruction, title, entryId, orchestrationId, thread);
         return true;
       },
     })
@@ -3280,11 +3362,40 @@ export class WorkerEngine {
       // reported exactly like one that was refused. Swallowing the throw
       // would leave the sender's journal claiming it handed the work over
       // and nothing on either desk to say it never arrived.
-      .then((res) => (res.ok ? null : res.error))
+      .then((res) => {
+        if (res.ok && told) {
+          // Put back on hold for when you're back: nothing to say yet.
+          if (res.errand && thread?.withheld) {
+            this.emitReferral({ ...told, phase: 'done', reply: '', launched: false, withheld: true });
+          } else if (res.errand) {
+            const e = res.errand;
+            this.emitReferral({ ...told, phase: 'done', reply: e.reply, launched: !e.launchedNothing && e.count > 0, ...(e.orchestrationId ? { orchestrationId: e.orchestrationId } : {}), ...(e.choices?.length ? { choices: e.choices } : {}) });
+          }
+        }
+        // What the colleague said goes back on the sender's own record, so
+        // asked later ("which ticket did Joe make?") it knows rather than
+        // guesses. Withheld from the thread, its words stay out of here too:
+        // the sender would only repeat them there.
+        if (res.ok && res.errand) {
+          const e = res.errand;
+          const took = !e.launchedNothing && e.count > 0;
+          this.journal.append({
+            workerId: sender.id,
+            id: `${entryId}:answered`,
+            kind: 'delegated',
+            at: this.now(),
+            title,
+            note: thread?.withheld ? `${target.name} has it.` : `${target.name} ${took ? 'took it on' : 'answered'}: ${reportLine(e.reply)}`,
+          });
+          this.emitWorker(this.workers.get(sender.id) ?? sender);
+        }
+        return res.ok ? null : res.error;
+      })
       .catch((err) => String(err))
       .then((error) => {
         this.pendingReferrals.set(target.id, Math.max(0, (this.pendingReferrals.get(target.id) ?? 1) - 1));
         if (!error) return;
+        if (told) this.emitReferral({ ...told, phase: 'failed', error });
         this.journal.append({
           workerId: sender.id,
           id: `${entryId}:failed`,
@@ -3313,6 +3424,7 @@ export class WorkerEngine {
     title: string,
     entryId: string,
     orchestrationId: string | undefined,
+    thread?: ReferralThread,
   ): void {
     const now = this.now();
     const id = `${entryId}:away`;
@@ -3329,6 +3441,9 @@ export class WorkerEngine {
         notBefore: now,
         createdAt: now,
         ...(orchestrationId ? { orchestrationId } : {}),
+        // The thread already heard "can you take this?": when it goes out,
+        // only the answer is still owed there.
+        ...heldThread(thread, true),
       },
     ];
     this.handoffStore.save(this.held);
@@ -3358,7 +3473,7 @@ export class WorkerEngine {
     at: number,
     orchestrationId: string | undefined,
     runId?: string,
-    opts: { note?: string } = {},
+    opts: { note?: string; thread?: ReferralThread } = {},
   ): { ok: boolean; summary: string } {
     const waiting = this.held.filter((x) => x.fromId === sender.id).length;
     if (waiting >= MAX_HELD_PER_SENDER) {
@@ -3376,6 +3491,7 @@ export class WorkerEngine {
       createdAt: at,
       ...(orchestrationId ? { orchestrationId } : {}),
       ...(runId ? { runId } : {}),
+      ...heldThread(opts.thread, false),
     };
     this.held = [...this.held.filter((x) => x.id !== entryId), held];
     this.handoffStore.save(this.held);
@@ -3449,7 +3565,16 @@ export class WorkerEngine {
         ...(h.runId ? { runId: h.runId } : {}),
       });
       this.emitWorker(sender);
-      this.sendReferral(sender, target, h.instruction, h.title, h.id, h.orchestrationId);
+      this.sendReferral(
+        sender,
+        target,
+        h.instruction,
+        h.title,
+        h.id,
+        h.orchestrationId,
+        h.conversation ? { conversation: h.conversation, ...(h.withheld ? { withheld: true } : {}) } : undefined,
+        h.announced === true,
+      );
     }
     this.held = keep;
     this.handoffStore.save(this.held);
@@ -3541,7 +3666,26 @@ export class WorkerEngine {
   /// The rejected list is deliberately absent. It steers the cold prompt, but
   /// `excludeTitles` is the hard filter and it rides on every turn regardless,
   /// so re-listing thirty titles into a warm session buys nothing.
-  private buildWarmPrompt(w: Worker, errand: string): string {
+  /// The tools its runs may use, and whether in runs it starts on its own: what
+  /// a desk thread is told again when it changes (`deskSession.tools`).
+  private toolsKey(w: Worker): string {
+    const tools = workerRunTools(this.deps.roleTools?.(w) ?? [], w.mcpServers).sort();
+    return `${tools.join(',')}|${w.caps.roleToolsAlways ? 'always' : 'approved'}`;
+  }
+
+  private toolsChangedNote(w: Worker): string[] {
+    const tools = workerRunTools(this.deps.roleTools?.(w) ?? [], w.mcpServers);
+    return [
+      'YOUR TOOLS CHANGED since earlier in this conversation. Your manager changed what you',
+      `may use. You now have: ${tools.length ? tools.join(', ') : 'none beyond the basics'}, in every step of every run`,
+      `you launch${w.caps.roleToolsAlways ? '' : ' that a person approves'}, whether or not the flow lists them. Anything you said earlier`,
+      'about being refused or blocked for lack of one of these no longer holds: do not repeat it.',
+      'Do the work through your usual flow now instead.',
+      '',
+    ];
+  }
+
+  private buildWarmPrompt(w: Worker, errand: string, toolsChanged = false): string {
     // The one thing a warm turn re-states beyond the contract: who it can hand
     // work to. The roster changes under a long-lived desk session, and a
     // worker hired this morning onto someone's team is nameable from now on.
@@ -3557,6 +3701,7 @@ export class WorkerEngine {
           ]
         : [];
     return [
+      ...(toolsChanged ? this.toolsChangedNote(w) : []),
       errand,
       '',
       'Same three paths as before: answer it now if you can settle it from what you',
@@ -3573,6 +3718,7 @@ export class WorkerEngine {
       ...this.standingBlock(w),
       ...this.runningBlock(w),
       ...this.flowsBlock(w, true),
+      ...this.toolsBlock(w),
       ...handoff,
       ...REPLIES_HINT,
     ].join('\n');
@@ -3624,6 +3770,7 @@ export class WorkerEngine {
       ...(from ? [] : this.delegationBlock(w)),
       ...this.runningBlock(w),
       ...this.flowsBlock(w, true),
+      ...this.toolsBlock(w),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -3669,6 +3816,8 @@ export class WorkerEngine {
       '   steps, reading a lot of the codebase, correlating things you cannot hold in',
       '   one turn — and none of your flows fits, or the one that covers it would do far',
       '   more than was asked, do NOT guess and do NOT force it into the wrong flow.',
+      '   Never ask for a new flow just to use a tool: YOUR TOOLS work in every step of',
+      '   your flows already. Doing a task with one (open an app, take screenshots) is path 2.',
       '   Emit an empty candidates list and end your reply with a block:',
       '',
       '     <flow_request>',
@@ -3722,6 +3871,21 @@ export class WorkerEngine {
   /// Both writes are write-once by filename, which is what makes this safe to
   /// call on every re-fold, at startup, and again after the run root gains
   /// files (see `refileRunDeliverables`).
+  /// Work a colleague handed over that ran to its end goes back on the
+  /// sender's record: what came of it, in a few lines. Keyed by the item, so
+  /// the fold that re-runs on every update writes it once.
+  private reportBack(w: Worker, o: Orchestration, item: OrchestrationItem, title: string): boolean {
+    const from = o.origin?.kind === 'worker' ? o.origin.from : undefined;
+    if (!from || (item.status !== 'done' && item.status !== 'failed') || !this.workers.has(from.workerId)) return false;
+    let note: string;
+    if (item.status === 'failed') note = `${w.name} could not finish it${item.note ? `: ${reportLine(item.note)}` : '.'}`;
+    else {
+      const body = item.runId ? (this.deps.deliverablesFor?.(item.runId) ?? []).map((a) => a.body ?? '').find((b) => b.trim()) : undefined;
+      note = `${w.name} finished it${body ? `: ${reportLine(body)}` : '.'}`;
+    }
+    return this.journal.append({ workerId: from.workerId, id: `${o.id}:${item.candidate.id}:reported`, kind: 'delegated', at: item.finishedAt ?? this.now(), title, note });
+  }
+
   private fileRunDeliverables(w: Worker, o: Orchestration, item: OrchestrationItem, title: string): boolean {
     if (o.origin?.kind !== 'worker') return false;
     // A test run's results stay on its own page.
@@ -3863,6 +4027,7 @@ export class WorkerEngine {
             runId: item.runId,
           }) || changed;
       }
+      changed = this.reportBack(w, o, item, c.title) || changed;
       if (item.status === 'done') {
         changed =
           this.journal.append({
@@ -4145,8 +4310,9 @@ export class WorkerEngine {
     const fresh = this.workers.get(w.id) ?? w;
     const held = fresh.deskSession;
     const day = localDayStart(this.now());
-    if (held?.day === day && held.sessionId === res.sessionId) return;
-    fresh.deskSession = { day, conversationId: desk.conversationId, sessionId: res.sessionId };
+    const tools = this.toolsKey(fresh);
+    if (held?.day === day && held.sessionId === res.sessionId && held.tools === tools) return;
+    fresh.deskSession = { day, conversationId: desk.conversationId, sessionId: res.sessionId, tools };
     this.store.save(fresh);
   }
 
@@ -4417,4 +4583,18 @@ function localDateStamp(at: number): string {
   const d = new Date(at);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/// A held handoff's conversation, kept so the thread still hears how it ends
+/// once it goes out.
+/// A colleague's answer as one journal note: flat, and short enough to sit
+/// in every later prompt. Ticket keys and links come early in a good answer.
+function reportLine(text: string): string {
+  const flat = text.replace(/<\/?[a-z_]+\b[^>]*>/gi, ' ').replace(/\s+/g, ' ').trim();
+  return flat.length > 600 ? `${flat.slice(0, 599)}…` : flat;
+}
+
+function heldThread(thread: ReferralThread | undefined, announced: boolean): Pick<HeldHandoff, 'conversation' | 'withheld' | 'announced'> {
+  if (!thread) return {};
+  return { conversation: thread.conversation, ...(thread.withheld ? { withheld: true } : {}), ...(announced ? { announced: true } : {}) };
 }

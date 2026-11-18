@@ -27,7 +27,7 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-export type KitId = 'java' | 'node' | 'python' | 'go' | 'custom';
+export type KitId = 'java' | 'node' | 'python' | 'go' | 'gradle' | 'custom';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 type Fetch = typeof fetch;
@@ -60,6 +60,9 @@ export const KITS: readonly KitDef[] = [
   { id: 'node', label: 'Node.js', source: 'nodejs.org', versions: ['18', '20', '22', '24', '26'], probe: { bin: 'node', args: ['--version'] } },
   { id: 'python', label: 'Python', source: 'python-build-standalone, through uv', versions: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14'], probe: { bin: 'python3', args: ['--version'] } },
   { id: 'go', label: 'Go', source: 'go.dev', versions: ['1.22', '1.23', '1.24', '1.25', '1.26'], homeVar: 'GOROOT', probe: { bin: 'go', args: ['version'] } },
+  // For repos without the wrapper: a repo with gradlew fetches its own
+  // Gradle into ~/.gradle and needs only Java. Runs on the installed Java.
+  { id: 'gradle', label: 'Gradle', source: 'services.gradle.org', versions: ['7', '8', '9'], homeVar: 'GRADLE_HOME', probe: { bin: 'gradle', args: ['--version'] } },
 ];
 
 const kitDef = (id: string): KitDef | undefined => KITS.find((k) => k.id === id);
@@ -133,9 +136,9 @@ function capped(max: number): Transform {
   });
 }
 
-const run = (file: string, args: string[], timeout = 5 * 60_000) =>
+const run = (file: string, args: string[], timeout = 5 * 60_000, env?: NodeJS.ProcessEnv) =>
   new Promise<string>((resolve, reject) =>
-    execFile(file, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => (err ? reject(new Error(`${stderr}`.trim() || err.message)) : resolve(`${stderr}${stdout}`))),
+    execFile(file, args, { timeout, maxBuffer: 8 * 1024 * 1024, ...(env ? { env } : {}) }, (err, stdout, stderr) => (err ? reject(new Error(`${stderr}`.trim() || err.message)) : resolve(`${stderr}${stdout}`))),
   );
 
 const sha256Of = async (file: string): Promise<string> => {
@@ -195,6 +198,15 @@ async function resolveDownload(kit: KitDef['id'], version: string, p: Platform, 
     if (!rel || !file) throw new Error(`go.dev has no Go ${version} build for ${os}/${cpu}.`);
     return { url: `https://go.dev/dl/${file.filename}`, sha256: file.sha256, label: rel.version };
   }
+  if (kit === 'gradle') {
+    // Newest first; the latest final release of that major.
+    const all = JSON.parse(await fetchText(fetchImpl, 'https://services.gradle.org/versions/all')) as Array<{ version: string; downloadUrl: string; checksumUrl: string; snapshot?: boolean; nightly?: boolean; broken?: boolean; rcFor?: string; milestoneFor?: string }>;
+    const rel = all.find((r) => !r.snapshot && !r.nightly && !r.broken && !r.rcFor && !r.milestoneFor && (r.version === version || r.version.startsWith(`${version}.`)));
+    if (!rel) throw new Error(`services.gradle.org has no Gradle ${version} release.`);
+    const sum = (await fetchText(fetchImpl, rel.checksumUrl).catch(() => '')).trim().split(/\s+/)[0];
+    if (!/^[a-f0-9]{64}$/i.test(sum)) throw new Error(`Couldn't get the checksum for Gradle ${rel.version}, so nothing was installed. Try again later.`);
+    return { url: rel.downloadUrl, sha256: sum.toLowerCase(), label: `Gradle ${rel.version}` };
+  }
   throw new Error(`${kit} isn't downloaded directly.`);
 }
 
@@ -209,8 +221,21 @@ const javaMajor = (v: string) => {
 const majorMinor = (v: string) => /(\d+\.\d+)/.exec(v)?.[1];
 
 /// The versions a repo's own files ask for, normalised to the catalog's
-/// form (`8`, `20`, `3.12`, `1.22`).
+/// form (`8`, `20`, `3.12`, `1.22`). A range (`engines.node: ">=18"`) is
+/// here as the version it names; rangesAskedIn has the range itself.
 export function versionsAskedIn(root: string): Partial<Record<KitId, string>> {
+  return askedIn(root).versions;
+}
+
+/// The kits whose version a repo gives as a range rather than a pin, and the
+/// range as written: package.json's engines.node, pyproject's requires-python.
+/// A version file (.nvmrc, .python-version, .tool-versions…) is a pin and
+/// wins, so a kit it names is never here.
+export function rangesAskedIn(root: string): Partial<Record<KitId, string>> {
+  return askedIn(root).ranges;
+}
+
+function askedIn(root: string): { versions: Partial<Record<KitId, string>>; ranges: Partial<Record<KitId, string>> } {
   const read = (f: string) => {
     try {
       return fs.readFileSync(path.join(root, f), 'utf8');
@@ -219,8 +244,13 @@ export function versionsAskedIn(root: string): Partial<Record<KitId, string>> {
     }
   };
   const out: Partial<Record<KitId, string>> = {};
-  const set = (kit: KitId, v: string | undefined) => {
-    if (v && !out[kit]) out[kit] = v;
+  const ranges: Partial<Record<KitId, string>> = {};
+  const set = (kit: KitId, v: string | undefined, range?: string) => {
+    if (v && !out[kit]) {
+      out[kit] = v;
+      // Only a range this can read: one it can't stays the pin it always was.
+      if (range && rangeAllows(range, v) !== undefined) ranges[kit] = range.trim();
+    }
   };
   for (const line of (read('.tool-versions') ?? '').split('\n')) {
     const [tool, v] = line.trim().split(/\s+/);
@@ -232,7 +262,7 @@ export function versionsAskedIn(root: string): Partial<Record<KitId, string>> {
   }
   for (const f of ['.nvmrc', '.node-version']) {
     const v = read(f)?.trim();
-    if (v && !/^lts/i.test(v)) set('node', major(v));
+    if (v) set('node', /^lts\//i.test(v) ? NODE_LTS[v.slice(4).toLowerCase()] : major(v));
   }
   set('python', majorMinor(read('.python-version')?.split('\n')[0] ?? ''));
   const sdk = /^java=(.+)$/m.exec(read('.sdkmanrc') ?? '')?.[1];
@@ -240,7 +270,181 @@ export function versionsAskedIn(root: string): Partial<Record<KitId, string>> {
   const jv = read('.java-version')?.trim();
   if (jv) set('java', javaMajor(jv));
   set('go', /^go\s+(\d+\.\d+)/m.exec(read('go.mod') ?? '')?.[1]);
+  // Then what a build file or manifest says, when no version file did.
+  try {
+    const engines = (JSON.parse(read('package.json') ?? '{}') as { engines?: { node?: unknown } }).engines?.node;
+    if (typeof engines === 'string') set('node', /\d+/.exec(engines)?.[0], engines);
+  } catch {
+    // not JSON: nothing asked
+  }
+  const gradle = `${read('build.gradle') ?? ''}\n${read('build.gradle.kts') ?? ''}`;
+  const toolchain = /JavaLanguageVersion\.of\(\s*(\d+)\s*\)/.exec(gradle)?.[1];
+  const compat = /(?:sourceCompatibility|targetCompatibility)\s*=\s*(?:JavaVersion\.VERSION_)?['"]?(\d+(?:[._]\d+)?)/.exec(gradle)?.[1]?.replace('_', '.');
+  set('java', javaMajor(toolchain ?? compat ?? ''));
+  set('java', javaMajor(/<(?:maven\.compiler\.release|java\.version|maven\.compiler\.source|release)>\s*([\d.]+)\s*</.exec(read('pom.xml') ?? '')?.[1] ?? ''));
+  const requires = /requires-python\s*=\s*["']([^"']*)["']/.exec(read('pyproject.toml') ?? '')?.[1];
+  set('python', majorMinor(/(\d+\.\d+)/.exec(requires ?? '')?.[1] ?? ''), requires);
+  return { versions: out, ranges };
+}
+
+// ---- version ranges ----------------------------------------------------------
+//
+// npm's engines (`>=18`, `^20.11`, `18.x || 20.x`, `>=18 <23`, `16 - 20`)
+// and Python's specifiers (`>=3.9,<4`, `~=3.11`, `==3.12.*`), read without a
+// dependency. An installed kit is a line (Node 22 is the newest 22.x.y,
+// Python 3.12 the newest 3.12.z), so a range allows it when some version on
+// that line is in the range.
+
+type Ver = [number, number, number];
+interface Bound {
+  v: Ver;
+  incl: boolean;
+}
+interface Span {
+  lo?: Bound;
+  hi?: Bound;
+}
+
+const cmpVer = (a: Ver, b: Ver) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+const pad = (p: number[]): Ver => [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0];
+/// `p` with its part `i` one higher and what follows it zero: 20.11 at 0 → 21.0.0.
+const bump = (p: number[], i: number): Ver => pad([...p.slice(0, i), (p[i] ?? 0) + 1]);
+
+/// `v20.11.1` → [20, 11, 1]; `20.x` → [20]; `*` → []. Undefined: not a version.
+function partsOf(raw: string): number[] | undefined {
+  const s = raw.replace(/^v/i, '');
+  if (s === '' || /^[*xX]$/.test(s)) return [];
+  const out: number[] = [];
+  for (const seg of s.split('.')) {
+    if (/^[*xX]$/.test(seg)) break;
+    // A prerelease or build tag on the last part (20.0.0-rc.1) counts as it.
+    const m = /^(\d+)(?:[-+].*)?$/.exec(seg);
+    if (!m) return undefined;
+    out.push(Number(m[1]));
+    if (out.length === 3) break;
+  }
   return out;
+}
+
+/// One comparator (`>=20.11`, `^18`, `~=3.11`, `20.x`) as the span it allows.
+/// Null: allows everything it doesn't constrain (`!=`). Undefined: unreadable.
+function spanOf(comp: string): Span | null | undefined {
+  const m = /^(~=|===|==|!=|>=|<=|>|<|=|\^|~)?(.*)$/.exec(comp);
+  if (!m) return undefined;
+  const op = m[1] ?? '';
+  if (op === '!=') return null;
+  const p = partsOf(m[2]);
+  if (!p) return undefined;
+  const n = p.length;
+  const full = n === 3;
+  if (op === '' || op === '=' || op === '==' || op === '===') {
+    if (!n) return {};
+    return { lo: { v: pad(p), incl: true }, hi: full ? { v: pad(p), incl: true } : { v: bump(p, n - 1), incl: false } };
+  }
+  if (!n) return op === '<' ? undefined : {};
+  if (op === '>=') return { lo: { v: pad(p), incl: true } };
+  if (op === '>') return { lo: full ? { v: pad(p), incl: false } : { v: bump(p, n - 1), incl: true } };
+  if (op === '<') return { hi: { v: pad(p), incl: false } };
+  if (op === '<=') return { hi: full ? { v: pad(p), incl: true } : { v: bump(p, n - 1), incl: false } };
+  if (op === '~') return { lo: { v: pad(p), incl: true }, hi: { v: bump(p, n >= 2 ? 1 : 0), incl: false } };
+  if (op === '~=') return n < 2 ? undefined : { lo: { v: pad(p), incl: true }, hi: { v: bump(p, n - 2), incl: false } };
+  // ^: up to the next change of the first part that isn't zero.
+  const i = p[0] > 0 || n === 1 ? 0 : p[1] > 0 || n === 2 ? 1 : 2;
+  return { lo: { v: pad(p), incl: true }, hi: { v: bump(p, i), incl: false } };
+}
+
+const tighterLo = (a: Bound | undefined, b: Bound | undefined) => (!a ? b : !b ? a : cmpVer(a.v, b.v) > 0 || (cmpVer(a.v, b.v) === 0 && !a.incl) ? a : b);
+const tighterHi = (a: Bound | undefined, b: Bound | undefined) => (!a ? b : !b ? a : cmpVer(a.v, b.v) < 0 || (cmpVer(a.v, b.v) === 0 && !a.incl) ? a : b);
+
+/// Each `||` alternative of a range as one span. Undefined: unreadable.
+function spansOf(range: string): Span[] | undefined {
+  const alts = range.split('||').map((a) => a.trim());
+  const out: Span[] = [];
+  for (const alt of alts) {
+    // `>= 18` → `>=18`; then a hyphen range, then comparators split on
+    // spaces (npm) or commas (Python).
+    const s = alt.replace(/(~=|===|==|!=|>=|<=|>|<|=|\^|~)\s+/g, '$1');
+    const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(s);
+    const comps = hyphen ? [`>=${hyphen[1]}`, `<=${hyphen[2]}`] : s.split(/[\s,]+/).filter(Boolean);
+    let span: Span = {};
+    for (const c of comps.length ? comps : ['*']) {
+      const one = spanOf(c);
+      if (one === undefined) return undefined;
+      if (one === null) continue;
+      span = { lo: tighterLo(span.lo, one.lo), hi: tighterHi(span.hi, one.hi) };
+    }
+    out.push(span);
+  }
+  return out.length ? out : undefined;
+}
+
+/// Whether `range` allows the installed line `version` (`22`, `3.12`).
+/// Undefined when either can't be read, so the caller treats the version it
+/// parsed as a pin, as before.
+export function rangeAllows(range: string, version: string): boolean | undefined {
+  const spans = spansOf(range.trim());
+  const p = partsOf(version.trim());
+  if (!spans || !p || !p.length) return undefined;
+  // The line: from its first release up to the next line.
+  const line: Span = { lo: { v: pad(p), incl: true }, hi: { v: bump(p, p.length - 1), incl: false } };
+  return spans.some((s) => {
+    const lo = tighterLo(s.lo, line.lo)!;
+    const hi = tighterHi(s.hi, line.hi)!;
+    const c = cmpVer(lo.v, hi.v);
+    return c < 0 || (c === 0 && lo.incl && hi.incl);
+  });
+}
+
+/// `lts/<codename>` in an .nvmrc, to its major. `lts/*` names no one version.
+export const NODE_LTS: Record<string, string> = {
+  argon: '4', boron: '6', carbon: '8', dubnium: '10', erbium: '12', fermium: '14', gallium: '16', hydrogen: '18', iron: '20', jod: '22', krypton: '24',
+};
+
+/// The kits a repo builds with, from the files at its top, whether or not
+/// it says which version.
+export function kitsNeededIn(root: string): Set<Exclude<KitId, 'custom'>> {
+  const has = (f: string) => fs.existsSync(path.join(root, f));
+  const any = (fs_: string[]) => fs_.some(has);
+  const out = new Set<Exclude<KitId, 'custom'>>();
+  const gradleBuild = any(['build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts']);
+  if (any(['package.json', '.nvmrc', '.node-version'])) out.add('node');
+  if (gradleBuild || any(['pom.xml', '.java-version', '.sdkmanrc'])) out.add('java');
+  // The wrapper fetches its own Gradle; without one, Gradle must be here.
+  if (gradleBuild && !has('gradlew')) out.add('gradle');
+  if (any(['pyproject.toml', 'requirements.txt', 'setup.py', 'Pipfile', '.python-version'])) out.add('python');
+  if (has('go.mod')) out.add('go');
+  for (const k of Object.keys(versionsAskedIn(root)) as Array<Exclude<KitId, 'custom'>>) out.add(k);
+  return out;
+}
+
+/// One kit a repo builds with: what it asks for, what a run there gets, and
+/// what's wrong, if anything.
+export interface KitUse {
+  kit: Exclude<KitId, 'custom'>;
+  label: string;
+  asked?: string;
+  /// When the repo gives a range (`>=18`) rather than a pin: the range, as
+  /// written. `asked` is then the version it names.
+  range?: string;
+  got?: string;
+  /// Where `got` came from: the admin's pick for the repo, the repo's own
+  /// files, or the server's default.
+  from?: 'pick' | 'repo' | 'default';
+  /// In words, when a run doesn't get what the repo needs.
+  gap?: string;
+  /// The catalog version that would close the gap.
+  install?: string;
+}
+
+/// What the worker is told about its build tools, from usesAt.
+export function toolchainNote(uses: KitUse[], where = ''): string[] {
+  const why = { pick: 'set for this repo', repo: 'as the repo asks', default: 'the server default' } as const;
+  const on = uses.filter((u) => u.got).map((u) => `${u.label} ${u.got} (${why[u.from!]})`);
+  const lines = [
+    `${on.length ? `Build tools on PATH${where}: ${on.join(', ')}. ` : ''}There is no nvm, sdkman or pyenv here, and none is needed; do not try to install toolchains.`,
+  ];
+  for (const u of uses.filter((x) => x.gap)) lines.push(`Missing${where}: ${u.gap}. If your change needs it, say so plainly in your reply: an admin installs it on Setup → Toolchains.`);
+  return lines;
 }
 
 // ---- custom kits -----------------------------------------------------------
@@ -382,7 +586,8 @@ export class ToolchainService {
           const got = await sha256Of(archive);
           if (got !== dl.sha256) throw new Error(`${dl.url} doesn't match its sha256 (expected ${dl.sha256}, got ${got}). Nothing was installed.`);
         }
-        await (this.deps.extract ?? ((a, d) => run('tar', ['xf', a, '-C', d]).then(() => undefined)))(archive, staging);
+        // Gradle ships only as a zip, which GNU tar can't read.
+        await (this.deps.extract ?? ((a, d) => (/\.zip$/i.test(dl.url) ? run('unzip', ['-q', a, '-d', d]) : run('tar', ['xf', a, '-C', d])).then(() => undefined)))(archive, staging);
       }
       if (fs.existsSync(dest)) fs.renameSync(dest, old);
       fs.renameSync(staging, dest);
@@ -391,7 +596,14 @@ export class ToolchainService {
       const bin = this.binOf({ ...t, home });
       if (!fs.existsSync(bin)) throw new Error(`There's no ${path.relative(dest, bin) || 'bin'} folder in what it unpacked.`);
       const def = kitDef(t.kit);
-      const said = def ? await (this.deps.probe ?? run)(path.join(bin, def.probe.bin), def.probe.args) : 'Installed';
+      // With the toolchains on PATH: Gradle runs on the installed Java.
+      const probe = this.deps.probe ?? ((b: string, a: string[]) => run(b, a, undefined, this.env(process.env)));
+      const said = def
+        ? await probe(path.join(bin, def.probe.bin), def.probe.args).catch((err: unknown) => {
+            const noJava = t.kit === 'gradle' && !this.load().toolchains.some((x) => x.kit === 'java' && x.status === 'ready');
+            throw noJava ? new Error('Gradle needs Java to run. Install a Java first, then Gradle again.') : err;
+          })
+        : 'Installed';
       return { home, detail: said.split('\n').map((l) => l.trim()).find(Boolean) ?? t.version };
     } catch (err) {
       if (swapped) fs.rmSync(dest, { recursive: true, force: true });
@@ -467,8 +679,90 @@ export class ToolchainService {
   }
 
   /// What each connected repo asks for in its own files, read from its clone.
+  /// A range is given as the installed version that meets it (the one a run
+  /// gets), or as the range itself when none does, never as the bare number
+  /// it starts from: `>=18` with only Node 22 installed is asked and met.
   askedByRepos(): Record<string, Partial<Record<KitId, string>>> {
-    return Object.fromEntries(this.deps.repos().map((r) => [r.name, versionsAskedIn(r.path)]));
+    const s = this.load();
+    return Object.fromEntries(
+      this.deps.repos().map((r) => {
+        const { versions, ranges } = askedIn(r.path);
+        const out = { ...versions };
+        for (const def of KITS) {
+          const range = ranges[def.id];
+          if (!range) continue;
+          const p = this.pickFor(s, def.id, undefined, versions[def.id], range);
+          out[def.id] = p && rangeAllows(range, p.t.version) ? p.t.version : range;
+        }
+        return [r.name, out];
+      }),
+    );
+  }
+
+  /// The version of a kit a run gets: the repo's pick, else what it asks
+  /// for when installed, else the default, else the first installed. When
+  /// the repo asks with a range: the default if the range allows it, else
+  /// the newest installed one it allows, before falling back.
+  private pickFor(
+    s: ToolchainState,
+    kit: Exclude<KitId, 'custom'>,
+    repo: string | undefined,
+    asked: string | undefined,
+    range?: string,
+  ): { t: Toolchain; from: 'pick' | 'repo' | 'default' } | undefined {
+    const picked = this.ready(s, kit, repo ? s.repoPicks[repo]?.[kit] : undefined);
+    if (picked) return { t: picked, from: 'pick' };
+    const theirs = this.ready(s, kit, asked);
+    if (theirs) return { t: theirs, from: 'repo' };
+    const fallback = this.ready(s, kit, s.defaults[kit]) ?? s.toolchains.find((t) => t.kit === kit && t.status === 'ready' && t.home);
+    if (range && !(fallback && rangeAllows(range, fallback.version))) {
+      const fits = s.toolchains
+        .filter((t) => t.kit === kit && t.status === 'ready' && t.home && rangeAllows(range, t.version))
+        .sort((a, b) => cmpVer(pad(partsOf(b.version) ?? []), pad(partsOf(a.version) ?? [])))[0];
+      if (fits) return { t: fits, from: 'repo' };
+    }
+    return fallback ? { t: fallback, from: 'default' } : undefined;
+  }
+
+  /// The kits the checkout at `cwd` builds with and what each gets. Only
+  /// kits it uses; empty outside a connected repo.
+  usesAt(cwd: string | undefined): KitUse[] {
+    const at = this.repoAt(cwd);
+    if (!at) return [];
+    const s = this.load();
+    const { versions: asked, ranges } = askedIn(at.root);
+    const needed = kitsNeededIn(at.root);
+    return KITS.filter((def) => needed.has(def.id)).map((def): KitUse => {
+      const a = asked[def.id];
+      const range = ranges[def.id];
+      const p = this.pickFor(s, def.id, at.name, a, range);
+      // What to offer to install: the version it asks for if the catalog has
+      // it (and a range allows it), else the newest the range allows.
+      const install = !a
+        ? undefined
+        : !range
+          ? def.versions.includes(a) ? a : undefined
+          : def.versions.includes(a) && rangeAllows(range, a) ? a : [...def.versions].reverse().find((v) => rangeAllows(range, v));
+      const wants = `${def.label} ${range ?? a}`;
+      const use: KitUse = { kit: def.id, label: def.label, ...(a ? { asked: a } : {}), ...(range ? { range } : {}), ...(p ? { got: p.t.version, from: p.from } : {}) };
+      if (!p) return { ...use, gap: a ? `${wants} is needed and no ${def.label} is installed` : `${def.label} is needed and none is installed`, ...(install ? { install } : {}) };
+      // An admin's pick for the repo is deliberate: not a gap. Nor is a
+      // default the repo's range allows.
+      if (a && p.from === 'default' && !(range && rangeAllows(range, p.t.version))) {
+        return { ...use, gap: `the repo asks for ${wants}${install ? ', which isn’t installed' : ', which the catalog doesn’t offer'}, so runs get ${def.label} ${p.t.version}`, ...(install ? { install } : {}) };
+      }
+      return use;
+    });
+  }
+
+  /// Per connected repo, the kits whose runs don't get what it needs.
+  gapsByRepo(): Record<string, KitUse[]> {
+    const out: Record<string, KitUse[]> = {};
+    for (const r of this.deps.repos()) {
+      const gaps = this.usesAt(r.path).filter((u) => u.gap);
+      if (gaps.length) out[r.name] = gaps;
+    }
+    return out;
   }
 
   /// The connected repo a folder is in, and the top of its checkout there:
@@ -515,17 +809,12 @@ export class ToolchainService {
     const ready = s.toolchains.filter((t) => t.status === 'ready' && t.home);
     if (!ready.length) return env;
     const at = this.repoAt(cwd);
-    const asked = at ? versionsAskedIn(at.root) : {};
+    const { versions: asked, ranges } = at ? askedIn(at.root) : { versions: {}, ranges: {} };
     const out: NodeJS.ProcessEnv = { ...env };
     const bins: string[] = [];
     for (const def of KITS) {
-      const mine = ready.filter((t) => t.kit === def.id);
-      if (!mine.length) continue;
-      const pick =
-        this.ready(s, def.id, at ? s.repoPicks[at.name]?.[def.id] : undefined) ??
-        this.ready(s, def.id, asked[def.id]) ??
-        this.ready(s, def.id, s.defaults[def.id]) ??
-        mine[0];
+      const pick = this.pickFor(s, def.id, at?.name, asked[def.id], ranges[def.id])?.t;
+      if (!pick) continue;
       bins.push(this.binOf(pick));
       if (def.homeVar) out[def.homeVar] = pick.home;
     }

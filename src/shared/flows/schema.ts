@@ -453,6 +453,13 @@ export interface FlowRun {
   /// list them, in the order first asked. What the person adds to the
   /// worker's flow for the work to go through next time.
   refusedTools?: string[];
+  /// Of those, the tools (servers) it HAD, refused only because the run
+  /// wasn't allowed its tools on its own: a different fix from one it lacks.
+  refusedHeld?: string[];
+  /// Each time it stopped before a step for a person's OK, and why. Whether
+  /// the step then ran (an attempt for it) says it was approved: a step that
+  /// always stops and is always approved is one to allow (orgTuning.ts).
+  pausedSteps?: Array<{ stepId: string; reason: string; at: number }>;
   state: FlowRunState;
   createdAt: number;
   /// Total USD this run has spent so far, accumulated live as each turn's

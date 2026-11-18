@@ -4,7 +4,7 @@
 // batches, run summaries) and this decides what they mean, so the numbers on
 // screen cannot drift from the numbers a test asserts.
 
-import type { Orchestration } from './orchestration';
+import type { Orchestration, OrchestrationItemStatus } from './orchestration';
 import type { Worker, WorkerJournalEntry } from './worker';
 
 /// Estimated human effort replaced by one measured hour of agent runtime.
@@ -97,10 +97,23 @@ export interface WorkerReport {
   daily: WorkerReportDay[];
 }
 
+/// A worker batch the store has since deleted (past its retention cap), as
+/// the store's all-time log keeps it: enough to count its jobs and tell a
+/// working shift from a quiet one.
+export interface PrunedWorkerBatch {
+  id: string;
+  workerId: string;
+  createdAt: number;
+  items: Array<{ status: OrchestrationItemStatus; finishedAt?: number }>;
+}
+
 export interface WorkerReportInput {
   workers: Worker[];
   journal: (workerId: string) => WorkerJournalEntry[];
   orchestrations: Orchestration[];
+  /// Batches deleted from the store. Absent: the live ones only, and the
+  /// jobs count shrinks every time the store prunes.
+  pruned?: PrunedWorkerBatch[];
   runs: WorkerRunFact[];
   sinceMs: number;
   generatedAt: number;
@@ -191,14 +204,21 @@ export function rollUpWorkerReport(
 export function buildWorkerReport(input: WorkerReportInput): WorkerReport {
   const { workers, journal, orchestrations, runs, sinceMs, generatedAt } = input;
 
-  const batchesById = new Map<string, Orchestration>();
-  const batchesByWorker = new Map<string, Orchestration[]>();
-  for (const o of orchestrations) {
-    if (o.origin?.kind !== 'worker') continue;
+  type Batch = Pick<PrunedWorkerBatch, 'id' | 'createdAt' | 'items'>;
+  const batchesById = new Map<string, Batch>();
+  const batchesByWorker = new Map<string, Batch[]>();
+  const add = (workerId: string, o: Batch) => {
     batchesById.set(o.id, o);
-    const list = batchesByWorker.get(o.origin.workerId) ?? [];
+    const list = batchesByWorker.get(workerId) ?? [];
     list.push(o);
-    batchesByWorker.set(o.origin.workerId, list);
+    batchesByWorker.set(workerId, list);
+  };
+  for (const o of orchestrations) {
+    if (o.origin?.kind === 'worker') add(o.origin.workerId, o);
+  }
+  // A live batch wins over its logged copy: it is the newer word.
+  for (const p of input.pruned ?? []) {
+    if (!batchesById.has(p.id)) add(p.workerId, p);
   }
 
   const runsByWorker = new Map<string, WorkerRunFact[]>();

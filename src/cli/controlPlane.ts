@@ -190,7 +190,8 @@ const PAGE_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
   // Same-origin script and style only, no framing: the console holds a token.
   // img-src https: for workers' pictures, which are links (Slack fetches them too).
-  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data: https:; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  // media-src 'self' for a run's test video, played from its file link.
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data: https:; media-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   'Referrer-Policy': 'no-referrer',
 };
 
@@ -282,6 +283,18 @@ function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () =
       },
     },
     { method: 'POST', path: /^\/api\/admin\/rules$/, handle: (c, b) => access.setRules(c, b.patch && typeof b.patch === 'object' ? (b.patch as Record<string, unknown>) : {}) },
+    // Setup → Tuning: what goes wrong across every worker, and its fix.
+    { method: 'GET', path: /^\/api\/admin\/tuning$/, handle: (c) => org.orgTuning(c) },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/tuning\/apply$/,
+      handle: (c, b) => {
+        const res = org.applyOrgTuning(c, str(b.id));
+        if (!res.ok || !res.rule) return res;
+        const set = access.setRules(c, { allowedMcpServers: res.rule.allowedMcpServers });
+        return set.ok ? { ok: true, done: res.done } : set;
+      },
+    },
     { method: 'POST', path: /^\/api\/devices\/([^/]+)\/signout$/, handle: (c, _b, [id]) => access.signOutDevice(c, id) },
     { method: 'POST', path: /^\/api\/devices$/, handle: (c, b) => access.createDeviceKey(c, str(b.device)) },
     {
@@ -1306,6 +1319,15 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     {
       method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/revise$/,
+      handle: (c, b, [id]) =>
+        org.reviseWorker(c, decodeURIComponent(id), str(b.ask), {
+          ...(typeof b.job === 'string' ? { job: b.job } : {}),
+          ...(typeof b.flowId === 'string' && b.flowId ? { flowId: b.flowId } : {}),
+        }),
+    },
+    {
+      method: 'POST',
       path: /^\/api\/workers\/([^/]+)\/review$/,
       handle: (c, b, [id]) => org.reviewWorkerWork(c, decodeURIComponent(id), str(b.complaint).slice(0, 2000)),
     },
@@ -1444,6 +1466,9 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/repos\/ci-rounds$/, handle: (c, b) => org.setCiRounds(c, Number(b.rounds)) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/toolchain$/, handle: (c, b, [name]) => org.setRepoToolchain(c, decodeURIComponent(name), str(b.kit), str(b.version) || null) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.disconnectRepo(c, decodeURIComponent(name)) },
+    { method: 'POST', path: /^\/api\/repos\/([^/]+)\/checks\/try$/, handle: (c, _b, [name]) => org.tryRepoChecks(c, decodeURIComponent(name)) },
+    { method: 'GET', path: /^\/api\/repos\/([^/]+)\/checks\/try$/, handle: (c, _q, [name]) => org.repoCheckTrial(c, decodeURIComponent(name)) },
+    { method: 'POST', path: /^\/api\/repos\/([^/]+)\/checks$/, handle: (c, b, [name]) => org.setRepoChecks(c, decodeURIComponent(name), { setup: str(b.setup), checks: Array.isArray(b.checks) ? b.checks.map(String) : [] }) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/workers$/, handle: (c, b, [name]) => org.letWorkOnRepo(c, str(b.worker), decodeURIComponent(name)) },
     // Each team with its last 30 days, for its card.
     {

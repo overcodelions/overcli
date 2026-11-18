@@ -161,6 +161,21 @@ describe('a proposed command', () => {
   it('is absent when the fix is not a command', () => {
     expect(splitSuggestedCommand('Add -Ddb.host=localhost').command).toBeUndefined();
   });
+
+  it('takes the steps to run once, in order, apart from a start command', () => {
+    const out = splitSuggestedCommand(
+      [
+        'The common library in Maven local is older than this branch.',
+        'RUN: ./gradlew :acme-common:publishToMavenLocal',
+        'RUN: `./gradlew clean`',
+        'RUN: ./gradlew clean',
+        'COMMAND: ./gradlew bootRun',
+      ].join('\n'),
+    );
+    expect(out.text).toBe('The common library in Maven local is older than this branch.');
+    expect(out.run).toEqual(['./gradlew :acme-common:publishToMavenLocal', './gradlew clean']);
+    expect(out.command).toBe('./gradlew bootRun');
+  });
 });
 
 describe('tidying the answer', () => {

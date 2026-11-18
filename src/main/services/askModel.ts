@@ -116,6 +116,12 @@ export function buildFixPrompt(ctx: AskContext): string {
     'If the fix is a different start command, end with one extra line: COMMAND: <the complete command line>.',
     'It is run from the folder above, without a shell unless it uses && or |, in which case through sh -c.',
     'Leave that line out for any other kind of fix.',
+    // The other kind of fix that is one line: something to run once before
+    // starting again — clean a build, publish a library, install packages.
+    // The pane offers each as a button that opens it in a terminal.
+    'If the fix is a command to run once before starting again (a clean, publishing a library it depends on, installing packages),',
+    'end with one line per command, in the order to run them: RUN: <the command>. At most three.',
+    'Each runs from the folder above in a terminal: one plain command, no &&, ;, |, $, backticks or redirects.',
   );
 
   return scrub(parts.join('\n'));
@@ -212,15 +218,19 @@ export function buildExplainPrompt(ctx: {
 
 /// The `COMMAND:` line the prompt asks for, taken out of the answer. The last
 /// one wins — a model that changes its mind mid-answer means the later one.
-export function splitSuggestedCommand(text: string): { text: string; command?: string } {
+export function splitSuggestedCommand(text: string): { text: string; command?: string; run: string[] } {
   let command: string | undefined;
+  const run: string[] = [];
   const rest = text.split('\n').filter((line) => {
-    const match = /^\s*`?COMMAND:\s*(.+?)\s*$/.exec(line);
+    const match = /^\s*`?(COMMAND|RUN):\s*(.+?)\s*$/.exec(line);
     if (!match) return true;
-    command = match[1].replace(/^`+|`+$/g, '').trim() || undefined;
+    const value = match[2].replace(/^`+|`+$/g, '').trim();
+    if (match[1] === 'COMMAND') command = value || undefined;
+    // Kept in order and without repeats; past three it is a script, not a fix.
+    else if (value && !run.includes(value) && run.length < 3) run.push(value);
     return false;
   });
-  return { text: rest.join('\n'), command };
+  return { text: rest.join('\n'), command, run };
 }
 
 /// Trim a model's answer down to what the pane can show. Models add a

@@ -2358,6 +2358,7 @@ function Detail() {
           <HeaderActions
             workspaceId={stack.workspaceId}
             spec={spec}
+            runtime={runtime}
             live={isServiceLive(runtime?.status ?? 'stopped')}
           />
           {binding && (
@@ -2511,6 +2512,18 @@ function StaleTasks({ workspaceId, spec }: { workspaceId: string; spec: ServiceS
   );
 }
 
+/// A failure with nothing to add to the header's own `failed · exit 1`: no
+/// error of overcli's, no finding, nothing asked of a model yet. That case
+/// gets no banner, only an Ask AI beside Start, because a full-width band
+/// saying "it stopped, see the output" above the output, with a Try again
+/// that duplicates Start, was chrome repeating the header.
+function usePlainFailure(workspaceId: string, specId: string, runtime?: ServiceRuntime): boolean {
+  const key = logKey(workspaceId, specId);
+  const findings = useServicesStore((s) => s.findings[key]);
+  const asked = useServicesStore((s) => s.suggestions[key]);
+  return runtime?.status === 'failed' && !runtime.lastError && !findings?.length && !asked;
+}
+
 /// What went wrong, and what to do about it.
 ///
 /// The findings come from rules that compare what overcli set against what the
@@ -2526,14 +2539,21 @@ function Failure({
   spec: ServiceSpec;
   runtime: ServiceRuntime;
 }) {
-  const start = useServicesStore((s) => s.start);
   const promptMachineNeeds = useServicesStore((s) => s.promptMachineNeeds);
   const findings = useServicesStore((s) => s.findings[logKey(workspaceId, spec.id)]) ?? [];
+  const asked = useServicesStore((s) => s.suggestions[logKey(workspaceId, spec.id)]);
+  const askAi = useServicesStore((s) => s.askAi);
   const [shown, setShown] = useState<string | null>(null);
+  const plain = usePlainFailure(workspaceId, spec.id, runtime);
+  // Nothing recognised and nothing asked yet: the offer sits in the banner's
+  // own row rather than a second row with its own padding.
+  const offerInline = findings.length === 0 && !asked;
+
+  if (plain) return null;
 
   return (
-    <div className="max-h-[45%] flex-shrink-0 overflow-y-auto border-b border-red-500/30 bg-red-500/10">
-      <div className="flex items-center gap-2 px-4 py-2 text-[13px]">
+    <div className="mx-4 mb-2 mt-3 max-h-[45%] flex-shrink-0 overflow-y-auto rounded-lg border border-red-500/35 bg-red-500/[0.07]">
+      <div className="flex items-center gap-2 px-4 py-2.5 text-[13px]">
         <span aria-hidden className="h-2 w-2 flex-shrink-0 rounded-full bg-red-500" />
         <span className="flex-1 font-medium text-ink">
           {runtime.lastError ?? 'It stopped on its own.'}
@@ -2547,9 +2567,15 @@ function Failure({
             Set values
           </button>
         )}
-        <button className="svc-btn" onClick={() => void start(workspaceId, spec.id)}>
-          Try again
-        </button>
+        {offerInline && (
+          <button
+            className="svc-btn"
+            title="Nothing here recognised this one. Ask a model to read the output and the checkout."
+            onClick={() => void askAi(workspaceId, spec.id)}
+          >
+            Ask AI
+          </button>
+        )}
       </div>
 
       {findings.map((finding) => (
@@ -2587,7 +2613,7 @@ function Failure({
         </div>
       ))}
 
-      <AskAi workspaceId={workspaceId} serviceId={spec.id} ruled={findings.length > 0} />
+      {!offerInline && <AskAi workspaceId={workspaceId} serviceId={spec.id} />}
     </div>
   );
 }
@@ -2604,11 +2630,9 @@ function Failure({
 function AskAi({
   workspaceId,
   serviceId,
-  ruled,
 }: {
   workspaceId: string;
   serviceId: string;
-  ruled: boolean;
 }) {
   const askAi = useServicesStore((s) => s.askAi);
   const cancelAskAi = useServicesStore((s) => s.cancelAskAi);
@@ -2616,9 +2640,9 @@ function AskAi({
 
   if (!state) {
     return (
-      <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-1.5">
+      <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-2">
         <span className="text-[12px] text-ink-muted">
-          {ruled ? 'Not it?' : 'Nothing here recognised this one.'}
+          Not it?
         </span>
         <button className="svc-btn" onClick={() => void askAi(workspaceId, serviceId)}>
           Ask AI
@@ -2629,7 +2653,7 @@ function AskAi({
 
   if (state.status === 'asking') {
     return (
-      <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-1.5">
+      <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-2">
         <span className="text-[12px] text-ink-muted">Reading the output and the checkout…</span>
         <div className="flex-1" />
         <button className="svc-btn" onClick={() => void cancelAskAi(workspaceId, serviceId)}>
@@ -2641,7 +2665,7 @@ function AskAi({
 
   if (state.status === 'failed') {
     return (
-      <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-1.5">
+      <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-2">
         <span className="text-[12px] text-ink-muted">{state.error}</span>
         <button className="svc-btn" onClick={() => void askAi(workspaceId, serviceId)}>
           Try again
@@ -2669,6 +2693,9 @@ function AskAi({
       <div className="mt-1.5">
         <Prose text={state.text} />
       </div>
+      {state.run?.map((line) => (
+        <RunStep key={line} workspaceId={workspaceId} serviceId={serviceId} command={line} />
+      ))}
       {state.command && (
         <SuggestedCommand workspaceId={workspaceId} serviceId={serviceId} command={state.command} />
       )}
@@ -2805,13 +2832,17 @@ function TaskActions({ workspaceId, spec }: { workspaceId: string; spec: Service
 function HeaderActions({
   workspaceId,
   spec,
+  runtime,
   live,
 }: {
   workspaceId: string;
   spec: ServiceSpec;
+  runtime?: ServiceRuntime;
   live: boolean;
 }) {
   const start = useServicesStore((s) => s.start);
+  const askAi = useServicesStore((s) => s.askAi);
+  const plainFailure = usePlainFailure(workspaceId, spec.id, runtime);
   const stop = useServicesStore((s) => s.stop);
   const restart = useServicesStore((s) => s.restart);
   const setDebug = useServicesStore((s) => s.setDebug);
@@ -2824,6 +2855,15 @@ function HeaderActions({
   if (!live) {
     return (
       <>
+        {plainFailure && (
+          <button
+            className="svc-btn"
+            title="Nothing recognised this failure. Ask a model to read the output and the checkout."
+            onClick={() => void askAi(workspaceId, spec.id)}
+          >
+            Ask AI
+          </button>
+        )}
         <button className="svc-btn-go" onClick={() => void start(workspaceId, spec.id)}>
           {spec.task ? 'Run' : 'Start'}
         </button>
@@ -3368,6 +3408,30 @@ function commandArgv(line: string): string[] {
   const text = line.trim();
   const parsed = parseCommandLine(text);
   return parsed.needsShell ? ['sh', '-c', text] : parsed.argv;
+}
+
+/// Something to run once before starting again — a clean, a publish — opened
+/// in a terminal in the service's folder, where its progress and any prompt it
+/// asks are in front of you. Shown whole, and run only on the press.
+function RunStep({ workspaceId, serviceId, command }: { workspaceId: string; serviceId: string; command: string }) {
+  const [state, setState] = useState<{ kind: 'idle' | 'opened' } | { kind: 'failed'; error: string }>({ kind: 'idle' });
+  const run = async () => {
+    const result = await window.overcli.invoke('services:runInTerminal', { workspaceId, serviceId, command });
+    setState(result.ok ? { kind: 'opened' } : { kind: 'failed', error: result.error });
+  };
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-start gap-2">
+        <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded border border-card-strong bg-surface px-2 py-1 font-mono text-[11.5px] leading-4 text-ink">
+          {command}
+        </code>
+        <button className="svc-btn" onClick={() => void run()}>
+          {state.kind === 'opened' ? 'Run again' : 'Run in terminal'}
+        </button>
+      </div>
+      {state.kind === 'failed' && <div className="mt-1 text-[11px] text-red-600 dark:text-red-300">{state.error}</div>}
+    </div>
+  );
 }
 
 /// A start command a model proposed, one press from being the service's own.

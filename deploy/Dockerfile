@@ -121,7 +121,7 @@ ARG JDKS=
 # EXTRA_APT_PACKAGES="maven python3-venv".
 ARG EXTRA_APT_PACKAGES=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git openssh-client ca-certificates tini curl gnupg ${EXTRA_APT_PACKAGES} \
+ && apt-get install -y --no-install-recommends git openssh-client ca-certificates tini curl gnupg unzip ${EXTRA_APT_PACKAGES} \
  && if [ -n "$JDKS" ]; then \
       curl -fsSL https://apt.corretto.aws/corretto.key | gpg --dearmor -o /usr/share/keyrings/corretto.gpg \
       && echo "deb [signed-by=/usr/share/keyrings/corretto.gpg] https://apt.corretto.aws stable main" > /etc/apt/sources.list.d/corretto.list \

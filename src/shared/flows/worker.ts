@@ -306,6 +306,10 @@ export interface Worker {
     /// The CLI session to resume. Absent until the first turn announces one,
     /// which is why the first message is always sent cold.
     sessionId?: string;
+    /// The tools it had when this thread last spoke (`toolsKey`). A resumed
+    /// turn re-sends none of the worker, so one given a tool at lunch kept
+    /// telling its manager it was blocked, from what it had said that morning.
+    tools?: string;
   };
   /// Point the cadence measures from when the worker has never worked a
   /// shift (or was re-enabled / had its cadence edited). Mirrors
@@ -1480,6 +1484,13 @@ export interface HeldHandoff {
   orchestrationId?: string;
   /// The run that wrote it, when a flow step handed it on.
   runId?: string;
+  /// The conversation (a Slack thread) the sender was answering, still told
+  /// how it ends once it goes out. `withheld`: the asker there does not manage
+  /// the sender, so only that it was taken is told, never the answer.
+  /// `announced`: the thread already heard it was sent.
+  conversation?: string;
+  withheld?: boolean;
+  announced?: boolean;
 }
 
 /// The whole crew is off: you are on holiday, or simply offline, and nothing

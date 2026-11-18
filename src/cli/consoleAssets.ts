@@ -254,6 +254,25 @@ button.crumb-link:hover { background: var(--panel); }
 .menu-sec { padding: 12px 16px; border-top: 1px solid var(--line); }
 .menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 8px; margin: 0 -8px; width: calc(100% + 16px); border: 0; background: none; border-radius: var(--r-sm); color: var(--ink); font-size: 13.5px; cursor: pointer; text-align: left; }
 .menu-item:hover { background: var(--panel-2); }
+.wpick { position: relative; flex: none; }
+.wpick-btn { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 2px 4px; font-weight: 600; color: var(--ink); cursor: pointer; border-radius: var(--r-sm); font-size: 14px; }
+.wpick-btn:hover, .wpick-btn[aria-expanded="true"] { background: var(--panel-2); }
+.wpick-pop { position: absolute; left: 0; top: calc(100% + 8px); width: min(440px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28); z-index: 30; overflow: hidden; }
+.wpick-find { width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 10px 14px; font-size: 13.5px; box-shadow: none; }
+.wpick-list { max-height: 360px; overflow-y: auto; padding: 4px; }
+.wpick-row { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 8px 10px; border: 0; background: none; border-radius: var(--r-sm); text-align: left; cursor: pointer; color: var(--ink); }
+.wpick-row[aria-selected="true"], .wpick-row:hover { background: var(--panel-2); }
+.wpick-row .avatar { margin-top: 2px; }
+.wpick-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.wpick-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13.5px; }
+.wpick-top b { font-weight: 600; }
+.wpick-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+.wpick-tag.fit { background: var(--go-soft, var(--panel-2)); color: var(--go, var(--ink)); border-color: transparent; }
+.wpick-what { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.wpick-state { font-size: 11.5px; color: var(--faint); margin-left: auto; white-space: nowrap; }
+.wpick-state.working { color: var(--go, var(--ink)); }
+.wpick-none { padding: 14px; font-size: 13px; color: var(--muted); }
+.wpick-hint { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--muted); padding: 0 4px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 18px; }
 .brand svg { width: 32px; height: 32px; flex: none; }
 svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); }
@@ -503,7 +522,9 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .wc-out { margin-top: 8px; max-height: 460px; overflow: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); }
 .wc-out pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
 .prose { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; min-width: 0; }
-.sl-split { display: flex; flex-wrap: wrap; min-height: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+/* One height for the whole panel; the list and the thread scroll inside it,
+   so "Show older" and the live line sit in view without the page scrolling. */
+.sl-split { display: flex; flex-wrap: wrap; height: calc(100vh - 200px); min-height: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
 .sl-side { flex: 1 1 340px; max-width: 460px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
 /* The list's tools and the open thread's heading share one height, so the
    line under each runs straight across the panel. */
@@ -514,7 +535,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .sl-chip:hover { color: var(--ink); border-color: var(--line-2); }
 .sl-chip[aria-pressed="true"] { background: var(--go-soft); border-color: color-mix(in srgb, var(--go) 45%, transparent); color: var(--go); }
 .sl-chip .n { font-weight: 500; opacity: 0.75; font-variant-numeric: tabular-nums; }
-.sl-list { list-style: none; margin: 0; padding: 0 6px 10px; display: flex; flex-direction: column; gap: 2px; overflow-x: hidden; overflow-y: auto; max-height: calc(100vh - 330px); }
+.sl-list { list-style: none; margin: 0; padding: 0 6px 10px; display: flex; flex-direction: column; gap: 2px; overflow-x: hidden; overflow-y: auto; flex: 1 1 0; min-height: 0; }
 .sl-day { padding: 12px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 .sl-none { padding: 16px 10px; font-size: 13px; }
 .sl-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 12px; border: 0; border-radius: var(--r); background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
@@ -523,7 +544,9 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .sl-q { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sl-ago { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sl-meta { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--muted); }
-.sl-meta > span:last-child { flex: none; white-space: nowrap; }
+.sl-meta > span:last-child { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sl-meta > .sl-out { flex: 0 0 auto; max-width: 65%; }
+.sl-out-word { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sl-new { align-self: center; justify-self: end; width: 8px; height: 8px; border-radius: 50%; background: var(--go); }
 .sl-out { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; padding: 1px 9px 1px 2px; border-radius: 999px; background: var(--line); color: var(--ink); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
 .sl-badge { flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; background: var(--line-2); color: var(--ink); }
@@ -532,20 +555,23 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .sl-out.violet { background: var(--violet-soft); color: var(--violet); } .sl-out.violet .sl-badge { background: var(--violet); color: var(--panel); }
 .sl-out.need { background: var(--need-soft); color: var(--need); } .sl-out.need .sl-badge { background: var(--need); color: var(--panel); }
 .sl-out.big { padding: 3px 12px 3px 3px; font-size: 13px; } .sl-out.big .sl-badge { width: 22px; height: 22px; font-size: 11px; }
-.sl-more { margin-top: auto; display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
+/* The list's foot and the thread's foot share one height, so the line over
+   each runs straight across the panel, like the one under the heads. */
+.sl-more { margin-top: auto; display: flex; align-items: center; justify-content: center; height: 48px; padding: 0 8px; box-sizing: border-box; border-top: 1px solid var(--line); }
 .sl-more:has(> [hidden]) { display: none; }
 .sl-pane { flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .sl-pane-head { padding: 22px 28px 18px; border-bottom: 1px solid var(--line); min-height: 144px; box-sizing: border-box; }
 .sl-pane-head .sl-col { display: flex; flex-direction: column; gap: 10px; }
 .sl-pane-meta { font-size: 12.5px; color: var(--muted); } .sl-pane-meta b { color: var(--ink); font-weight: 600; }
 .sl-pane-q { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
-.sl-pane-body { flex: 1; overflow-y: auto; padding: 26px 28px 32px; max-height: calc(100vh - 390px); }
-.sl-pane-foot { padding: 12px 28px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.sl-pane-body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 26px 28px 32px; }
+.sl-pane-foot { flex: none; display: flex; align-items: center; height: 48px; padding: 0 28px; box-sizing: border-box; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .sl-live-line { display: flex; align-items: center; gap: 8px; }
 .sl-live { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 @media (max-width: 880px) {
   .sl-side { max-width: none; border-right: 0; border-bottom: 1px solid var(--line); }
-  .sl-list, .sl-pane-body { max-height: none; }
+  .sl-split { height: auto; }
+  .sl-list, .sl-pane-body { flex: none; max-height: none; }
   .sl-pane-head, .sl-pane-body, .sl-pane-foot { padding-left: 16px; padding-right: 16px; }
 }
 .sl-col { width: 100%; max-width: 820px; }
@@ -1570,6 +1596,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .ask.fix .ask-top { background: color-mix(in srgb, var(--bad) 9%, var(--panel)); border-bottom-color: var(--bad-line); }
 .ask.done { opacity: 0.6; }
 .tag.bad { background: var(--bad-soft); border-color: transparent; color: var(--bad); font-weight: 600; }
+/* A tag that opens a setting rather than saying a state. */
+button.tag.edit { border-style: dashed; color: var(--text); cursor: pointer; }
+button.tag.edit:hover, button.tag.edit:focus-visible { border-color: var(--go); color: var(--go); }
+.trial-log { max-height: 220px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 /* Setup → Apps to test */
 .ts-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .ts-steps li { background: var(--panel); padding: 16px 18px; display: flex; gap: 12px; }
@@ -1894,7 +1924,7 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 @media (max-width: 980px) { .tu-charts { grid-template-columns: minmax(0, 1fr); } }
 .tu-subhead { font-size: 13px; font-weight: 600; }
 .tu-plot { position: relative; padding-top: 22px; border-top: 1px dashed var(--line); }
-.tu-top { position: absolute; top: 3px; left: 0; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tu-top { flex: none; color: var(--faint); font-size: 11.5px; font-weight: 400; font-variant-numeric: tabular-nums; }
 .tu-cols { display: flex; align-items: flex-end; gap: 2px; min-height: 172px; }
 .tu-col { position: relative; flex: 1 1 0; min-width: 8px; max-width: 160px; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-end; gap: 4px; height: 172px; padding: 0 1px; border: 0; border-radius: 4px; background: none; cursor: pointer; color: inherit; font: inherit; }
 .tu-col:hover, .tu-col:focus-visible { background: var(--panel-2); }
@@ -1913,6 +1943,7 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .tu-col:last-child .tu-tip { left: auto; right: 0; transform: none; }
 .tu-change { position: relative; flex: none; width: 1px; height: 172px; margin: 0 5px; border-left: 1px dashed var(--faint); }
 .tu-change span { position: absolute; top: -20px; left: 4px; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
+.tu-change.flip span { left: auto; right: 4px; }
 .tu-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); }
 .tu-legend > span { display: inline-flex; align-items: center; gap: 6px; }
 .tu-legend .tu-mark { display: inline; height: auto; }
@@ -3824,7 +3855,11 @@ export const CONSOLE_JS = String.raw`
     function done(text) {
       return function (r) {
         out.textContent = ''; out.appendChild(msg(r, text));
-        if (r.ok !== false) { card.classList.remove('need'); card.classList.add('done'); refreshCounts(); }
+        // Answered elsewhere first (its manager, in Slack): this card is old.
+        // Settle it and fetch where the run is, rather than leave an error up.
+        var stale = r.ok === false && /isn’t waiting any more/.test(r.error || '');
+        if (r.ok !== false || stale) { card.classList.remove('need'); card.classList.add('done'); refreshCounts(); }
+        if (stale) { r = { ok: true }; livePoke(it.workerId, 1500); }
         return r;
       };
     }
@@ -4240,27 +4275,146 @@ export const CONSOLE_JS = String.raw`
           : h('p', { class: 'faint', text: 'Ask an admin to install it on Setup → Tools.' })));
   }
 
-  /// "Ask a worker…" from anywhere on the inbox: pick who, say what.
+  /// How well each worker fits what's being asked, best first: the words of
+  /// the ask found in its name, role and what it does. Plain word matching,
+  /// no model and no wait, so it can run on every keystroke. A worker named
+  /// outright wins. Scores of 0 are left out.
+  var FIT_SKIP = { the: 1, and: 1, for: 1, with: 1, that: 1, this: 1, from: 1, into: 1, what: 1, when: 1, where: 1, which: 1, who: 1, how: 1, why: 1, can: 1, you: 1, your: 1, our: 1, are: 1, was: 1, were: 1, has: 1, have: 1, does: 1, did: 1, not: 1, but: 1, all: 1, any: 1, out: 1, its: 1, about: 1, please: 1, give: 1, tell: 1, make: 1, take: 1, get: 1, let: 1, need: 1, want: 1, look: 1, check: 1, find: 1 };
+  function fitWords(s) {
+    return String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter(function (x) { return x.length >= 3 && !FIT_SKIP[x]; })
+      .map(function (x) { return x.length > 4 ? x.replace(/(ings|ing|ies|es|ed|s)$/, '') : x; });
+  }
+  function askFit(text, workers) {
+    var ask = fitWords(text);
+    if (!ask.length) return [];
+    var raw = String(text || '').toLowerCase();
+    return workers.map(function (w) {
+      var named = new RegExp('(^|[^a-z0-9])' + String(w.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '\\W*') + '($|[^a-z0-9])').test(raw);
+      var mine = {};
+      fitWords([w.tagline, w.role, w.roleJob].join(' ')).forEach(function (x) { mine[x] = 1; });
+      var seen = {}, score = named ? 10 : 0;
+      ask.forEach(function (x) { if (mine[x] && !seen[x]) { seen[x] = 1; score += 1; } });
+      return { id: w.id, score: score };
+    }).filter(function (x) { return x.score > 0; }).sort(function (a, b) { return b.score - a.score; });
+  }
+  // end askFit
+
+  /// Pick a worker by what it does, not only its name: its line, its role,
+  /// whether it's busy, and the best fit for what's typed so far on top.
+  function workerPicker(workers, onPick) {
+    var chosen = workers[0];
+    var fit = {};
+    var wrap = h('div', { class: 'wpick' });
+    var btn = h('button', { type: 'button', class: 'wpick-btn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': 'Which worker' });
+    var pop = h('div', { class: 'wpick-pop', hidden: true });
+    var find = h('input', { type: 'text', class: 'wpick-find', placeholder: 'Find by name, role or what it does…', 'aria-label': 'Find a worker' });
+    var list = h('div', { class: 'wpick-list', role: 'listbox' });
+    var at = 0, shown = [];
+    var drawBtn = function () {
+      btn.textContent = '';
+      append(btn, [avatar(chosen.id, chosen.name, 'xs'), h('span', { text: chosen.name }), h('span', { class: 'faint', 'aria-hidden': 'true', text: '▾' })]);
+      btn.title = chosen.tagline || chosen.name;
+    };
+    var stateOf = function (w) { return w.state === 'working' ? ['working', 'Working'] : w.waiting ? ['', 'Waiting on you'] : w.state === 'stuck' ? ['', 'Stuck'] : ['', 'Idle']; };
+    var drawList = function () {
+      var q = fitWords(find.value);
+      shown = workers.filter(function (w) {
+        if (!q.length) return true;
+        var hay = fitWords([w.name, w.tagline, w.role, w.roleJob].join(' ')).join(' ') + ' ' + String(w.name || '').toLowerCase();
+        return q.every(function (x) { return hay.indexOf(x) >= 0; });
+      }).slice().sort(function (a, b) { return (fit[b.id] || 0) - (fit[a.id] || 0); });
+      var best = Object.keys(fit).length ? Math.max.apply(null, Object.keys(fit).map(function (k) { return fit[k]; })) : 0;
+      list.textContent = '';
+      if (!shown.length) { list.appendChild(h('div', { class: 'wpick-none', text: 'No worker matches that.' })); return; }
+      at = Math.min(at, shown.length - 1);
+      shown.forEach(function (w, i) {
+        var st = stateOf(w);
+        var row = h('button', { type: 'button', class: 'wpick-row', role: 'option', 'aria-selected': i === at ? 'true' : 'false' },
+          avatar(w.id, w.name, 's'),
+          h('span', { class: 'wpick-main' },
+            h('span', { class: 'wpick-top' }, h('b', { text: w.name }),
+              w.role ? h('span', { class: 'wpick-tag', text: w.role }) : null,
+              best >= 2 && fit[w.id] === best ? h('span', { class: 'wpick-tag fit', text: 'Best fit' }) : null,
+              w.id === chosen.id ? h('span', { class: 'faint', style: 'font-size:11.5px', text: '✓' }) : null,
+              h('span', { class: 'wpick-state ' + st[0], text: st[1] })),
+            w.tagline ? h('span', { class: 'wpick-what', text: w.tagline }) : null,
+            !w.yours && w.manager ? h('span', { class: 'faint', style: 'font-size:11.5px', text: who(w.manager) + '’s' }) : null));
+        row.onclick = function () { pick(w); };
+        row.onmouseenter = function () { at = i; mark(); };
+        list.appendChild(row);
+      });
+    };
+    var mark = function () { [].forEach.call(list.children, function (r, i) { r.setAttribute && r.setAttribute('aria-selected', i === at ? 'true' : 'false'); }); };
+    var close = function () { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('mousedown', outside); };
+    var outside = function (e) { if (!wrap.contains(e.target)) close(); };
+    var open = function () {
+      find.value = ''; at = 0; drawList();
+      pop.hidden = false; btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('mousedown', outside);
+      find.focus();
+    };
+    var pick = function (w) { chosen = w; drawBtn(); close(); if (onPick) onPick(w); };
+    btn.onclick = function () { if (pop.hidden) open(); else close(); };
+    find.oninput = function () { at = 0; drawList(); };
+    find.onkeydown = function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); at = Math.min(at + 1, shown.length - 1); mark(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); at = Math.max(at - 1, 0); mark(); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (shown[at]) pick(shown[at]); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); }
+    };
+    append(pop, [find, list]);
+    append(wrap, [btn, pop]);
+    drawBtn();
+    return {
+      el: wrap,
+      value: function () { return chosen; },
+      set: function (w) { chosen = w; drawBtn(); },
+      /// The fit scores for what's typed, for "Best fit" in the list.
+      fit: function (scores) { fit = {}; scores.forEach(function (s) { fit[s.id] = s.score; }); if (!pop.hidden) drawList(); }
+    };
+  }
+
+  /// "Ask a worker…" from anywhere on the inbox: pick who, say what. As the
+  /// ask is typed, a worker that plainly fits it better than the one picked
+  /// is suggested, never switched to on its own.
   function quickAsk(workers) {
     if (!workers.length) return null;
-    var who = h('select', { 'aria-label': 'Which worker', style: 'width:auto;border:0;background:transparent;padding:0 4px;font-weight:600' },
-      workers.map(function (w) { return h('option', { value: w.id, text: w.name }); }));
     var text = h('input', { type: 'text', placeholder: 'Ask something, or give it a task…', 'aria-label': 'What to ask', style: 'border:0;background:transparent;box-shadow:none;padding:0;min-width:0;flex:1' });
     var out = h('div', { 'aria-live': 'polite' });
+    var hint = h('div', { class: 'wpick-hint', 'aria-live': 'polite', hidden: true });
+    var dismissed = {};
+    var suggest = function () {
+      var scores = askFit(text.value, workers);
+      picker.fit(scores);
+      hint.hidden = true; hint.textContent = '';
+      var top = scores[0];
+      var cur = picker.value();
+      var mine = (scores.filter(function (s) { return s.id === cur.id; })[0] || { score: 0 }).score;
+      if (!top || top.id === cur.id || top.score < 2 || top.score <= mine || dismissed[top.id]) return;
+      var w = workers.filter(function (x) { return x.id === top.id; })[0];
+      append(hint, [h('span', null, h('b', { style: 'color:var(--ink)', text: w.name }), ' might fit better' + (w.tagline ? ': ' + w.tagline : '') + '.'),
+        h('button', { class: 'btn small', text: 'Ask ' + w.name + ' instead', onclick: function () { picker.set(w); suggest(); text.focus(); } }),
+        h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'No thanks', onclick: function () { dismissed[w.id] = 1; suggest(); } })]);
+      hint.hidden = false;
+    };
+    var picker = workerPicker(workers, function () { suggest(); text.focus(); });
+    var timer = null;
+    text.oninput = function () { clearTimeout(timer); timer = setTimeout(suggest, 150); };
     var send = function () {
       if (!text.value.trim()) { text.focus(); return; }
-      var w = workers.filter(function (x) { return x.id === who.value; })[0];
-      api('POST', '/api/ask', { worker: who.value, message: text.value }).then(function (r) {
+      var w = picker.value();
+      api('POST', '/api/ask', { worker: w.id, message: text.value }).then(function (r) {
         out.textContent = '';
         if (r.ok === false) { out.appendChild(msg(r)); return; }
-        text.value = '';
+        text.value = ''; dismissed = {}; suggest();
         out.appendChild(h('div', { class: 'msg ok' }, 'Asked ' + w.name + '. ', h('button', { class: 'linkish', style: 'color:inherit;text-decoration:underline;font-size:13px', text: 'Follow it on ' + w.name + '’s page', onclick: function () { openWorker(w.id); } })));
       });
     };
     text.onkeydown = function (e) { if (e.key === 'Enter') send(); };
     return h('div', { class: 'stack', style: 'gap:6px' },
       h('div', { class: 'panel row', style: 'gap:8px;padding:6px 6px 6px 12px;flex-wrap:nowrap;border-color:var(--line-2);min-height:46px' },
-        h('span', { class: 'faint', style: 'flex:none;display:flex' }, icon('arrow', 16)), who, text, h('button', { class: 'btn go small', text: 'Ask', onclick: send })),
+        h('span', { class: 'faint', style: 'flex:none;display:flex' }, icon('arrow', 16)), picker.el, text, h('button', { class: 'btn go small', text: 'Ask', onclick: send })),
+      hint,
       out);
   }
 
@@ -5535,6 +5689,7 @@ export const CONSOLE_JS = String.raw`
     var reportIsAnswer = ok && ctx.merge && r.result && isMd && r.result.name !== 'pull-requests.md';
     return h('div', { class: 't-run' },
       t.runs.length > 1 ? head : null,
+      refusedCard(r, w, ctx),
       ok ? h('div', { class: 't-answer' }, h('div', { class: 't-answer-head' }, h('span', { class: 't-kind', text: 'What it found' }), answerCopy(reportIsAnswer ? r.result.body : r.summary)),
           reportIsAnswer ? h('div', { class: 'wc-out t-answer-report' }, md(r.result.body))
             : r.summary ? h('p', { style: 'margin:0', text: r.summary }) : h('p', { class: 'muted', style: 'margin:0', text: r.result ? 'It wrote ' + r.result.name + '.' : 'It finished without writing a file.' }),
@@ -5547,6 +5702,56 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'wc-out' }, isMd ? md(r.result.body) : h('pre', { text: r.result.body }))) : h('span'),
         ok && r.entryId ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Was this useful?' }), rateButtons({ entryId: r.entryId, workerName: w.name, rating: r.rating }, slot)) : null),
       slot);
+  }
+
+  /// The tools a run was refused, each with its fix a click away: one it
+  /// doesn't have, given (or asked of an admin, as "+ Give it a tool" does);
+  /// one it has but couldn't use in a run nobody approved, "use its tools on
+  /// its own". Told only in the worker's prose, the fix read as "ask an admin
+  /// to edit the flow", and its manager went round in circles.
+  function refusedCard(r, w, ctx) {
+    var servers = r.refused || [];
+    if (!servers.length) return null;
+    var have = (w.tools || []).map(function (t) { return t.name; });
+    var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
+    var rows = servers.map(function (s) {
+      var has = have.indexOf(s) >= 0;
+      var fix = null;
+      if (ctx.youManage && !has) {
+        fix = h('button', { class: 'btn small go', text: 'Give it ' + s });
+        fix.onclick = function () {
+          var restore = busy(fix, 'Working…');
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/tools/request', { tool: s, why: 'Refused in “' + r.title + '”' }).then(function (x) {
+            restore(); out.textContent = '';
+            if (x.ok === false) { out.appendChild(msg(x)); return; }
+            fix.disabled = true;
+            out.appendChild(msg(x, x.given ? w.name + ' has ' + s + ' now. Ask it again and it will use it.' : 'Asked the admins for ' + s + '. You’ll hear in Slack when one decides.'));
+            if (x.given) w.tools = (w.tools || []).concat([{ name: s, ok: true }]);
+          });
+        };
+      } else if (ctx.youManage && has && !w.roleToolsAlways) {
+        fix = h('button', { class: 'btn small go', text: 'Let it use its tools on its own' });
+        fix.onclick = function () {
+          var restore = busy(fix, 'Saving…');
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { roleToolsAlways: true } }).then(function (x) {
+            restore(); out.textContent = '';
+            if (x.ok === false) { out.appendChild(msg(x)); return; }
+            fix.disabled = true; w.roleToolsAlways = true;
+            out.appendChild(msg(x, 'Done. Its runs use its tools without asking you first. Ask it again.'));
+          });
+        };
+      }
+      return h('div', { class: 'row', style: 'gap:10px;align-items:center;justify-content:space-between' },
+        h('span', { text: has
+          ? w.name + ' has ' + s + ', but this run wasn’t allowed to use it without your OK.'
+          : w.name + ' doesn’t have ' + s + ', so its calls were refused. No flow change is needed: give it the tool.' }),
+        fix);
+    });
+    return h('div', { class: 'msg warn stack', style: 'gap:8px' },
+      h('b', { text: 'Refused: ' + servers.join(', ') }),
+      rows,
+      ctx.youManage ? null : h('span', { class: 'faint', text: 'Its manager, ' + (w.manager ? who(w.manager) : 'or an admin') + ', can fix this.' }),
+      out);
   }
 
   /// Copy for a run's answer: the report as it wrote it (markdown), or its
@@ -6669,42 +6874,111 @@ export const CONSOLE_JS = String.raw`
         var box = h('div', { class: 'sec-body', style: 'gap:16px' });
         var out = h('div', { 'aria-live': 'polite' });
         var edit = w.youManage ? h('button', { class: 'btn', text: 'Edit the job' }) : null;
+        // Back to reading, in place: a whole re-render swaps the page and the
+        // tall editor collapses under the reader, so the page flashes and jumps.
+        var showJob = function (said) {
+          var sec = box.closest('section');
+          var bar = document.querySelector('.chrome');
+          text.textContent = d.jobDescription;
+          box.textContent = '';
+          append(box, [said ? h('div', { class: 'msg ok', text: said }) : null, text]);
+          if (edit) edit.hidden = false;
+          // The editor was taller than the text: keep the job's top on screen.
+          if (sec) {
+            var floor = bar ? bar.getBoundingClientRect().bottom : 0;
+            var top = sec.getBoundingClientRect().top;
+            if (top < floor) window.scrollBy(0, top - floor - 12);
+          }
+        };
         if (edit) edit.onclick = function () {
           edit.hidden = true;
           var ta = h('textarea', { 'aria-label': w.name + '’s job', style: 'min-height:420px;font-size:14.5px;line-height:1.6' });
           ta.value = d.jobDescription;
           var save = h('button', { class: 'btn go', text: 'Save the job' });
+          // A change to how it works, from the same ask: saved with the job.
+          var pendingFlow = null, everyone = null;
+          var flowBox = h('div', { class: 'stack', style: 'gap:10px' });
           save.onclick = function () {
             var restore = busy(save, 'Saving…');
-            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { jobDescription: ta.value } }).then(function (x) {
-              restore(); out.textContent = '';
-              if (x.ok === false) { out.appendChild(msg(x)); return; }
-              d.jobDescription = ta.value.trim(); render();
+            var base = '/api/workers/' + encodeURIComponent(w.id);
+            var jobChanged = ta.value.trim() !== (d.jobDescription || '').trim();
+            var saveJob = jobChanged || !pendingFlow ? api('POST', base + '/update', { patch: { jobDescription: ta.value } }) : Promise.resolve({ ok: true });
+            saveJob.then(function (x) {
+              if (x.ok === false) return x;
+              if (jobChanged || !pendingFlow) d.jobDescription = ta.value.trim();
+              return pendingFlow ? api('POST', base + '/how-it-works', { flowId: pendingFlow.flowId, yaml: pendingFlow.yaml, everyone: !!(everyone && everyone.checked) }) : x;
+            }).then(function (x) {
+              out.textContent = '';
+              if (x.ok === false) { restore(); out.appendChild(msg(x)); return; }
+              // A flow change redraws how it works too, so that one re-renders;
+              // the button stays on Saving… until the new page is up.
+              if (pendingFlow) render(); else showJob('Saved. It plans from this from its next run.');
             });
           };
-          // Say the change, and it is written in for you to read before saving.
-          var ask = h('input', { type: 'text', 'aria-label': 'What should change', placeholder: 'Say what should change, e.g. “also check the Ops board on Fridays”', style: 'flex:1;min-width:220px' });
+          // Say the change once: it's routed to its job, how it works, or
+          // both, as the desktop's worker editor does, and written in for you
+          // to read before saving.
+          var ask = h('input', { type: 'text', 'aria-label': 'What should change', placeholder: 'Say what should change, e.g. “take screenshots of the pages you check”', style: 'flex:1;min-width:220px' });
           var rewrite = h('button', { class: 'btn', text: 'Rewrite it' });
           var note = h('div', { 'aria-live': 'polite', class: 'faint', style: 'font-size:13px' });
+          var drawFlow = function (x) {
+            flowBox.textContent = '';
+            pendingFlow = x.flow || null; everyone = null;
+            save.textContent = pendingFlow ? 'Save the job and how it works' : 'Save the job';
+            var needs = (x.needsTools || []).map(function (s) {
+              var give = h('button', { class: 'btn small go', text: 'Give it ' + s });
+              var said = h('span', { class: 'faint', style: 'font-size:12.5px' });
+              give.onclick = function () {
+                var r = busy(give, 'Working…');
+                api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/tools/request', { tool: s, why: 'For: ' + (x.ask || 'a change to how it works') }).then(function (y) {
+                  r(); said.textContent = '';
+                  if (y.ok === false) { said.appendChild(msg(y)); return; }
+                  give.disabled = true;
+                  said.textContent = y.given ? 'Given. Rewrite it again to change how it works too.' : 'Asked the admins. Rewrite it again once it’s given.';
+                });
+              };
+              return h('div', { class: 'row', style: 'gap:8px;align-items:center' }, give, said);
+            });
+            if (!pendingFlow && !x.flowProblem) return;
+            var share = null;
+            if (pendingFlow && pendingFlow.sharedWith.length) {
+              var mine = !pendingFlow.othersNotYours.length;
+              everyone = h('input', { type: 'checkbox' });
+              everyone.disabled = !mine;
+              share = h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13px' }, everyone,
+                h('span', { text: 'Change it for ' + pendingFlow.sharedWith.join(', ') + ' too' + (mine ? '' : ' (only their manager or an admin can)') + '. Left unticked, ' + w.name + ' gets its own copy.' }));
+            }
+            append(flowBox, [h('div', { class: 'tu-head', text: 'How it works' + (pendingFlow ? ' changes too: ' + pendingFlow.name : '') }),
+              x.flowProblem ? h('div', { class: 'msg warn', text: x.flowProblem }) : null,
+              needs,
+              pendingFlow ? h('ul', { style: 'margin:0;padding-left:18px;font-size:13.5px' }, pendingFlow.changes.map(function (c) { return h('li', { text: c }); })) : null,
+              pendingFlow ? h('details', null, h('summary', { text: 'Its steps after the change' }), flowStepList(pendingFlow.steps)) : null,
+              share,
+              pendingFlow ? h('button', { class: 'linkish', style: 'align-self:flex-start;font-size:12.5px', text: 'Keep how it works as it is', onclick: function () { drawFlow({}); } }) : null]);
+          };
           rewrite.onclick = function () {
             if (!ask.value.trim()) { ask.focus(); return; }
-            var restore = busy(rewrite, 'Rewriting…');
+            var restore = busy(rewrite, 'Working it out…');
             note.textContent = '';
-            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/suggest-job', { ask: ask.value, job: ta.value }).then(function (x) {
+            var said = ask.value;
+            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/revise', { ask: said, job: ta.value }).then(function (x) {
               restore();
               if (x.ok === false) { note.appendChild(msg(x)); return; }
               var before = ta.value;
-              ta.value = x.job;
+              if (x.job) ta.value = x.job;
               ask.value = '';
-              append(note, ['Rewritten below. Read it over, then save. ',
-                h('button', { class: 'linkish', text: 'Undo', onclick: function () { ta.value = before; note.textContent = ''; } })]);
+              x.ask = said;
+              drawFlow(x);
+              append(note, [x.note ? h('p', { style: 'margin:0 0 4px', text: x.note }) : null,
+                (x.job ? 'Its job is rewritten below' : 'Its job stays as it is') + (x.flow ? ', and how it works changes too (underneath)' : '') + '. Read it over, then save. ',
+                h('button', { class: 'linkish', text: 'Undo', onclick: function () { ta.value = before; note.textContent = ''; drawFlow({}); } })]);
             });
           };
           ask.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); rewrite.click(); } };
           box.textContent = '';
-          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Say what to do, what to skip, and where things live.' }),
-            h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, ask, rewrite), note, ta,
-            h('div', { class: 'foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { render(); } }), out)]);
+          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Say what to do, what to skip, and where things live. A change to how it carries the work out is written into its flow too.' }),
+            h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, ask, rewrite), note, flowBox, ta,
+            h('div', { class: 'foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { showJob(); } }), out)]);
           ask.focus();
         };
         append(box, text);
@@ -6805,6 +7079,49 @@ export const CONSOLE_JS = String.raw`
             if (x.ok === false) { prs.checked = !prs.checked; prsOut.appendChild(msg(x)); } else { w.continueOpenPrs = prs.checked; prsOut.appendChild(msg(x, 'Saved. It applies from its next run.')); }
           });
         };
+        // Handing work on: colleagues it may ask to take what it finds. In Slack
+        // the thread it was asked in sees the ask and their answer. The same
+        // setting as the desktop's Org tab; the server says who may change it.
+        var handOn = (function () {
+          var names = function () { return (w.delegatesTo || []).map(function (x) { return x.name; }).join(', '); };
+          if (!w.youManage) return h('p', { class: 'faint', style: 'font-size:13px', text: !w.canDelegate ? 'It doesn’t hand work on. Its manager can change that.' : (w.delegatesTo || []).length ? 'It may hand work to ' + names() + '.' : 'It may hand work to anyone working in the same place.' });
+          var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+          var on = h('input', { type: 'checkbox', checked: !!w.canDelegate });
+          var picked = (w.delegatesTo || []).map(function (x) { return x.id; });
+          var others = all.filter(function (x) { return x.id !== w.id; });
+          var picks = h('div', { class: 'stack', style: 'gap:6px' });
+          var drawPicks = function () {
+            picks.textContent = '';
+            if (!on.checked) return;
+            if (w.trust === 'probation') picks.appendChild(h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Not while it asks before work: trust it first, under How much it does alone.' }));
+            picks.appendChild(h('b', { style: 'font-size:13px', text: 'Who it may hand work to' }));
+            picks.appendChild(h('span', { class: 'faint', style: 'font-size:12.5px', text: picked.length ? 'Exactly the ticked colleagues. Untick them all to go back to anyone working in the same place.' : 'Anyone working in the same place (its repo or workspace); it picks by their jobs. Tick names to choose exactly who. A colleague someone else manages needs their OK.' }));
+            picks.appendChild(h('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, others.map(function (x) {
+              var box = h('input', { type: 'checkbox', checked: picked.indexOf(x.id) >= 0 });
+              box.onchange = function () {
+                var before = picked.slice();
+                picked = box.checked ? picked.concat([x.id]) : picked.filter(function (id) { return id !== x.id; });
+                save({ delegatesTo: picked.length ? picked : null }, function () { picked = before; }, function () {
+                  w.delegatesTo = others.filter(function (o) { return picked.indexOf(o.id) >= 0; }).map(function (o) { return { id: o.id, name: o.name }; });
+                });
+              };
+              return h('label', { class: 'toggle' }, box, h('span', { text: x.name }));
+            })));
+          };
+          var save = function (patch, undo, done) {
+            out.textContent = '';
+            return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch }).then(function (x) {
+              if (x.ok === false) { undo(); out.appendChild(msg(x)); } else { done(); out.appendChild(msg(x, 'Saved. It applies from its next answer.')); }
+              drawPicks();
+            });
+          };
+          on.onchange = function () {
+            on.disabled = true;
+            save({ canDelegate: on.checked }, function () { on.checked = !on.checked; }, function () { w.canDelegate = on.checked; }).then(function () { on.disabled = false; });
+          };
+          drawPicks();
+          return [h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, on, h('span', { text: 'Let it hand work to colleagues' })), out), picks];
+        })();
         // Changed on General, beside who may ask it; said here so Access tells the whole story.
         var othersLine = (w.anyoneMayStart ? 'Starts work for anyone who can ask it.' : w.startAudience ? 'Starts work for the people picked, and its manager.' : 'Starts work only for its manager.') +
           ' ' + (w.anyoneMayStart ? '' : w.approvers ? 'Its manager and the people picked approve the rest.' : 'Its manager approves the rest.');
@@ -6838,6 +7155,7 @@ export const CONSOLE_JS = String.raw`
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
             })()),
           trustCard,
+          section('Handing work on', 'When something it finds is another worker’s job, it asks them to take it. The work runs on the colleague’s budget.', handOn),
           section('Work from others', 'When someone other than its manager asks. Set on General, with who may ask it.',
             h('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, h('span', { style: 'font-size:13px', text: othersLine }), toWho)),
           section('Team pull requests', 'Whether it may add its fixes to pull requests other people opened, when its work names one. Only a branch with an open pull request; never forced, and a conflict it leaves unresolved is never pushed.',
@@ -12553,7 +12871,7 @@ export const CONSOLE_JS = String.raw`
   function slackOutcome(c, big) {
     var t = slackTone(c);
     return h('span', { class: 'sl-out ' + t.tone + (big ? ' big' : '') },
-      h('span', { class: 'sl-badge', 'aria-hidden': 'true', text: t.initial }), c.outcome || 'Answered in the thread');
+      h('span', { class: 'sl-badge', 'aria-hidden': 'true', text: t.initial }), h('span', { class: 'sl-out-word', text: c.outcome || 'Answered in the thread' }));
   }
 
   function dayLabel(ms) {
@@ -14160,7 +14478,7 @@ export const CONSOLE_JS = String.raw`
 
   /// A run file, shown as what it is: an HTML report in a sandboxed frame
   /// (served on its own origin, so its scripts never see this page), an
-  /// image as itself, Markdown rendered, other text as text.
+  /// image as itself, a test's video played, Markdown rendered, other text as text.
   function fileView(f, tall) {
     var base = f.name.split('/').pop();
     var html = /\.html?$/i.test(base);
@@ -14170,6 +14488,7 @@ export const CONSOLE_JS = String.raw`
       f.bytes ? h('span', { class: 'faint', text: fileSize(f.bytes) }) : null);
     if (html) return Promise.resolve([actions, h('iframe', { class: 'file-frame' + (tall ? ' tall' : ''), src: f.url, sandbox: 'allow-scripts allow-popups allow-popups-to-escape-sandbox', title: base })]);
     if (/\.(png|jpe?g|gif|webp)$/i.test(base)) return Promise.resolve([actions, h('img', { src: f.url, alt: base, style: 'max-width:100%;border-radius:8px' })]);
+    if (/\.webm$/i.test(base)) return Promise.resolve([actions, h('video', { src: f.url, controls: true, preload: 'metadata', 'aria-label': base, style: 'width:100%;border-radius:8px;background:#000' })]);
     if (!TEXT_FILE.test(base)) return Promise.resolve([actions, h('p', { class: 'muted', text: 'This kind of file opens on your computer. Download it to see it.' })]);
     return fetch(f.url).then(function (res) {
       return res.text().then(function (text) {
@@ -16102,6 +16421,7 @@ export const CONSOLE_JS = String.raw`
     { group: 'Workers', pages: [
       ['hiring', 'Hiring', 'Who may hire, what their workers may cost before a hire needs approval, and who approves.'],
       ['roles', 'Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.'],
+      ['tuning', 'Tuning', 'What keeps going wrong across every worker, and the fix for each: tools their runs are refused, and steps that stop for an OK every time.'],
       ['handbook', 'Handbook', 'What every worker reads after its job: names, project keys, who owns what, house style.'],
       ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.'],
       ['capacity', 'Capacity', 'Whether this server is the right size, and how many questions and code runs every worker together may have going at once.'],
@@ -16134,6 +16454,7 @@ export const CONSOLE_JS = String.raw`
     move: 'migrate migration export import transfer backup new server cloud bundle',
     hiring: 'hire approve approval allowance web pages fetch browsing urls',
     roles: 'roles catalog templates jobs starter',
+    tuning: 'tune improve refused blocked approvals approval waiting problems fix patterns health',
     handbook: 'context instructions knowledge style guide prompt',
     spending: 'budget cost money spend dollars usd cap alert limit',
     people: 'users members invite invitations roles admins approvers hirers access join offboard sign out',
@@ -16203,10 +16524,45 @@ export const CONSOLE_JS = String.raw`
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), null);
     setChrome([['Setup', function () { go('setup', { setupTab: 'ready' }); }]].concat(group ? [[group]] : [], [[page[1]]]));
-    var body = tab === 'people' ? viewPeople() : tab === 'move' ? viewMoveOrg() : tab === 'capacity' ? viewCapacity() : tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'people' ? viewPeople() : tab === 'move' ? viewMoveOrg() : tab === 'tuning' ? viewOrgTuning() : tab === 'capacity' ? viewCapacity() : tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
       // People keeps its own heading, which carries Invite people.
       return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, tab === 'people' ? null : headNode, tab === 'ready' || tab === 'people' ? nodes : nodes.slice(1)))];
+    });
+  }
+
+  /// Setup → Tuning: what keeps going wrong across every worker, counted
+  /// from their runs, each with its org-level fix a click away. A suggestion
+  /// goes away by itself once its fix is in.
+  function viewOrgTuning() {
+    var top = head('Tuning');
+    if (!state.me || !state.me.admin) return Promise.resolve([top, emptyState('Only an admin can tune the org.', 'Each worker’s own Tuning tab is for its manager.')]);
+    return api('GET', '/api/admin/tuning').then(function (r) {
+      if (r.ok === false) return [top, msg(r)];
+      var intro = h('p', { class: 'muted', style: 'margin:0 0 4px;max-width:84ch', text: 'Read from ' + r.runsRead + ' runs over the last ' + r.days + ' days. These are problems no single worker’s page can fix. Each one leaves this list once its fix is in.' });
+      if (!r.suggestions.length) return [top, intro, emptyState('Nothing to tune right now.', 'No tool keeps being refused, and no step stops for an OK that’s always given.')];
+      var cards = r.suggestions.map(function (s) {
+        var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
+        var go_ = h('button', { class: 'btn go small', text: s.apply });
+        var card = h('section', { class: 'panel pad stack', style: 'gap:8px' },
+          h('div', { class: 'row', style: 'gap:10px;justify-content:space-between;align-items:baseline' },
+            h('b', { style: 'font-size:14.5px', text: s.title }),
+            h('span', { class: 'faint', style: 'font-size:12.5px', text: s.runs + (s.runs === 1 ? ' run' : ' runs') + ' · last ' + ago(s.lastAt) })),
+          h('p', { style: 'margin:0;font-size:13.5px;line-height:1.55;max-width:84ch', text: s.why }),
+          h('div', { class: 'row', style: 'gap:10px;align-items:center' }, go_, out));
+        go_.onclick = function () {
+          var restore = busy(go_, 'Applying…');
+          api('POST', '/api/admin/tuning/apply', { id: s.id }).then(function (x) {
+            restore(); out.textContent = '';
+            if (x.ok === false) { out.appendChild(msg(x)); return; }
+            go_.disabled = true;
+            card.style.opacity = '0.6';
+            out.appendChild(msg(x, 'Done. It’s in the decision log.'));
+          });
+        };
+        return card;
+      });
+      return [top, intro].concat(cards);
     });
   }
 
@@ -17110,6 +17466,94 @@ export const CONSOLE_JS = String.raw`
         var tests = !repo.testCommand ? null
           : data.testsOff ? h('span', { class: 'tag bad', text: 'Tests off on server', title: 'Nothing is pushed from here until repo tests are on. ' + data.testsOff })
           : h('code', { class: 'tag', text: repo.testCommand });
+        // What runs in a worker's checkout: setup by the server, checks by
+        // the worker. Admins open the form from the tag.
+        var checkCount = (repo.checks || []).length;
+        var checksLabel = repo.setup || checkCount ? [repo.setup, checkCount ? plural(checkCount, 'check', 'checks') : null].filter(Boolean).join(' · ') : 'No checks';
+        var checksUrl = '/api/repos/' + encodeURIComponent(repo.name) + '/checks';
+        var checksForm = function () {
+          var setup = h('input', { type: 'text', value: repo.setup || '', placeholder: 'npm ci, or ./gradlew --version', 'aria-label': 'Setup for ' + repo.name, style: 'width:260px' });
+          var checks = h('textarea', { rows: '3', placeholder: 'npm run lint\nnpm test', 'aria-label': 'Checks for ' + repo.name, style: 'width:360px' });
+          checks.value = (repo.checks || []).join('\n');
+          var said = h('div', { 'aria-live': 'polite' });
+          // The last trial, drawn again every few seconds while it runs.
+          var trialBox = h('div', { class: 'stack', style: 'gap:8px', 'aria-live': 'polite' });
+          var stateTag = { waiting: ['', 'Waiting'], running: ['need', 'Running…'], passed: ['go', 'Passed'], failed: ['bad', 'Failed'], skipped: ['', 'Skipped'] };
+          var drawTrial = function (t) {
+            if (!t) { fill(trialBox, []); return; }
+            var parts = [h('div', { class: 'section-title', style: 'font-size:13px', text: 'Last try' })];
+            if (t.error) parts.push(msg({ ok: false, error: t.error }));
+            t.steps.forEach(function (s) {
+              var st = stateTag[s.state] || ['', s.state];
+              parts.push(h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
+                h('span', { class: 'tag ' + st[0], text: st[1] }),
+                h('code', { text: s.command }),
+                h('span', { class: 'faint', text: (s.kind === 'setup' ? 'setup' : 'check') + (s.secs !== undefined ? ' · ' + s.secs + 's' : '') })));
+              if (s.state === 'failed' && s.tail) parts.push(h('pre', { class: 'trial-log', text: s.tail }));
+            });
+            parts.push(h('div', { class: 'faint', style: 'font-size:12.5px', text: t.finishedAt
+              ? (t.ok ? 'All passed' : 'Something failed') + ', ' + ago(t.finishedAt) + '. It ran in a fresh checkout of ' + repo.defaultBranch + ', as the worker’s user with its environment.'
+              : 'Running in a fresh checkout of ' + repo.defaultBranch + ', as the worker would. A first install can take a few minutes.' }));
+            fill(trialBox, parts);
+          };
+          var poll = function () {
+            api('GET', checksUrl + '/try').then(function (x) {
+              if (!document.body.contains(trialBox)) return;
+              if (x.ok === false) { fill(trialBox, msg(x)); return; }
+              drawTrial(x.trial);
+              if (x.trial && !x.trial.finishedAt) setTimeout(poll, 2500);
+            });
+          };
+          setTimeout(poll, 0);
+          var save = function (andTry) {
+            return function (e) {
+              var restore = busy(e.target, andTry ? 'Starting…' : 'Saving…');
+              api('POST', checksUrl, { setup: setup.value, checks: checks.value.split('\n') }).then(function (x) {
+                said.textContent = '';
+                // Saved, but workers aren't a user of their own: say what that
+                // risks, and leave it on screen rather than redraw over it.
+                if (x.ok !== false && x.warning) said.appendChild(h('div', { class: 'msg warn', role: 'alert', text: x.warning }));
+                if (x.ok === false || !andTry) {
+                  restore(); said.appendChild(msg(x, 'Saved. The next run uses it.'));
+                  if (x.ok !== false && !x.warning) setTimeout(render, 900);
+                  return;
+                }
+                api('POST', checksUrl + '/try', {}).then(function (y) {
+                  restore();
+                  if (y.ok === false) { said.appendChild(msg(y)); return; }
+                  drawTrial(y.trial); setTimeout(poll, 2500);
+                });
+              });
+            };
+          };
+          return h('div', { class: 'stack', style: 'gap:10px;max-width:720px' },
+            h('label', { class: 'field' }, 'Setup, run by the server in every new checkout before the worker starts', setup),
+            h('label', { class: 'field' }, 'Checks the worker may run on its change, one per line', checks),
+            h('p', { class: 'faint', text: 'One plain command each, no && or pipes. Both run as the worker, with the toolchain the repo asks for (.nvmrc, build.gradle and the like) on PATH, so no nvm. The worker can run nothing else. Save & try runs them now in a fresh checkout of ' + repo.defaultBranch + ', to see they work before a worker relies on them.' }),
+            h('div', { class: 'row', style: 'gap:8px' },
+              h('button', { class: 'btn go small', text: 'Save & try', onclick: save(true) }),
+              h('button', { class: 'btn small', text: 'Save', onclick: save(false) })),
+            said, trialBox);
+        };
+        var checksTag = admin ? h('button', { class: 'tag edit', title: 'Set what runs in a worker’s checkout, and try it', 'aria-label': 'Setup and checks for ' + repo.name + ': ' + checksLabel, onclick: function () { toggle('checks', checksForm); } },
+            icon('gear', 12), repo.setup || checkCount ? checksLabel : 'Add checks')
+          : repo.setup || checkCount ? h('span', { class: 'tag', text: checksLabel, title: [repo.setup, (repo.checks || []).join(', ')].filter(Boolean).join(' · ') }) : null;
+        // How the last try of them went: open the form to see it.
+        var trialTag = repo.checkTrial ? h(admin ? 'button' : 'span', { class: 'tag ' + (repo.checkTrial.ok ? 'go' : 'bad'), style: admin ? 'cursor:pointer' : null, title: 'Tried ' + ago(repo.checkTrial.finishedAt), text: repo.checkTrial.ok ? 'Checks pass' : 'Checks fail', onclick: admin ? function () { toggle('checks', checksForm); } : null }) : null;
+        // A kit the repo builds with that its runs don't get: Java it asks
+        // for but isn't installed, Gradle with no wrapper. Admins install
+        // the version it asks for from here.
+        var gapTags = (repo.toolchainGaps || []).map(function (g) {
+          var label = (g.got ? 'Asks ' : 'Needs ') + g.label + (g.range || g.asked ? ' ' + (g.range || g.asked) : '');
+          if (!admin || !g.install) return h('span', { class: 'tag bad', text: label, title: g.gap + '.' + (admin ? '' : ' An admin installs it on Setup → Toolchains.') });
+          return h('button', { class: 'tag bad', style: 'cursor:pointer', text: label + ' · Install', title: g.gap + '.', onclick: function (e) {
+            var restore = busy(e.target, 'Starting…');
+            api('POST', '/api/toolchains', { kit: g.kit, version: g.install }).then(function (x) {
+              restore();
+              toggle('toolchain', function () { return msg(x, g.label + ' ' + g.install + ' is downloading. Setup → Toolchains shows how it’s going; runs use it once it’s ready.'); });
+            });
+          } });
+        });
         var addWorker = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: repo.workers.length ? '+' : '+ Add', 'aria-label': 'Add a worker to ' + repo.name, onclick: function () {
           toggle('worker', function () { return placeWorker(repo.name, workers, false); });
         } });
@@ -17121,7 +17565,7 @@ export const CONSOLE_JS = String.raw`
           admin ? h('td', { class: 'tick' }, tick) : null,
           h('td', null, h('div', { class: 'stack', style: 'gap:2px' }, h('b', { text: repo.name }),
             h('span', { class: 'sub', text: repo.url.replace(/^https?:\/\//, '').replace(/\.git$/, '') + ' · branches off ' + repo.defaultBranch }))),
-          h('td', null, h('div', { class: 'row', style: 'gap:6px' }, push, tests)),
+          h('td', null, h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, push, tests, checksTag, trialTag, gapTags)),
           h('td', { class: 'wrap' }, h('div', { class: 'row', style: 'gap:6px' }, workerTags(repo.workers, workers), addWorker)),
           h('td', { class: 'wrap' }, ws.length ? h('div', { class: 'row', style: 'gap:6px' }, ws.map(function (w) { return h('button', { class: 'tag go', style: 'cursor:pointer', title: 'Open the Workspaces tab', text: w.name, onclick: toWorkspaces }); })) : h('span', { class: 'faint', text: '—' })),
           admin ? h('td', { class: 'r' }, h('button', { class: 'linkish', text: 'Disconnect', onclick: function (e) {
@@ -17217,6 +17661,7 @@ export const CONSOLE_JS = String.raw`
       })() : null;
       if (tab === 'workspaces') return [top, tabs].concat(workspacesSection(repos, spaces, workers, admin, function () { state.reposTab = 'repos'; render(); }));
       return [top, tabs, listHead, shipPanel, connect, data.testsOff && repos.some(function (x) { return x.testCommand; }) ? h('div', { class: 'msg err', text: 'Repos with a test command push nothing yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
+        data.checksWarning ? h('div', { class: 'msg warn', role: 'alert', text: data.checksWarning }) : null,
         selBar, table];
     });
   }
@@ -17620,26 +18065,33 @@ export const CONSOLE_JS = String.raw`
         customRows.length ? h('div', { class: 'srows' }, customRows) : null,
         h('div', { class: 'pad' }, customForm));
 
-      var usedKits = data.kits.filter(function (k) { return readyOf(k.id).length; });
+      // A repo's gap for a kit: what it needs that its runs don't get.
+      var gapOf = function (r, kit) { return (r.gaps || []).filter(function (g) { return g.kit === kit; })[0]; };
+      var installGap = function (g) { return g && g.install ? h('button', { class: 'btn small', text: 'Install ' + g.label + ' ' + g.install, onclick: function (e) { post(e.target, 'Starting…', '/api/toolchains', { kit: g.kit, version: g.install }); } }) : null; };
+      // Kits something is installed for, and kits a repo needs with none.
+      var usedKits = data.kits.filter(function (k) { return readyOf(k.id).length || data.repos.some(function (r) { return gapOf(r, k.id); }); });
       var repoTable = !data.repos.length ? h('p', { class: 'faint', text: 'No repos connected yet. Each one you connect can pick its versions here.' })
         : !usedKits.length ? h('p', { class: 'faint', text: 'Install something above, then pick versions per repo here.' })
         : h('div', { class: 'tscroll' }, h('table', { class: 'data' },
             h('thead', null, h('tr', null, h('th', { text: 'Repo' }), usedKits.map(function (k) { return h('th', { text: k.label }); }))),
             h('tbody', null, data.repos.map(function (r) {
               return h('tr', null, h('td', null, h('b', { text: r.name })), usedKits.map(function (k) {
-                var ready = readyOf(k.id), asks = r.asks[k.id];
+                var ready = readyOf(k.id), asks = r.asks[k.id], gap = gapOf(r, k.id);
+                if (!ready.length) {
+                  return h('td', null, gap ? h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, h('span', { class: 'tag bad', text: 'Needs ' + k.label + (gap.range || gap.asked ? ' ' + (gap.range || gap.asked) : ''), title: gap.gap + '.' }), installGap(gap)) : h('span', { class: 'faint', text: '—' }));
+                }
                 var auto = asks && ready.indexOf(asks) >= 0 ? 'As the repo asks (' + k.label + ' ' + asks + ')'
                   : 'Default (' + k.label + ' ' + data.defaults[k.id] + ')' + (asks ? ' · repo asks ' + asks + ', not installed' : '');
                 return h('td', null, h('select', { 'aria-label': k.label + ' for ' + r.name, onchange: function (e) { post(e.target, 'Saving…', '/api/repos/' + encodeURIComponent(r.name) + '/toolchain', { kit: k.id, version: e.target.value }); } },
                   h('option', { value: '', text: auto, selected: !r.picks[k.id] }),
-                  ready.map(function (v) { return h('option', { value: v, text: k.label + ' ' + v, selected: r.picks[k.id] === v }); })));
+                  ready.map(function (v) { return h('option', { value: v, text: k.label + ' ' + v, selected: r.picks[k.id] === v }); })), installGap(gap));
               }));
             }))));
 
       var installing = data.toolchains.some(function (t) { return t.status === 'installing'; });
       var page = h('div', { class: 'stack', 'data-toolchains': '1' },
         h('section', { class: 'panel pad stack', style: 'gap:10px' },
-          h('p', { class: 'faint', text: 'Downloaded onto the server’s data volume and checked against their published checksums, so they survive restarts and upgrades. Every worker’s shell and every repo’s test command gets one version of each kit on PATH: the repo’s pick below, else what the repo asks for in .nvmrc, .python-version, .sdkmanrc, go.mod or .tool-versions when that’s installed, else the default. From the next run on, no restart.' }),
+          h('p', { class: 'faint', text: 'Downloaded onto the server’s data volume and checked against their published checksums, so they survive restarts and upgrades. Every worker’s shell and every repo’s test command gets one version of each kit on PATH: the repo’s pick below, else what the repo asks for when that’s installed, else the default. What a repo asks for is read from .nvmrc, .node-version, package.json engines, .python-version, pyproject.toml, .sdkmanrc, .java-version, build.gradle, pom.xml, go.mod or .tool-versions. A Gradle repo with gradlew fetches its own Gradle and needs only Java; one without needs Gradle here. A repo that needs something missing is flagged below and on Repos. From the next run on, no restart.' }),
           problem),
         kitSections, customSection,
         h('section', { class: 'panel pad stack', style: 'gap:10px' }, h('h2', { class: 'section-title', text: 'Versions each repo uses' }), repoTable));
@@ -18406,9 +18858,14 @@ export const CONSOLE_JS = String.raw`
         h('span', { class: 'tu-mark ' + x.result, 'aria-hidden': 'true', text: mark[0] })));
     });
     if (ci < changes.length) cols.push(flag(changes.slice(ci)));
+    // A flag's words run right from its line; in the right half they run left
+    // instead, so a change after the newest run stays inside the chart.
+    cols.forEach(function (c, i) { if (c.classList.contains('tu-change') && i >= cols.length / 2) c.classList.add('flip'); });
     var chart = h('div', { class: 'stack', style: 'gap:8px;min-width:0' },
-      h('div', { class: 'tu-subhead', text: 'Its last ' + plural(score.runs.length, 'run', 'runs') + ', oldest to newest' }),
-      h('div', { class: 'tu-plot' }, h('span', { class: 'tu-top', text: minsText(top) }), h('div', { class: 'tu-cols' }, cols)),
+      h('div', { class: 'row tu-subhead', style: 'justify-content:space-between;gap:8px;align-items:baseline' },
+        h('span', { text: 'Its last ' + plural(score.runs.length, 'run', 'runs') + ', oldest to newest' }),
+        h('span', { class: 'tu-top', text: 'tallest ' + minsText(top) })),
+      h('div', { class: 'tu-plot' }, h('div', { class: 'tu-cols' }, cols)),
       h('div', { class: 'tu-legend' },
         h('span', null, h('i', { class: 'tu-key work' }), 'Working'), h('span', null, h('i', { class: 'tu-key wait' }), 'Waiting between steps'),
         ['good', 'rough', 'failed'].map(function (k) { return h('span', null, h('b', { class: 'tu-mark ' + k, 'aria-hidden': 'true', text: TUNING_MARKS[k][0] }), TUNING_MARKS[k][1]); })),

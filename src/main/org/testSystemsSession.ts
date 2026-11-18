@@ -96,6 +96,23 @@ export function screenshotName(asked: unknown, type: unknown, now = Date.now()):
   return `${stem || `screenshot-${now}`}${ext}`;
 }
 
+/// A video's file name, on the same terms as a screenshot's: always `.webm`.
+export function videoName(asked: unknown, now = Date.now()): string {
+  const raw = typeof asked === 'string' ? asked.split(/[\\/]/).pop() ?? '' : '';
+  let base = '';
+  for (const ch of raw) base += /[A-Za-z0-9._-]/.test(ch) ? ch : '-';
+  while (base.startsWith('.') || base.startsWith('-')) base = base.slice(1);
+  const stem = base.replace(/\.(webm|mp4|mov)$/i, '').slice(0, 80);
+  return `${stem || `video-${now}`}.webm`;
+}
+
+/// The largest video kept with a run. A whole test at 1280×720 comes out at
+/// a few MB a minute; one past this was left running.
+export const MAX_VIDEO_BYTES = 150_000_000;
+/// What a recording is made at: enough to read the page, small enough to keep.
+export const VIDEO_SIZE = { width: 1280, height: 720 };
+const VIDEO_FPS = 15;
+
 /// Browsing the worker may do itself. Nothing here reads cookies or storage,
 /// runs code in the page, sets routes, uploads the server's files or shows a
 /// request's headers.
@@ -105,6 +122,8 @@ export const SAFE_BROWSER_TOOLS = new Set([
   'browser_wait_for', 'browser_take_screenshot', 'browser_tabs', 'browser_resize', 'browser_console_messages',
   'browser_network_requests', 'browser_find', 'browser_generate_locator', 'browser_verify_element_visible',
   'browser_verify_list_visible', 'browser_verify_text_visible', 'browser_verify_value', 'browser_close',
+  // A title card in the video being recorded (start_video), between parts of a test.
+  'browser_video_chapter',
 ]);
 
 /// A value as a string literal in a script run in the browser. JSON keeps it
@@ -119,8 +138,10 @@ const SIGN_IN_WAIT_MS = 30_000;
 /// Where a sign-in page says what went wrong.
 const SIGN_IN_ERRORS = '[role="alert"], [aria-live="assertive"], [aria-live="polite"], .invalid-feedback, [class*="error" i], [class*="alert" i], [class*="toast" i], [class*="snackbar" i]';
 
-/// Playwright, saying it has no browser to start.
+/// Playwright, saying it has no browser to start. Not its ffmpeg, which only
+/// video needs: the browser is there, and start_video says so itself.
 export function browserMissing(text: string): boolean {
+  if (/ffmpeg/i.test(text)) return false;
   return ['browser_install', 'Executable doesn', 'not installed', 'is not found at', 'playwright install'].some((w) => text.includes(w));
 }
 
@@ -166,6 +187,24 @@ const OWN_TOOLS: ToolInfo[] = [
   {
     name: 'sign_in_again',
     description: 'Sign in to the open app again, and reopen the page you were on. Use it if you end up signed out and it wasn’t done for you.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'start_video',
+    description:
+      'Start recording the browser as a video, for people to watch the test you run. Start it before the first step of the test and stop it with stop_video when the test is done. ' +
+      'Mark each part of the test (each acceptance criterion, say) with browser_video_chapter. Signing in is never recorded: recording pauses while it happens, and carries on in a next part.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'A file name for the video, such as the ticket key: BILL-123-checkout. No folder.' },
+        cursor: { type: 'boolean', description: 'Show a mouse pointer moving to each click, so the video is easy to follow. On unless you turn it off; it slows each action a little.' },
+      },
+    },
+  },
+  {
+    name: 'stop_video',
+    description: 'Stop the recording started with start_video and keep it with this run’s files, where people watch it on the run’s page. Says where it was kept, to attach it to a ticket.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
@@ -264,6 +303,18 @@ interface Open {
   env?: string;
 }
 
+/// A video being recorded: the name asked for, which part (a sign-in ends
+/// one part and starts the next), and the parts already kept.
+interface Recording {
+  name: string;
+  cursor: boolean;
+  part: number;
+  file: string;
+  since: number;
+  kept: Array<{ name: string; path?: string; bytes: number }>;
+  problems: string[];
+}
+
 export class TestSystemsSession {
   private child: BrowserChild | null = null;
   private starting: Promise<BrowserChild> | null = null;
@@ -271,6 +322,7 @@ export class TestSystemsSession {
   private signInsAgain = 0;
   private lastUrl: string | undefined;
   private installTried = false;
+  private recording: Recording | null = null;
 
   constructor(private readonly deps: SessionDeps) {}
 
@@ -338,6 +390,8 @@ export class TestSystemsSession {
       if (name === 'list_systems') return this.listSystems();
       if (name === 'open_system') return await this.openSystem(String(args.system ?? ''), typeof args.environment === 'string' ? args.environment : undefined);
       if (name === 'sign_in_again') return await this.signInAgain();
+      if (name === 'start_video') return await this.startVideo(args);
+      if (name === 'stop_video') return await this.stopVideo();
       if (!SAFE_BROWSER_TOOLS.has(name)) return text(`${name} isn’t available here. Use the browser tools listed, and open_system to get signed in.`, true);
       return await this.forward(name, args);
     } catch (err) {
@@ -391,6 +445,9 @@ export class TestSystemsSession {
     const intro = [
       `${system.name} is open${where.env ? ` on the ${where.env} environment` : ''} at ${where.base}${system.signIn.kind === 'none' ? '.' : ', signed in.'}`,
       'Use the browser tools from here. If a page sends you to sign in, it is done again for you. Screenshots you take are kept with this run: give one a file name, not a folder.',
+      this.recording
+        ? 'The video you started is still recording.'
+        : 'To keep a video of the test for people to watch, start_video before its first step and stop_video when it is done.',
       system.guide ? `\nWhat to check:\n${system.guide}` : null,
     ]
       .filter(Boolean)
@@ -612,7 +669,135 @@ export class TestSystemsSession {
     }
   }
 
+  /// Sign in, never on camera: a form sign-in shows the test account's name
+  /// and its authenticator code as they are typed, so a recording stops
+  /// before it (the part so far is kept) and starts again, as its next part,
+  /// once it's done.
   private async signIn(open: Open): Promise<{ ok: true } | { ok: false; error: string }> {
+    const paused = this.recording && open.system.signIn.kind === 'form' ? await this.endPart() : false;
+    try {
+      return await this.signInNow(open);
+    } finally {
+      if (paused && this.recording) {
+        this.recording.part++;
+        const started = await this.startPart(this.recording);
+        if (started) this.recording.problems.push(`Recording couldn’t carry on after signing in: ${started}`);
+      }
+    }
+  }
+
+  // ---- VIDEO ---------------------------------------------------------------
+
+  private async startVideo(args: Record<string, unknown>): Promise<ToolResult> {
+    if (this.recording) return text('A video is already recording. Stop it with stop_video before starting another.', true);
+    const rec: Recording = {
+      name: videoName(args.name, this.now()),
+      cursor: args.cursor !== false,
+      part: 1,
+      file: '',
+      since: this.now(),
+      kept: [],
+      problems: [],
+    };
+    const failed = await this.startPart(rec);
+    if (failed) return text(`The video didn’t start: ${failed}`, true);
+    this.recording = rec;
+    return text(`Recording ${rec.name}. Do the test, marking each part with browser_video_chapter, then stop_video. Signing in is never recorded.`);
+  }
+
+  /// Start recording one part, into the browser's own folder. A reason it
+  /// didn't start, or null.
+  private async startPart(rec: Recording): Promise<string | null> {
+    const name = rec.part === 1 ? rec.name : rec.name.replace(/\.webm$/, `-part${rec.part}.webm`);
+    rec.file = path.join(this.deps.tempDir(), name);
+    rec.since = this.now();
+    const res = await this.callBrowser('browser_start_video', { filename: rec.file, size: VIDEO_SIZE, fps: VIDEO_FPS, cursor: rec.cursor });
+    if (!res.isError) return null;
+    const said = this.scrub(res.content.map((c) => c.text ?? '').join(' '));
+    return /ffmpeg/i.test(said) ? 'this server can’t record video (Playwright’s ffmpeg isn’t installed). Take screenshots instead, and tell your manager.' : said;
+  }
+
+  /// Stop the part being recorded and keep it. Whether a part was stopped.
+  private async endPart(): Promise<boolean> {
+    const rec = this.recording;
+    if (!rec) return false;
+    const res = await this.callBrowser('browser_stop_video', {}).catch((err: unknown) => text(err instanceof Error ? err.message : String(err), true));
+    const made = this.videoFiles(rec, res);
+    if (!made.length) rec.problems.push(res.isError ? `Part ${rec.part} couldn’t be saved: ${this.scrub(res.content.map((c) => c.text ?? '').join(' '))}` : `Part ${rec.part} came out with nothing in it.`);
+    for (const file of made) {
+      const kept = this.keepVideo(file);
+      if (typeof kept === 'string') rec.problems.push(kept);
+      else rec.kept.push(kept);
+    }
+    return true;
+  }
+
+  /// The video files a stop made: the one asked for, or, if the browser put
+  /// it elsewhere in its folder, the .webm files written since it started.
+  private videoFiles(rec: Recording, res: ToolResult): string[] {
+    if (fs.existsSync(rec.file)) return [rec.file];
+    const dir = this.deps.tempDir();
+    const named = res.content.flatMap((c) => (typeof c.text === 'string' ? [...c.text.matchAll(/[^\s()[\]"'`]+\.webm/g)].map((m) => m[0]) : []));
+    const listed = (() => {
+      try {
+        return fs.readdirSync(dir).filter((f) => f.endsWith('.webm')).map((f) => path.join(dir, f));
+      } catch {
+        return [];
+      }
+    })();
+    const known = new Set(rec.kept.map((k) => k.name));
+    return [...new Set([...named.map((n) => (path.isAbsolute(n) ? n : path.join(dir, n))), ...listed])].filter((f) => {
+      try {
+        return path.dirname(path.resolve(f)) === path.resolve(dir) && !known.has(path.basename(f)) && fs.statSync(f).mtimeMs >= rec.since - 2000;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /// A finished video part, copied to the run's files and taken out of the
+  /// browser's folder. What was kept, or why it wasn't.
+  private keepVideo(file: string): { name: string; path?: string; bytes: number } | string {
+    const name = path.basename(file);
+    try {
+      const bytes = fs.statSync(file).size;
+      if (!bytes) return `${name} came out empty.`;
+      if (bytes > MAX_VIDEO_BYTES) return `${name} is over ${Math.round(MAX_VIDEO_BYTES / 1_000_000)} MB, so it wasn’t kept. Record a shorter test.`;
+      const dir = this.deps.filesDir;
+      if (!dir) return { name, bytes };
+      fs.mkdirSync(dir, { recursive: true });
+      let target = name;
+      for (let n = 2; fs.existsSync(path.join(dir, target)); n++) target = name.replace(/(\.webm)$/, `-${n}$1`);
+      fs.copyFileSync(file, path.join(dir, target));
+      fs.rmSync(file, { force: true });
+      return { name: target, path: path.join(dir, target), bytes };
+    } catch {
+      return `${name} couldn’t be kept with this run’s files.`;
+    }
+  }
+
+  private async stopVideo(): Promise<ToolResult> {
+    const rec = this.recording;
+    if (!rec) return text('No video is recording. Start one with start_video.', true);
+    await this.endPart();
+    this.recording = null;
+    const mb = (b: number) => `${Math.max(0.1, Math.round(b / 100_000) / 10)} MB`;
+    const lines: string[] = [];
+    if (rec.kept.length) {
+      lines.push(
+        rec.kept.length === 1
+          ? `Saved the video as ${rec.kept[0].name} (${mb(rec.kept[0].bytes)})${rec.kept[0].path ? ', with this run’s files, where people watch it on the run’s page' : ''}.`
+          : `Saved the video in ${rec.kept.length} parts, split where signing in paused it: ${rec.kept.map((k) => `${k.name} (${mb(k.bytes)})`).join(', ')}${rec.kept[0].path ? '. They are with this run’s files, where people watch them on the run’s page' : ''}.`,
+      );
+      const paths = rec.kept.flatMap((k) => (k.path ? [k.path] : []));
+      if (paths.length) lines.push(`To attach ${paths.length === 1 ? 'it' : 'them'} to a ticket, give the ticket tool ${paths.length === 1 ? 'this path' : 'these paths'}: ${paths.join(', ')}`);
+      lines.push('You can’t watch it yourself: say in this step’s output what the test showed, step by step, and that the video shows it.');
+    }
+    lines.push(...rec.problems);
+    return text(lines.join('\n') || 'No video was saved.', !rec.kept.length);
+  }
+
+  private async signInNow(open: Open): Promise<{ ok: true } | { ok: false; error: string }> {
     const s = open.system.signIn;
     if (s.kind === 'none') return { ok: true };
     const e = credentialEnv(open.system.id);
@@ -723,6 +908,11 @@ export class TestSystemsSession {
   }
 
   async close(): Promise<void> {
+    // A run that ended with a video still recording keeps what was recorded.
+    if (this.recording && this.child) {
+      await Promise.race([this.endPart(), new Promise((r) => setTimeout(r, 15_000))]).catch(() => undefined);
+      this.recording = null;
+    }
     const c = this.child;
     this.child = null;
     this.starting = null;
