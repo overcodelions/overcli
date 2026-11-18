@@ -286,7 +286,7 @@ export type DoorReferral = {
   instruction: string;
 } & (
   | { phase: 'sent' }
-  | { phase: 'done'; reply: string; orchestrationId?: string; launched: boolean; choices?: string[] }
+  | { phase: 'done'; reply: string; orchestrationId?: string; launched: boolean; choices?: string[]; withheld?: boolean }
   | { phase: 'failed'; error: string }
 );
 
@@ -2051,7 +2051,9 @@ export class FrontDoor {
     // newest part when it is long: that is what a follow-up refers to.
     const said = messages
       .filter((m) => m.ts !== req.ts && !req.also?.includes(m.ts))
-      .map((m) => (m.bot_id ? `(posted here earlier, by this app) ${m.text}` : `<@${m.user ?? 'someone'}>: ${m.text}`))
+      // A worker's post says which worker: a colleague's answer in the thread
+      // (a handoff) is not the reader's own.
+      .map((m) => (m.bot_id ? `(posted here earlier, by this app${m.username ? `, as ${m.username}` : ''}) ${m.text}` : `<@${m.user ?? 'someone'}>: ${m.text}`))
       .join('\n');
     const thread = said.length > 6000 ? `…${said.slice(-6000)}` : said;
     const all = [...files, ...messages.flatMap((m) => m.files ?? [])];
@@ -2300,6 +2302,13 @@ export class FrontDoor {
     }
     if (r.phase === 'failed') {
       await this.deps.slack.post(channel, `${r.to.workerName} couldn't take it: ${r.error}`, threadTs, from);
+      return;
+    }
+    // Asked by someone who doesn't manage the sender: the colleague's answer
+    // is for whoever could have asked it directly, so the thread only hears
+    // that it was taken, and nothing it starts is followed here.
+    if (r.withheld) {
+      await this.deps.slack.post(channel, `${r.to.workerName} has it. Their answer goes to whoever manages them, not this thread.`, threadTs, to);
       return;
     }
     if (r.reply.trim()) {

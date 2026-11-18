@@ -1484,6 +1484,13 @@ export interface HeldHandoff {
   orchestrationId?: string;
   /// The run that wrote it, when a flow step handed it on.
   runId?: string;
+  /// The conversation (a Slack thread) the sender was answering, still told
+  /// how it ends once it goes out. `withheld`: the asker there does not manage
+  /// the sender, so only that it was taken is told, never the answer.
+  /// `announced`: the thread already heard it was sent.
+  conversation?: string;
+  withheld?: boolean;
+  announced?: boolean;
 }
 
 /// The whole crew is off: you are on holiday, or simply offline, and nothing

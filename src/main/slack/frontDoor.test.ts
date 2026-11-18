@@ -728,6 +728,16 @@ describe('the front door', () => {
     expect(h.state().follows).toMatchObject([{ orchestrationId: 'orch-v', workerName: 'Vantage', channel: 'C0ACME', threadTs: '14.0' }]);
   });
 
+  it("keeps a colleague's answer out of the thread when the asker doesn't manage the sender", async () => {
+    const h = harness({ reply: 'Found it.' });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '16.0', user: 'U1', text: 'Triage look at the export bug', dm: true });
+    await tick();
+    const base = { conversation: 'slack:D0ACME:16.0', from: { workerId: 'w-triage', workerName: 'Triage' }, to: { workerId: 'w-vantage', workerName: 'Vantage' }, instruction: 'Make a ticket.' };
+    await h.door.referred({ ...base, phase: 'done', reply: '', launched: false, withheld: true, orchestrationId: 'orch-hidden' });
+    expect(h.posts.at(-1)).toBe('D0ACME@16.0: [as Vantage] Vantage has it. Their answer goes to whoever manages them, not this thread.');
+    expect(h.state().follows.some((f) => f.orchestrationId === 'orch-hidden')).toBe(false);
+  });
+
   it('says in the thread when a colleague could not take a handoff, and ignores conversations that are not a thread it knows', async () => {
     const h = harness({ reply: 'Found it.' });
     await h.door.onMessage({ channel: 'D0ACME', ts: '15.0', user: 'U1', text: 'Triage look at the export bug', dm: true });
