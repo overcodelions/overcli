@@ -278,6 +278,37 @@ describe('closing the loop', () => {
     expect(pushed.told.join('\n')).not.toContain('no fix was pushed');
   });
 
+  it('asks no fix, and tells no one, when the branch has moved on to a green commit', async () => {
+    const NEWER = 'fedcba9876543210';
+    let tip = SHA;
+    const f = bitbucket(['FAILED']);
+    const route: typeof fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes('/refs/branches/')) return new Response(JSON.stringify({ target: { hash: tip, parents: [] } }));
+      if (u.includes(`/commit/${NEWER}/statuses`)) return new Response(JSON.stringify({ values: [{ state: 'SUCCESSFUL', name: 'build' }] }));
+      return f(url, init);
+    };
+    // Red on the watched commit, the tip still there: a fix is asked for.
+    const h = harness({ fetchImpl: route });
+    h.watch();
+    await h.ci.poll();
+    expect(h.asked).toHaveLength(1);
+    // A teammate pushes a green commit; six hours on, no complaint about the old one.
+    tip = NEWER;
+    h.advance(FIX_WAIT_MS + 1);
+    await h.ci.poll();
+    expect(h.told.join('\n')).not.toContain('no fix was pushed');
+    expect(h.all()[0]).toMatchObject({ status: 'passed', summary: expect.stringContaining('Green at fedcba9876') });
+
+    // Already moved on when its red build is first read: no fix asked at all.
+    const late = harness({ fetchImpl: route });
+    late.watch();
+    await late.ci.poll();
+    expect(late.asked).toEqual([]);
+    expect(late.told).toEqual([]);
+    expect(late.all()[0].status).toBe('passed');
+  });
+
   it('stops watching a repo whose CI never reports', async () => {
     const h = harness({ fetchImpl: fakeFetch((url) => (url.includes('/statuses') ? { values: [] } : undefined)) });
     h.watch();

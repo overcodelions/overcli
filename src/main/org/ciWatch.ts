@@ -508,6 +508,23 @@ export class CiWatcher {
     return next;
   }
 
+  /// Red, but someone has pushed the branch past it since (a teammate's fix,
+  /// a merge on the host): the build that counts is the tip's, so this one is
+  /// done with. Green at the tip, it's recorded as passed; red or still
+  /// running there, it's dropped quietly, since that push isn't the worker's
+  /// to answer for. False when the tip is this commit or can't be read.
+  private async supersede(w: CiWatch, repo: ConnectedRepo): Promise<boolean> {
+    const tip = await readTip(repo, w.branch, this.deps).catch(() => null);
+    if (!tip || tip.sha === w.sha || tip.sha.startsWith(w.sha) || w.sha.startsWith(tip.sha)) return false;
+    const at = await readVerdict(repo, tip.sha, this.deps).catch(() => null);
+    const green = at?.state === 'passed';
+    const { fixDue: _due, detail: _detail, ...rest } = w;
+    this.put({ ...rest, status: green ? 'passed' : 'timed-out', checkedAt: this.now(), summary: green ? `Green at ${tip.sha.slice(0, 10)}, pushed since.` : `Superseded by ${tip.sha.slice(0, 10)}, pushed since.` });
+    this.record(w, [green ? `Failed, but the branch has since moved on to ${tip.sha.slice(0, 10)}, and CI is green there. Nothing for ${w.workerName} to fix.` : `Failed, but the branch has since moved on to ${tip.sha.slice(0, 10)}, which overcli didn't push, so it stopped watching this commit.`]);
+    this.deps.log(`CI on ${w.repo} ${w.branch}: ${w.sha.slice(0, 10)} failed, but the branch moved on to ${tip.sha.slice(0, 10)} (${green ? 'green' : at?.state ?? 'unknown'}); no fix asked.`);
+    return true;
+  }
+
   /// Red, a fix asked for, and no push on its branch since.
   private fixPending(all: CiWatch[], w: CiWatch): boolean {
     return !!w.followedUp && w.status === 'failed' && !all.some((x) => x.repo === w.repo && x.branch === w.branch && x.startedAt > w.startedAt);
@@ -566,6 +583,9 @@ export class CiWatcher {
       for (const w of this.load().filter((x) => x.status === 'waiting')) await this.check(w);
       const all = this.load();
       for (const w of all.filter((x) => this.fixPending(all, x) && this.now() - (x.followedUpAt ?? x.checkedAt ?? x.startedAt) > FIX_WAIT_MS)) {
+        // Fixed by someone else's push meanwhile: nothing to hand anyone.
+        const repo = this.deps.repo(w.repo);
+        if (repo && (await this.supersede(w, repo))) continue;
         await this.noFix(w, `no fix was pushed within ${FIX_WAIT_MS / 3_600_000} hours`);
       }
       await this.settle();
@@ -635,6 +655,8 @@ export class CiWatcher {
       }
       return;
     }
+    // Red, on a commit the branch has already moved past: not the worker's to fix.
+    if (await this.supersede(w, repo)) return;
     // Red: what it says is kept, and the fix waits for the run's other repos.
     const failing = verdict.checks.filter((c) => c.state === 'failed');
     const detail = this.deps.rounds() > w.round ? await readFailure(repo, w.sha, this.deps) : '';
