@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.2] - 2026-11-17
+
 ### Upgrading
 - **Importing an org keeps trust only when an admin vouches for it.** A file whose Slack workspace matches this server's used to keep trust, managers and reporting lines on its own; the workspace a file names is written by whoever wrote the file. Now tick **This is our own org** or pass `--keep-trust`. **Move everything** from the desktop app still vouches on its own. A file naming another workspace never keeps trust.
 - **The server now removes checkouts no run knows any more.** A folder under `~/.overcli/worktrees/<repo>/` (`/data/home/.overcli/worktrees` in the image) whose run was deleted or pruned, or that a restart left behind, is removed with `git worktree remove --force` once all of these hold: `git status` shows nothing, every commit in it is on a remote, and nothing in it changed for two days. Its local branch is deleted with it, unless it is `main`, `master`, `develop`, `development`, `trunk` or `release`. Files git ignores (`node_modules`, build output, an ignored `.env`) don't count as work and go with it. A checkout kept for its work is looked at again after 6 hours, and at most 150 are looked at in each pass. The sweep runs a minute after start and every 10 minutes. Anything you keep by hand under that folder belongs somewhere else, or on a pushed branch.
@@ -33,7 +35,6 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 ### Security
 - **A handoff never shows a thread what its asker couldn't ask for directly.** When the person asking in Slack doesn't manage the worker, the colleague's answer and any run it starts stay on the colleague's desk. The thread only hears "*Colleague* has it. Their answer goes to whoever manages them, not this thread."
 - **Repo setup and checks run without server secrets,** as the worker's user, and a check is a narrowed grant of one command: a worker can't widen it into a shell.
-
 - **A desktop hand-off goes only to a manager matched by Slack id,** never by name.
 - **The Repos list warns** while a repo has checks and workers aren't run as their own user (`OVERCLI_WORKER_UID`): a check runs the repo's own script, which the worker can edit.
 
@@ -1443,7 +1444,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.2...HEAD
+[0.26.2]: https://github.com/overcodelions/overcli/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/overcodelions/overcli/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/overcodelions/overcli/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/overcodelions/overcli/compare/v0.24.5...v0.25.0
