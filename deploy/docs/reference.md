@@ -21,7 +21,7 @@ Set these in `deploy/.env`, the task definition, or the shell. Secrets can also 
 | Variable | Meaning |
 |---|---|
 | `ANTHROPIC_API_KEY` | The Anthropic API. |
-| `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` | Bedrock, through the server's AWS role. |
+| `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` | Bedrock, through the server's AWS role. Workers' `claude` reaches it through a signing proxy in the server, never the role itself. |
 | `AWS_BEARER_TOKEN_BEDROCK` | A Bedrock API key, for a server without an AWS role. |
 | `CLAUDE_CODE_USE_VERTEX`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID` | Vertex AI, through the service account. |
 | `OPENAI_API_KEY` | Codex, if the image was built with `INSTALL_CODEX=1`. |
@@ -33,6 +33,14 @@ Set these in `deploy/.env`, the task definition, or the shell. Secrets can also 
 | `OVERCLI_SECRETS` | Where secrets live: unset (an encrypted file), `aws:<prefix>`, or `gcp:<project>[/<prefix>]`. |
 | `OVERCLI_SECRETS_KEY` | The encrypted file's key. Keep it apart from the volume. |
 | `OVERCLI_SECRETS_READONLY` | `1` when secrets are managed elsewhere (Terraform). |
+
+### Workers' AWS access
+
+| Variable | Meaning |
+|---|---|
+| `OVERGO_AWSWORKER_ROLE` | The IAM role ARN every worker uses for AWS, its shell and its tools. Unset: workers have no AWS access. Never the role the server runs as. Set it here or on Setup → Secrets. See [Workers' AWS access](security.md#workers-aws-access). |
+| `OVERGO_AWSWORKER_ROLE_<NAME>` | More roles, such as `_QA` or `_DEVOPS`, for workers set to `<NAME>` on their Access tab. |
+| `OVERCLI_WORKER_CLOUD` | `host` gives workers the server's own AWS role, as before worker roles. Unsafe outside a laptop trial; the server warns at every start. |
 
 ### Slack and sign-in
 

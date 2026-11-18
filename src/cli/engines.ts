@@ -78,6 +78,12 @@ import type { PrTarget } from '../shared/flows/orchestration';
 import { PrWatcher, prHostFor, type PrWatchState } from '../main/org/prWatch';
 import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
+import { BedrockProxy, type BedrockSigner } from '../main/org/bedrockProxy';
+import { lockedCloudEnv, relayToolCloudEnv, WorkerCloudBroker, writeEmptyCloudConfig } from '../main/org/workerCloud';
+import { setRelayToolEnv } from '../main/org/runToolRelay';
+import { OVERDB_TOOL } from '../shared/overdbConnection';
+import { TEST_SYSTEMS_TOOL } from '../shared/testSystems';
+import { addConversationEnv, addRunEnv } from '../main/runEnv';
 import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
 import { ToolEnvVault, toolEnvVaultExists } from '../main/org/toolEnvVault';
 import { activeWorkerUser } from '../main/org/workerUser';
@@ -507,10 +513,80 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   poolPoke.unref?.();
   // The worker behind a conversation: a run's, or its own desk and Slack
   // threads' (where questions are answered).
+  function chatWorkerFor(conversationId: string) {
+    const turn = orchestrator.workerForTurn(conversationId);
+    if (turn) return workerEngine.get(turn) ?? undefined;
+    return workerEngine.roster().find((w) => w.deskSession?.conversationId === conversationId || Object.values(w.threadSessions ?? {}).some((t) => t.conversationId === conversationId));
+  }
+  /// The worker record behind a conversation: its run's, or its chat's.
+  function workerRecordFor(conversationId: string) {
+    const runId = flowRuntime.runIdForConversation(conversationId as Parameters<typeof flowRuntime.runIdForConversation>[0]);
+    const workerId = runId ? flowRuntime.getRun(runId)?.workerId : undefined;
+    if (workerId) return workerEngine.get(workerId) ?? undefined;
+    return chatWorkerFor(conversationId);
+  }
+
+  // Workers' cloud access (workerCloud.ts): every worker process starts without
+  // the server's cloud identity, and a worker's run gets its own role from the
+  // broker. Claude on Bedrock thinks through the signing proxy instead
+  // (bedrockProxy.ts). OVERCLI_WORKER_CLOUD=host turns all of it off: workers
+  // then reach whatever the server can, as before.
+  function startWorkerCloud(): void {
+    if (process.env.OVERCLI_WORKER_CLOUD?.trim().toLowerCase() === 'host') {
+      log('warn', 'org.cloud', 'OVERCLI_WORKER_CLOUD=host: workers use the server\'s own cloud role. Unset it to give them roles of their own.');
+      return;
+    }
+    const region = process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || undefined;
+    let emptyConfig: string;
+    try {
+      emptyConfig = writeEmptyCloudConfig(path.join(host().dataDir(), 'worker-cloud'), region);
+    } catch (err) {
+      // Without it a profile on the box could still reach the server's role:
+      // refuse to start rather than run workers half fenced.
+      throw new Error(`Could not write the workers' cloud config: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const sdk = (() => {
+      let loaded: Promise<typeof import('../main/org/workerCloudSdk')> | null = null;
+      return () => (loaded ??= import('../main/org/workerCloudSdk'));
+    })();
+    let sts: ReturnType<Awaited<ReturnType<typeof sdk>>['stsCalls']> | null = null;
+    const stsCalls = () => (sts ??= sdk().then((m) => m.stsCalls(region)));
+    const broker = new WorkerCloudBroker({
+      workerFor: (id) => {
+        const w = workerRecordFor(id);
+        return w ? { name: w.name, ...(w.cloudRole ? { cloudRole: w.cloudRole } : {}) } : undefined;
+      },
+      env: () => process.env,
+      assume: async (arn, session) => (await stsCalls()).assume(arn, session),
+      identity: async () => (await stsCalls()).identity(),
+      log: (m) => log('info', 'org.cloud', m),
+    });
+    const onBedrock = /^(1|true|yes)$/i.test(process.env.CLAUDE_CODE_USE_BEDROCK?.trim() ?? '') && !process.env.AWS_BEARER_TOKEN_BEDROCK?.trim();
+    let proxy: BedrockProxy | null = null;
+    if (onBedrock) {
+      if (!region) throw new Error('CLAUDE_CODE_USE_BEDROCK is on but AWS_REGION is not set: workers could not reach the model.');
+      let signer: Promise<BedrockSigner> | null = null;
+      proxy = new BedrockProxy({
+        region,
+        signer: { sign: async (r) => (await (signer ??= sdk().then((m) => m.bedrockSigner(region)))).sign(r) },
+        log: (m) => log('warn', 'org.cloud', m),
+      });
+    }
+    addRunEnv((env) => ({ ...lockedCloudEnv(env, emptyConfig), ...(proxy?.env() ?? {}) }));
+    addConversationEnv((id) => broker.envFor(id));
+    // Saved tools run as the server through the relay: give them the
+    // worker's role too, except the server's own.
+    setRelayToolEnv((ctx, env, toolEnv) => relayToolCloudEnv(ctx.tool, env, toolEnv, { serverTools: [OVERDB_TOOL, TEST_SYSTEMS_TOOL], emptyConfig, worker: broker.envFor(ctx.conversationId) }));
+    void Promise.all([broker.start(), proxy?.start()]).then(
+      () => log('info', 'org.cloud', `workers get cloud roles of their own${proxy ? ', and Claude on Bedrock through the server' : ''}`),
+      (err) => log('error', 'org.cloud', `worker cloud access did not start: ${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+
   function workerFor(conversationId: string): string | undefined {
     const run = flowRuntime.workerForConversation(conversationId as Parameters<typeof flowRuntime.workerForConversation>[0]);
     if (run) return run.workerName;
-    return workerEngine.roster().find((w) => w.deskSession?.conversationId === conversationId || Object.values(w.threadSessions ?? {}).some((t) => t.conversationId === conversationId))?.name;
+    return chatWorkerFor(conversationId)?.name;
   }
 
   const scheduler = new SchedulerEngine({
@@ -571,13 +647,15 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // (credentialGuard.ts), and with the gateway on, a remote tool's token is
   // in no worker's config (toolGateway.ts). Neither stops a shell command.
   guardCredentials(host().dataDir());
+  startWorkerCloud();
   const toolFile = { read: () => readClaudeMcpServers(), write: (name: string, c: McpServerConfig) => writeMcpServer('claude', name, c) };
   let gateway: ToolGateway | null = null;
   // The org's Slack sender for the gateway's notify, set once the org is up.
   let notifyFromRun: NotifyPerson | null = null;
   let handOffFromRun: ((req: { conversationId: string; task: string; kind?: string }) => { ok: true; message: string } | { ok: false; error: string }) | null = null;
-  // Whose run the overdb tool is serving, for its query log (overdbBinding.ts).
-  useOverdbWorkerLookup((id) => flowRuntime.workerForConversation(id)?.workerName);
+  // Whose run the overdb tool is serving, for its query log (overdbBinding.ts):
+  // a flow run's worker, or the worker someone is chatting with directly.
+  useOverdbWorkerLookup(workerFor);
   // Where test-systems keeps a run's screenshots: with the run, not in its repo.
   useRunFilesLookup((id) => {
     const runId = flowRuntime.runIdForConversation(id);
@@ -587,7 +665,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   useFormerNamesLookup((id) => {
     const runId = flowRuntime.runIdForConversation(id);
     const workerId = runId ? flowRuntime.getRun(runId)?.workerId : undefined;
-    return (workerId ? workerEngine.get(workerId)?.formerNames : undefined) ?? [];
+    return (workerId ? workerEngine.get(workerId)?.formerNames : chatWorkerFor(id)?.formerNames) ?? [];
   });
   // Command tools' env is sealed, and their launches pinned, with the gateway
   // on, and always while workers run as a user of their own: they can read

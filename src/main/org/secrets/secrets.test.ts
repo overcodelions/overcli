@@ -87,6 +87,10 @@ describe('the secrets service', () => {
     const status = svc.status((n) => (n === 'BITBUCKET_TOKEN' ? ['pushing to site'] : []));
     expect(status.secrets.find((s) => s.name === 'OVERCLI_SLACK_BOT_TOKEN')?.state).toBe('environment');
     expect(status.secrets.find((s) => s.name === 'BITBUCKET_TOKEN')).toMatchObject({ state: 'missing', neededBy: ['pushing to site'] });
+    // Grouped by what they're for, the groups in page order.
+    const groups = status.secrets.map((s) => s.group);
+    expect(groups.filter((g, i) => g !== groups[i - 1])).toEqual(['model', 'git', 'slack', 'signin', 'google', 'cloud']);
+    expect(status.secrets.find((s) => s.name === 'GIT_USER')?.group).toBe('git');
     expect((await svc.set('OVERCLI_SLACK_BOT_TOKEN', 'x', 'Bo')).ok).toBe(false);
   });
 

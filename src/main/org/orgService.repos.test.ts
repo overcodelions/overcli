@@ -83,7 +83,7 @@ function harness(runs: FlowRun[] = []) {
     },
     secrets: {
       store: { kind: 'file', where: 'memory', readOnly: false },
-      status: (neededBy) => ({ error: null, secrets: [{ name: 'GH_TOKEN', why: 'Pushing.', state: 'missing' as const, neededBy: neededBy('GH_TOKEN') }] }),
+      status: (neededBy) => ({ error: null, secrets: [{ name: 'GH_TOKEN', why: 'Pushing.', state: 'missing' as const, group: 'git' as const, neededBy: neededBy('GH_TOKEN') }] }),
       set: async (name, value) => {
         set.push(`${name}=${value}`);
         return { ok: true };

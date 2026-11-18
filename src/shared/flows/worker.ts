@@ -258,6 +258,10 @@ export interface Worker {
   /// repos in place and can't change them. Absent: on when it has one of
   /// the server's pull-request flows (`isCodingWorker`).
   writesCode?: boolean;
+  /// The cloud role its runs get (org/workerCloud.ts): absent for the
+  /// default (OVERGO_AWSWORKER_ROLE), `none` for no cloud access, or a name
+  /// like QA for OVERGO_AWSWORKER_ROLE_QA. An admin's call.
+  cloudRole?: string;
   /// What it found out by going through its own tools for its job: its
   /// onboarding (`OrgService.learnWorker`), read before every run. Its
   /// manager can correct it; it refreshes weekly unless told not to.

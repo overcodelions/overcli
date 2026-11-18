@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bindRunTools, closeRunToolRelay, relayLaunch, releaseRunTools, runToolLaunch, runToolRelayEnv, setRelayCallGuard } from './runToolRelay';
+import { bindRunTools, closeRunToolRelay, relayLaunch, setRelayToolEnv, releaseRunTools, runToolLaunch, runToolRelayEnv, setRelayCallGuard } from './runToolRelay';
 import { SANDBOX_EXEC } from '../sandbox/seatbeltProfile';
 import { overdbToolsForRun, useOverdbWorkerLookup } from './overdbBinding';
 
@@ -100,6 +100,13 @@ describe('run tool relay', () => {
     expect(relayLaunch({ command: 'node' }, {}).cwd).toBeUndefined();
     // A HOME of the server's own, when workers could write the shared one.
     expect(relayLaunch({ command: 'npx' }, { cwd: '/data/tool-home', home: '/data/tool-home' }).env.HOME).toBe('/data/tool-home');
+    setRelayToolEnv((ctx, env, toolEnv) => ({ ...env, SEEN: `${ctx.conversationId}/${ctx.tool}/${toolEnv.KEY}` }));
+    try {
+      expect(relayLaunch({ command: 'npx', env: { KEY: 'k' } }, {}, { conversationId: 'c1', tool: 'acme' }).env.SEEN).toBe('c1/acme/k');
+      expect(relayLaunch({ command: 'npx', env: { KEY: 'k' } }, {}).env.SEEN).toBeUndefined();
+    } finally {
+      setRelayToolEnv(null);
+    }
     const first = bindRunTools({ acme: db }, 'one', { cwd: '/repo' });
     const token = runToolRelayEnv('one');
     expect(runToolLaunch('one')).toEqual({ cwd: '/repo' });

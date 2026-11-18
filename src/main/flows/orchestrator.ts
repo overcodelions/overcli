@@ -277,6 +277,10 @@ export class OrchestratorImpl {
   /// childRunId → orchestrationId, so `onRunUpdate` can route a terminal
   /// run back to its batch in O(1).
   private runToBatch = new Map<UUID, UUID>();
+  /// A worker's answer turn in progress: its conversation, and whose it is.
+  /// Its desk keeps the conversation only once the turn ends, but the tools
+  /// it calls meanwhile (overdb's query log) need to know who is asking.
+  private workerTurns = new Map<UUID, UUID>();
   private readonly unattended: boolean;
   /// When the worker crew went away, if it is away. Set by the worker engine
   /// once it exists — see `setCrewAwaySince`.
@@ -421,6 +425,8 @@ export class OrchestratorImpl {
     // chatty turn can't flood IPC.
     let lastEmit = 0;
     let lastToolCount = -1;
+    const conversationId = args.conversationId ?? (args.progressWorkerId ? (randomUUID() as UUID) : undefined);
+    if (conversationId && args.progressWorkerId) this.workerTurns.set(conversationId, args.progressWorkerId as UUID);
     const result = await this.runner.oneShot({
       backend,
       model,
@@ -441,7 +447,7 @@ export class OrchestratorImpl {
       // their approval didn't reach it, and offers to try again.
       refusal: `Refused by policy, not by a person: while working out an answer you may only read${ownDir ? `, and write files in your own files folder (${ownDir}) with the Write tool` : ''}. Shell commands that write, and writes anywhere else, are never allowed here, and no reply in this conversation can change that, so don't offer one. ${ownDir ? 'To send a file, write it there yourself and name its full path. ' : ''}Work that needs more goes in as a proposed run.`,
       ...(args.chrome ? { chrome: true } : {}),
-      conversationId: args.conversationId,
+      conversationId,
       resumeSessionId: args.resumeSessionId,
       // A producer that searches two issue trackers and diffs three repos is
       // doing dozens of MCP round-trips; a flat 5-minute wall clock killed
@@ -451,7 +457,11 @@ export class OrchestratorImpl {
       // a genuinely stalled one — or a runaway — gets cut.
       timeoutMs: 30 * 60_000,
       idleTimeoutMs: 5 * 60_000,
-      permissionMode: this.unattended ? 'acceptEdits' : 'bypassPermissions',
+      // Never bypassPermissions: `permit` only hears calls that ask, and a
+      // bypassed turn asks for nothing. A desktop shift planner that way sent
+      // the day's brief to Slack itself and proposed nothing. 'default' sends
+      // every call that isn't a plain read to `permit`.
+      permissionMode: this.unattended ? 'acceptEdits' : 'default',
       enabledTools,
       onProgress: (snap) => {
         const now = Date.now();
@@ -470,11 +480,18 @@ export class OrchestratorImpl {
           workerId: args.progressWorkerId,
         });
       },
+    }).finally(() => {
+      if (conversationId) this.workerTurns.delete(conversationId);
     });
     if (!result.ok) return { ok: false, error: result.error };
 
     const candidates = parseCandidates(result.text);
     return { ok: true, reply: result.text, candidates, sessionId: result.sessionId };
+  }
+
+  /// The worker whose answer turn is running in this conversation, if any.
+  workerForTurn(conversationId: string): UUID | undefined {
+    return this.workerTurns.get(conversationId as UUID);
   }
 
   // ---- DISPATCH ---------------------------------------------------------

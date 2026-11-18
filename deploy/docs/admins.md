@@ -252,6 +252,7 @@ Every secret the server uses, with why it's needed and how to get one. Values go
 
 - **The environment wins.** A secret set in the server's environment (`deploy/.env` or the task definition) shows as "set by the environment" and is changed there.
 - **Read-only mode:** with `OVERCLI_SECRETS_READONLY=1`, for secrets managed in Terraform, the page lists them and changes nothing. The server re-reads them every five minutes either way.
+- **Workers' AWS roles:** `OVERGO_AWSWORKER_ROLE` is the IAM role ARN workers use for AWS; until it's set, they have none. Add `OVERGO_AWSWORKER_ROLE_<NAME>` (`_QA`, `_DEVOPS`) for other roles, and pick one per worker on its **Access** tab under **Cloud role**. Only an admin changes a worker's role, and it applies on its next AWS call. Each role must trust the server's role, and the server's role must be allowed to assume it. See [Workers' AWS roles](../aws.md#workers-aws-roles).
 
 ## Setup → Toolchains
 

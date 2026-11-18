@@ -64,6 +64,7 @@ import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import { execFile, spawnSync } from 'node:child_process';
 import { ToolchainService, toolchainNote, type ToolchainState } from './toolchains';
 import { addRunEnv } from '../runEnv';
+import { cloudRoleChoices } from './workerCloud';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -336,6 +337,7 @@ export function createOrgService(
         const w = workerEngine.get(id);
         return !!w && workerEngine.writesCode(w);
       },
+      cloudRoles: () => cloudRoleChoices(process.env).map((c) => c.name),
       flowsOf: (id) => workerEngine.flowsOf(id),
       lookup: (id, args) => workerEngine.lookup(id, args),
       trial: (id, args) => workerEngine.trial(id, args),

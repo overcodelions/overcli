@@ -41,7 +41,7 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    AWS_REGION=us-east-1
    ```
    Bedrock names models differently: overcli sends `anthropic.<id>` unless you say otherwise. If the account calls models through an inference profile, set the pattern on **Setup → Model ids**, for example `us.anthropic.{id}`, using the ids the Bedrock console shows.
-   The CloudFormation template runs the container on the host network so the server can read Secrets Manager and Bedrock through the instance role. Accepted risk: code a worker runs inside the container can reach that role too, so keep the role to Bedrock invoke and the `overcli/<Org>/` secrets prefix only. Repo test commands do not run in this setup unless you set `OVERCLI_TEST_AS_SERVER=1` in `deploy/.env` (the template starts the container as `node`, which cannot switch user), so until then a repo with a test command pushes nothing; connect it without one, or decide that trade-off with the role kept that small. For the same reason workers run as the server here, not as a user of their own, and the server warns at every start that they can read its secrets. To turn that on, start the container as root and set `OVERCLI_WORKER_UID=1001`, as `deploy/docker-compose.yml` does (see [Security](docs/security.md#workers-as-a-user-of-their-own)).
+   The CloudFormation template runs the container on the host network so the server can read Secrets Manager and Bedrock through the instance role. Workers can't: they run as user 1001, the host's firewall rejects that user's packets to the metadata service, and their AWS access is a role of their own (see [Workers' AWS roles](#workers-aws-roles)). Claude on Bedrock thinks through the server, which signs its model calls with the instance role. If you run the container yourself, start it as root with `OVERCLI_WORKER_UID=1001`, as `deploy/docker-compose.yml` does, and add the same firewall rule on the host (see [Security](docs/security.md#workers-aws-access)).
 5. **Secrets.** Keep them in Secrets Manager, managed from the console. In `deploy/.env`, set `OVERCLI_SECRETS=aws:overcli/acme/`. Then add the git host tokens, Slack tokens and SSO client secret on **Setup → Secrets**. They're written to Secrets Manager under that prefix and used at once, with no restart. Give the instance role the [secrets policy](#secrets-policy) below. Never bake secrets into the image.
 6. **Image.** Build once and push to ECR. The instance pulls it.
    ```sh
@@ -115,11 +115,37 @@ The role overgo runs as (instance role or task role) needs this on its prefix. D
 
 With a customer-managed KMS key, add `kms:Decrypt` and `kms:GenerateDataKey` on it. overgo reads the secrets at start and every five minutes, so one rotated in Secrets Manager applies without a redeploy.
 
+## Workers' AWS roles
+
+Workers never use the instance or task role: that one reads the org's secrets. Each worker gets a role of its own, which the server assumes for its runs and hands out per run, with the worker's name as the session name in CloudTrail. See [Security](docs/security.md#workers-aws-access) for how.
+
+1. **Make a role** named `overgo-worker-<org>` (or `overgo-worker-<org>-<anything>`), read-only, trusting the server's role:
+
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [{ "Effect": "Allow", "Principal": { "AWS": "arn:aws:iam::<account>:role/<the server's role>" }, "Action": "sts:AssumeRole" }]
+    }
+    ```
+
+2. **Let the server's role assume it,** and only those:
+
+    ```json
+    { "Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "arn:aws:iam::<account>:role/overgo-worker-<org>*" }
+    ```
+
+3. **Set its ARN** on Setup → Secrets as `OVERGO_AWSWORKER_ROLE`. Every worker uses it.
+4. **For different access per worker,** make more roles and set each as `OVERGO_AWSWORKER_ROLE_<NAME>`, say `_QA` with `CloudWatchLogsReadOnlyAccess`, `_ENGINEERING` with CloudWatch and X-Ray read, and `_DEVOPS` with `ReadOnlyAccess`. An admin then picks the role on each worker's Access tab. **No AWS access** is one of the choices.
+
+Deny each worker role the org's secrets (`secretsmanager:*` on `overcli/<org>/*`) so a broad read-only policy can't reach them. The one-click stack makes the default role, with that deny, and with **Example read-only worker roles** set to yes, the QA, ENGINEERING and DEVOPS roles too, their ARNs already set.
+
+**Upgrading from a version before worker roles:** workers had the instance role; now they have nothing until `OVERGO_AWSWORKER_ROLE` is set. A saved tool whose settings name a profile (`AWS_PROFILE`) keeps using it.
+
 ## CloudWatch logs for workers
 
-Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using the role overgo already runs as. There is no key to paste and nothing to renew: the instance or task role's credentials rotate on their own, and the tool starts fresh for each run.
+Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using their own role (above). There is no key to paste and nothing to renew: the role's credentials are renewed for each run.
 
-1. **Give the role read access to the log groups workers may see.** Name them, or end a name with `*` for every group under a prefix (`/ecs/acme-*`). A bare `*` gives every group, which is rarely what you want.
+1. **Give the worker role read access to the log groups workers may see.** Name them, or end a name with `*` for every group under a prefix (`/ecs/acme-*`). A bare `*` gives every group, which is rarely what you want.
 
     ```json
     {
@@ -158,11 +184,11 @@ Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using the 
     - Environment: `AWS_REGION=<region>`
 
     The image includes `uv`. The first run downloads the server and its Python into the volume, so it takes a minute; later runs start at once.
-3. **Give it only to the workers that need it,** and leave its scope as the whole tool. The role is what keeps it read-only, and overgo's "Read only" scope judges calls by name, so it would refuse queries like `execute_log_insights_query`.
+3. **Give it only to the workers that need it,** and leave its scope as the whole tool. Don't set `AWS_PROFILE` in its environment: without one, it uses each worker's own role. The role is what keeps it read-only, and overgo's "Read only" scope judges calls by name, so it would refuse queries like `execute_log_insights_query`.
 
-**Treat it as confidential.** Logs often carry customer data, and a worker that's trusted to act and has a shell can use whatever the role can. Keep the role's log access to the groups above, and make the tool admin-only on Setup → Tools.
+**Treat it as confidential.** Logs often carry customer data, and a worker that's trusted to act and has a shell can use whatever its role can. Keep the role's log access to the groups above, or give log access only to a role like `_QA` and set only the workers that need it to that role.
 
-The one-click stack sets up step 1's policy for you: name the groups in **Log groups workers may read** (`deploy/aws/README.md`).
+The one-click stack sets up step 1's policy on its default worker role: name the groups in **Log groups workers may read** (`deploy/aws/README.md`).
 
 ### Inside a private VPC
 

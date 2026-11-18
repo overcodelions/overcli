@@ -202,13 +202,44 @@ function makeHarness(opts: {
   return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush, holds, releases, forks };
 }
 
+describe('worker answer turns', () => {
+  const args = { projectPath: '/proj', prompt: 'plan', flowId: 'f', runIn: 'cwd' as const, maxConcurrent: 1 };
+
+  it('names the worker of a turn while it runs, so tools it calls can say who asked', async () => {
+    const h = makeHarness();
+    let during: string | undefined;
+    const inner = (h.engine as any).runner.oneShot;
+    (h.engine as any).runner.oneShot = async (a: any) => {
+      during = h.engine.workerForTurn(a.conversationId);
+      return inner(a);
+    };
+    await h.engine.parkProposal({ ...args, origin: { kind: 'worker', workerId: 'w-1', workerName: 'Ada' } as any });
+    const conv = h.oneShotCalls[0].conversationId;
+    expect(conv).toBeTruthy();
+    expect(during).toBe('w-1');
+    expect(h.engine.workerForTurn(conv)).toBeUndefined();
+  });
+
+  it('keeps the desk conversation it was given', async () => {
+    const h = makeHarness();
+    await h.engine.parkProposal({ ...args, conversationId: 'desk-1' as any, origin: { kind: 'worker', workerId: 'w-1', workerName: 'Ada' } as any });
+    expect(h.oneShotCalls[0].conversationId).toBe('desk-1');
+  });
+
+  it('mints no conversation for a turn that is not a worker\'s', async () => {
+    const h = makeHarness();
+    await h.engine.parkProposal(args);
+    expect(h.oneShotCalls[0].conversationId).toBeUndefined();
+  });
+});
+
 describe('producer permissions', () => {
   const args = { projectPath: '/proj', prompt: 'plan', flowId: 'f', runIn: 'cwd' as const, maxConcurrent: 1 };
 
   it('uses the launch policy for producer calls', async () => {
     const interactive = makeHarness({ launchPolicy: { unattended: false } });
     await interactive.engine.parkProposal(args);
-    expect(interactive.oneShotCalls[0]).toMatchObject({ permissionMode: 'bypassPermissions', enabledTools: undefined });
+    expect(interactive.oneShotCalls[0]).toMatchObject({ permissionMode: 'default', enabledTools: undefined });
 
     const deny = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: [] } });
     await deny.engine.parkProposal(args);
@@ -217,6 +248,18 @@ describe('producer permissions', () => {
     const listed = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: ['Read'] } });
     await listed.engine.parkProposal(args);
     expect(listed.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: ['Read'] });
+  });
+
+  // A desktop planner with a live Slack connector posted the brief itself
+  // instead of proposing the run that posts it. Its turn must ask, and be told no.
+  it('keeps a desktop planning turn to reads: a send is refused, a lookup is not', async () => {
+    const h = makeHarness({ launchPolicy: { unattended: false } });
+    await h.engine.parkProposal(args);
+    const { permissionMode, permit } = h.oneShotCalls[0];
+    expect(permissionMode).not.toBe('bypassPermissions');
+    expect(permit('mcp__claude_ai_Slack__slack_send_message', JSON.stringify({ channel_id: 'U1', message: 'hi' }))).toBe(false);
+    expect(permit('mcp__claude_ai_Slack__slack_read_channel', JSON.stringify({ channel_id: 'C1' }))).toBe(true);
+    expect(permit('Bash', JSON.stringify({ command: 'cat > /proj/brief.html <<EOF\nx\nEOF' }))).toBe(false);
   });
 
   // Neither shipped caller omits the policy, so nothing but this test holds

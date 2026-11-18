@@ -63,23 +63,34 @@ function strings(value: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
+/// What a tool started for a run gets on top of its env (workerCloud.ts gives
+/// it the worker's cloud role). Throwing fails the tool's start.
+type RelayToolEnv = (ctx: { conversationId: string; tool: string }, env: Record<string, string>, toolEnv: Record<string, string>) => Record<string, string>;
+let relayToolEnv: RelayToolEnv | null = null;
+
+export function setRelayToolEnv(fn: RelayToolEnv | null): void {
+  relayToolEnv = fn;
+}
+
 /// The process a stdio tool becomes for this run: its command and args,
 /// wrapped in the run's jail when there is one, in the run's folder (or the
 /// tool's own `cwd`), with the server's secrets stripped from the
 /// environment and the tool's own env added back.
-export function relayLaunch(config: McpServerConfig, launch: RunLaunch): { command: string; args: string[]; cwd?: string; env: Record<string, string> } {
+export function relayLaunch(config: McpServerConfig, launch: RunLaunch, ctx?: { conversationId: string; tool: string }): { command: string; args: string[]; cwd?: string; env: Record<string, string> } {
   if (typeof config.command !== 'string') throw new Error('Tool has no transport');
   const args = Array.isArray(config.args) ? config.args.map(String) : [];
   const spawn = launch.sandboxProfile ? sandboxedCommand(config.command, args, launch.sandboxProfile) : { command: config.command, args };
   const env = Object.fromEntries(Object.entries(stripSecrets(process.env)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   const cwd = typeof config.cwd === 'string' ? config.cwd : launch.cwd;
-  return { ...spawn, ...(cwd ? { cwd } : {}), env: { ...env, ...(launch.home ? { HOME: launch.home } : {}), ...strings(config.env) } };
+  const toolEnv = strings(config.env);
+  const full = { ...env, ...(launch.home ? { HOME: launch.home } : {}), ...toolEnv };
+  return { ...spawn, ...(cwd ? { cwd } : {}), env: ctx && relayToolEnv ? relayToolEnv(ctx, full, toolEnv) : full };
 }
 
 /// The header that marks an org server's MCP (orgChatTools sets it), lower-cased.
 const ORG_CLIENT_HEADER = 'x-overcli-client';
 
-function transport(config: McpServerConfig, launch: RunLaunch): Transport {
+function transport(config: McpServerConfig, launch: RunLaunch, ctx: { conversationId: string; tool: string }): Transport {
   if (typeof config.url === 'string') {
     const headers = strings(config.headers);
     const url = new URL(config.url);
@@ -97,7 +108,7 @@ function transport(config: McpServerConfig, launch: RunLaunch): Transport {
     const org = Object.keys(headers).some((k) => k.toLowerCase() === ORG_CLIENT_HEADER);
     return new StreamableHTTPClientTransport(url, { requestInit: { headers, ...(org ? { redirect: 'error' as const } : {}) } });
   }
-  return new StdioClientTransport({ ...relayLaunch(config, launch), stderr: 'ignore', maxBufferSize: MAX_FRAME });
+  return new StdioClientTransport({ ...relayLaunch(config, launch, ctx), stderr: 'ignore', maxBufferSize: MAX_FRAME });
 }
 
 /// A reply too big to frame fails its own call, not the session: the model
@@ -220,7 +231,7 @@ function serve(socket: net.Socket): void {
             || !Object.hasOwn(candidate.tools, hello.tool)) throw new Error('Invalid session');
           run = candidate;
           run.sockets.add(socket);
-          upstream = transport(run.tools[hello.tool], run.launch);
+          upstream = transport(run.tools[hello.tool], run.launch, { conversationId: hello.conversationId as string, tool: hello.tool });
           upstream.onmessage = (reply: JSONRPCMessage) => {
             if (closed) return;
             if ('id' in reply && reply.id === initializeId && 'result' in reply) {

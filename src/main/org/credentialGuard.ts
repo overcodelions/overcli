@@ -3,7 +3,7 @@
 // A worker trusted to act runs in bypassPermissions, where nothing asks before
 // a Read. These go to Claude as `--disallowedTools` rules, which hold for its
 // file tools in every mode: the CLIs' config (tool addresses and keys), the
-// CLIs' own sign-ins, git and ssh credentials, other processes' environments,
+// CLIs' own sign-ins, git, ssh and cloud credentials, other processes' environments,
 // and the server's state (people's tokens, the audit log, the sealed secrets
 // and their keys), and every run's MCP config in the temp folder
 // (overcli-perm-*), which holds tool keys and the overdb tool's passwords.
@@ -37,6 +37,7 @@ export function credentialRules(dataDir: string): string[] {
     '~/.gemini/**',
     '~/.config/gh/**',
     '~/.git-credentials',
+    '~/.aws/**',
     '~/.ssh/**',
     '/proc/**',
     path.join(dataDir, 'org', '**'),
