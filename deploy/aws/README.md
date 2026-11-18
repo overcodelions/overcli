@@ -12,7 +12,7 @@ CloudFormation only launches a template from S3. Upload `overcli.yaml` to a buck
 
 ```sh
 aws cloudformation deploy --template-file deploy/aws/overcli.yaml --stack-name overcli \
-  --capabilities CAPABILITY_IAM \
+  --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides OrgName=acme VpcId=vpc-0acme PrivateSubnetId=subnet-0acmea SecondPrivateSubnetId=subnet-0acmeb
 ```
 
@@ -27,7 +27,7 @@ aws cloudformation deploy --template-file deploy/aws/overcli.yaml --stack-name o
 1. **Org name.** A short lowercase name, like `acme`. Secrets go under `overcli/acme/` in Secrets Manager.
 2. **Where it runs.** The VPC, the two private subnets, and who may reach the console (default `10.0.0.0/8`; narrow it to your VPN).
 3. **HTTPS (optional).** An ACM certificate and the name people will use (`overcli.acme.internal`). With them, the console is on HTTPS and port 80 redirects. Without, it's plain HTTP on 80, inside the VPC only. Point your DNS record at the `LoadBalancerDnsName` output.
-4. **CloudWatch for workers (optional).** The log groups workers may read, comma separated. End a name with `*` for every group under a prefix (`/acme/api,/ecs/acme-*`). This also lets them list alarms and read metrics. Choose **yes** for private endpoints to keep CloudWatch calls inside the VPC, unless the VPC already has `logs` and `monitoring` endpoints. See [CloudWatch logs for workers](../aws.md#cloudwatch-logs-for-workers).
+4. **Workers' AWS access (optional).** The log groups workers may read, comma separated. End a name with `*` for every group under a prefix (`/acme/api,/ecs/acme-*`). This also lets them list alarms and read metrics. Choose **yes** for private endpoints to keep CloudWatch calls inside the VPC, unless the VPC already has `logs` and `monitoring` endpoints. See [CloudWatch logs for workers](../aws.md#cloudwatch-logs-for-workers). **Example read-only worker roles** set to yes also makes QA, ENGINEERING and DEVOPS roles to set workers to; see [Workers' AWS roles](../aws.md#workers-aws-roles).
 5. **Advanced** (the defaults are fine): the image, the instance type (`t3.large`), the disk size (50 GiB), the Bedrock region (the stack's), and an AMI to pin.
 
 ## What it creates
@@ -37,7 +37,8 @@ aws cloudformation deploy --template-file deploy/aws/overcli.yaml --stack-name o
 | EC2 instance | Amazon Linux 2023, private subnet, no public IP, no SSH key. IMDSv2 only, one hop. You get in with Session Manager. |
 | Data volume | EBS gp3, encrypted, mounted at `/srv/overcli-data` and passed to the container as `/data`. It's only formatted when it's empty. |
 | Snapshots | A Data Lifecycle Manager policy: daily, keep 14. |
-| Instance role | Bedrock invoke, Secrets Manager under `overcli/<org>/*` ([the secrets policy](../aws.md#secrets-policy)), ECR pull, Session Manager, and writing one SSM parameter: the sign-in link. With log groups named, read-only CloudWatch Logs on those groups, plus listing alarms and reading metrics. |
+| Instance role | Bedrock invoke, Secrets Manager under `overcli/<org>/*` ([the secrets policy](../aws.md#secrets-policy)), ECR pull, Session Manager, writing one SSM parameter (the sign-in link), and assuming the worker roles. Workers can't reach it: the host's firewall keeps user 1001 from the metadata service. |
+| Worker roles | `overgo-worker-<org>`, every worker's role (`OVERGO_AWSWORKER_ROLE`). With log groups named, read-only CloudWatch Logs on those groups, plus listing alarms and reading metrics. With example roles on, `-qa`, `-engineering` and `-devops` as well. None may touch the org's secrets, the server's parameters or its stack. |
 | CloudWatch endpoints | Only with **yes**: interface endpoints for `logs` and `monitoring` in both subnets, open to the instance on 443. |
 | The server | A systemd unit runs one container on the host network, restarting it if it stops. It uses Bedrock, Secrets Manager and the same tool allow-list as `docker-compose.yml`. |
 | Load balancer | Internal ALB. The console is open to your CIDR; the instance takes 7420 from the ALB only. The health check is on `/healthz`. |

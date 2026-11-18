@@ -7154,6 +7154,32 @@ export const CONSOLE_JS = String.raw`
               };
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
             })()),
+          section('Cloud role', 'The AWS role its shell and its tools use: one set up on Setup → Secrets as OVERGO_AWSWORKER_ROLE (the default) or OVERGO_AWSWORKER_ROLE_<NAME>. Never the role this server runs with. CloudTrail names the worker on every call.',
+            (function () {
+              var roles = w.cloudRoles || [];
+              var current = w.cloudRole || 'default';
+              var hasDefault = roles.indexOf('default') >= 0;
+              var opts = [h('option', { value: '', text: hasDefault ? 'Default (OVERGO_AWSWORKER_ROLE)' : 'Default: none set, so no AWS access', selected: !w.cloudRole })];
+              roles.filter(function (r) { return r !== 'default'; }).forEach(function (r) {
+                opts.push(h('option', { value: r, text: r + ' (OVERGO_AWSWORKER_ROLE_' + r + ')', selected: current === r }));
+              });
+              if (w.cloudRole && w.cloudRole !== 'none' && roles.indexOf(w.cloudRole) < 0) {
+                opts.push(h('option', { value: w.cloudRole, text: w.cloudRole + ' (not set up: no AWS access)', selected: true }));
+              }
+              opts.push(h('option', { value: 'none', text: 'No AWS access', selected: current === 'none' }));
+              var sel = h('select', { 'aria-label': 'Cloud role', style: 'max-width:420px' }, opts);
+              var said = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+              var admin = !!(state.me && state.me.admin);
+              sel.disabled = !admin;
+              sel.onchange = function () {
+                sel.disabled = true;
+                api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { cloudRole: sel.value === '' ? null : sel.value } }).then(function (x) {
+                  sel.disabled = false; said.textContent = ''; said.appendChild(msg(x, 'Saved. Its next AWS call uses it.'));
+                  if (x.ok !== false) w.cloudRole = sel.value || undefined;
+                });
+              };
+              return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, admin ? said : h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Only an admin can change it.' }));
+            })()),
           trustCard,
           section('Handing work on', 'When something it finds is another worker’s job, it asks them to take it. The work runs on the colleague’s budget.', handOn),
           section('Work from others', 'When someone other than its manager asks. Set on General, with who may ask it.',
@@ -17953,10 +17979,17 @@ export const CONSOLE_JS = String.raw`
         data.error ? h('div', { class: 'msg err', text: 'Could not read them just now: ' + data.error }) : null,
         h('p', { class: 'faint', text: 'Changes apply at once, no restart. A secret set in the server’s environment (its task definition or deploy/.env) wins, and is changed there.' }));
       var when = function (s) { return s.updatedAt ? 'Set ' + new Date(s.updatedAt).toLocaleDateString() + (s.updatedBy ? ' by ' + s.updatedBy : '') : 'Set'; };
-      // What needs doing first, what's fine next, what doesn't matter last.
-      var rank = function (s) { return s.state === 'missing' && s.neededBy.length ? 0 : s.state === 'stored' || s.state === 'environment' ? 1 : s.state === 'missing' ? 2 : 3; };
-      var list = data.secrets.slice().sort(function (a, b) { return rank(a) - rank(b); });
-      var rows = list.map(function (s) {
+      // Grouped by what they're for, in the server's order; pairs that go
+      // together (a token and its user name) stay side by side.
+      var GROUPS = [
+        ['model', 'Model', 'Only the one for the model this server uses matters.'],
+        ['git', 'Git hosts', 'For pushing workers’ branches to the connected repos.'],
+        ['slack', 'Slack', 'Workers asking and answering in Slack.'],
+        ['signin', 'Sign-in', 'Company sign-in to this console.'],
+        ['google', 'Google Drive', 'Saving team tasks to people’s own Drive.'],
+        ['cloud', 'Workers’ AWS access', 'The roles workers use for AWS, never this server’s own. Pick one per worker on its Access tab.'],
+        ['tools', 'Tool credentials', 'Credentials you added for tools.']];
+      var rowFor = function (s) {
         var chip = s.state === 'environment' ? h('span', { class: 'tag go', text: 'Set by the environment' })
           : s.state === 'stored' ? h('span', { class: 'tag go', text: when(s) })
           : s.state === 'notNeeded' ? h('span', { class: 'tag', text: 'Not needed · using ' + using })
@@ -17976,6 +18009,19 @@ export const CONSOLE_JS = String.raw`
         return h('div', { class: 'srow' + (s.state === 'notNeeded' ? ' quiet' : '') },
           h('div', { class: 'srow-name' }, h('code', { text: s.name }), s.label ? h('span', { class: 'faint', text: s.label }) : null),
           chip, actions, editor);
+      };
+      var known = GROUPS.map(function (g) { return g[0]; });
+      var groupOf = function (s) { return known.indexOf(s.group) >= 0 ? s.group : 'tools'; };
+      var groups = GROUPS.map(function (g) {
+        var members = data.secrets.filter(function (s) { return groupOf(s) === g[0]; });
+        if (!members.length) return null;
+        // A group with something it needs unset says so in its heading.
+        var needs = members.some(function (s) { return s.state === 'missing' && s.neededBy.length; });
+        return h('section', { class: 'panel srows' },
+          h('div', { class: 'stack', style: 'gap:2px;padding:14px 16px 6px' },
+            h('div', { class: 'row', style: 'gap:8px' }, h('h2', { class: 'section-title', text: g[1] }), needs ? h('span', { class: 'tag need', text: 'Needs one' }) : null),
+            h('span', { class: 'faint', style: 'font-size:12.5px', text: g[2] })),
+          members.map(rowFor));
       });
       var custom = ro ? null : (function () {
         var name = h('input', { type: 'text', placeholder: 'JIRA_API_TOKEN', 'aria-label': 'Secret name', spellcheck: 'false' });
@@ -17987,7 +18033,7 @@ export const CONSOLE_JS = String.raw`
           h('p', { class: 'faint', text: 'Capitals, ending _TOKEN, _API_KEY, _KEY, _SECRET or _PASSWORD.' }),
           h('div', { class: 'inline-form' }, name, next), slot);
       })();
-      return [top, about, h('section', { class: 'panel srows' }, rows), custom];
+      return [top, about].concat(groups.filter(Boolean), [custom]);
     });
   }
 

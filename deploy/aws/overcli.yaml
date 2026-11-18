@@ -106,6 +106,17 @@ Parameters:
     AllowedPattern: '^[A-Za-z0-9_./#,*-]*$'
     ConstraintDescription: Log group names or prefixes ending in *, comma separated, no spaces.
 
+  ExampleWorkerRoles:
+    Type: String
+    Default: 'no'
+    AllowedValues: ['no', 'yes']
+    Description: >-
+      Optional. yes also makes three read-only roles workers can be set to on
+      their Access tab: QA (CloudWatch logs), ENGINEERING (CloudWatch, X-Ray)
+      and DEVOPS (ReadOnlyAccess). None of them can read the org's secrets.
+      Every worker gets the default worker role either way. See deploy/aws.md,
+      "Workers' AWS roles".
+
   CloudWatchEndpoints:
     Type: String
     Default: 'no'
@@ -124,8 +135,8 @@ Metadata:
         Parameters: [VpcId, PrivateSubnetId, SecondPrivateSubnetId, AllowedCidr]
       - Label: { default: HTTPS (optional) }
         Parameters: [CertificateArn, DomainName]
-      - Label: { default: CloudWatch for workers (optional) }
-        Parameters: [CloudWatchLogGroups, CloudWatchEndpoints]
+      - Label: { default: Workers' AWS access (optional) }
+        Parameters: [CloudWatchLogGroups, CloudWatchEndpoints, ExampleWorkerRoles]
       - Label: { default: Advanced }
         Parameters: [ImageUri, InstanceType, DiskSizeGiB, BedrockRegion, AmiId]
     ParameterLabels:
@@ -137,6 +148,7 @@ Metadata:
       DiskSizeGiB: { default: Data volume size (GiB) }
       CloudWatchLogGroups: { default: Log groups workers may read }
       CloudWatchEndpoints: { default: Private CloudWatch endpoints }
+      ExampleWorkerRoles: { default: Example read-only worker roles }
 
 Conditions:
   HasCert: !Not [!Equals [!Ref CertificateArn, '']]
@@ -145,6 +157,7 @@ Conditions:
   HasAmi: !Not [!Equals [!Ref AmiId, '']]
   HasLogGroups: !Not [!Equals [!Ref CloudWatchLogGroups, '']]
   WantsCloudWatchEndpoints: !Equals [!Ref CloudWatchEndpoints, 'yes']
+  WantsExampleWorkerRoles: !Equals [!Ref ExampleWorkerRoles, 'yes']
 
 Resources:
 
@@ -268,12 +281,90 @@ Resources:
                 Resource: !Sub
                   - arn:${AWS::Partition}:secretsmanager:${Region}:${AWS::AccountId}:secret:overcli/${OrgName}/*
                   - Region: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref AWS::Region]
-              # The CloudWatch tool: read the named log groups, list alarms and
-              # read metrics. Nothing that changes anything. Workers who are
-              # trusted to act can reach this role,
-              # so it names the groups rather than allowing every one.
-              - !If
-                - HasLogGroups
+              # Workers' own roles (below): the server assumes one for each
+              # worker's run and hands it the credentials. Only roles named
+              # for this org's workers, never this one: workers can't reach it.
+              - Sid: WorkerRoles
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/overgo-worker-${OrgName}*
+              # The one place the first admin's sign-in link is written.
+              - Sid: FirstAdminLink
+                Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/overcli/${AWS::StackName}/first-admin-link
+              # cfn-init reads this stack's setup; cfn-signal says it's done.
+              - Sid: ThisStack
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:SignalResource
+                Resource: !Ref AWS::StackId
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # ---- What workers may do -----------------------------------------------------
+  #
+  # Workers never use the instance role. The server assumes one of these for
+  # each worker's run (src/main/org/workerCloud.ts), with the worker's name as
+  # the session name, so CloudTrail says which worker made each call. The
+  # default one is OVERGO_AWSWORKER_ROLE; a worker set to QA on its Access tab
+  # gets OVERGO_AWSWORKER_ROLE_QA. Add your own: name it overgo-worker-<org>-…,
+  # trust the instance role, and set its ARN on Setup → Secrets.
+
+  # Never, from any worker role: the org's secrets, the first admin's link,
+  # and the server's own stack.
+  WorkerGuardrails:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub 'overcli ${OrgName}: what no worker role may do'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: NotTheOrgSecrets
+            Effect: Deny
+            Action: secretsmanager:*
+            Resource: !Sub arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:overcli/${OrgName}/*
+          - Sid: NotTheServersParameters
+            Effect: Deny
+            Action: ssm:*
+            Resource: !Sub arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/overcli/*
+          - Sid: NotTheServersStack
+            Effect: Deny
+            Action: cloudformation:*
+            Resource: !Ref AWS::StackId
+          - Sid: NoMoreRoles
+            Effect: Deny
+            Action:
+              - sts:AssumeRole
+              - iam:PassRole
+            Resource: '*'
+
+  # The default worker role. With CloudWatchLogGroups set: read those groups,
+  # list alarms and read metrics, nothing that changes anything. Without, it
+  # can do nothing yet: attach what your workers need.
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub overgo-worker-${OrgName}
+      Description: !Sub 'overcli ${OrgName}: the default role workers use for AWS (OVERGO_AWSWORKER_ROLE)'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !GetAtt InstanceRole.Arn }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [!Ref WorkerGuardrails]
+      Policies: !If
+        - HasLogGroups
+        - - PolicyName: cloudwatch-read
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
                 # Neither can be held to a log group. StopQuery only stops a
                 # query this role started on the groups below.
                 - Sid: CloudWatchLogsList
@@ -282,9 +373,6 @@ Resources:
                     - logs:DescribeLogGroups
                     - logs:StopQuery
                   Resource: '*'
-                - !Ref AWS::NoValue
-              - !If
-                - HasLogGroups
                 - Sid: CloudWatchLogsRead
                   Effect: Allow
                   Action:
@@ -305,9 +393,6 @@ Resources:
                       - - 'arn:aws:logs:*:*:log-group:'
                         - !Join [':*,arn:aws:logs:*:*:log-group:', !Split [',', !Ref CloudWatchLogGroups]]
                         - ':*'
-                - !Ref AWS::NoValue
-              - !If
-                - HasLogGroups
                 - Sid: CloudWatchAlarmsAndMetrics
                   Effect: Allow
                   Action:
@@ -316,30 +401,61 @@ Resources:
                     - cloudwatch:GetMetricData
                     - cloudwatch:ListMetrics
                   Resource: '*'
-                - !Ref AWS::NoValue
-              # The one place the first admin's sign-in link is written.
-              - Sid: FirstAdminLink
-                Effect: Allow
-                Action: ssm:PutParameter
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/overcli/${AWS::StackName}/first-admin-link
-              # cfn-init reads this stack's setup; cfn-signal says it's done.
-              - Sid: ThisStack
-                Effect: Allow
-                Action:
-                  - cloudformation:DescribeStackResource
-                  - cloudformation:SignalResource
-                Resource: !Ref AWS::StackId
+        - !Ref AWS::NoValue
 
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
+  # Examples, with ExampleWorkerRoles=yes: read-only, wider each step.
+  WorkerRoleQa:
+    Type: AWS::IAM::Role
+    Condition: WantsExampleWorkerRoles
     Properties:
-      Roles: [!Ref InstanceRole]
+      RoleName: !Sub overgo-worker-${OrgName}-qa
+      Description: !Sub 'overcli ${OrgName}: QA workers, logs only (OVERGO_AWSWORKER_ROLE_QA)'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - { Effect: Allow, Principal: { AWS: !GetAtt InstanceRole.Arn }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - !Ref WorkerGuardrails
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/CloudWatchLogsReadOnlyAccess
+
+  WorkerRoleEngineering:
+    Type: AWS::IAM::Role
+    Condition: WantsExampleWorkerRoles
+    Properties:
+      RoleName: !Sub overgo-worker-${OrgName}-engineering
+      Description: !Sub 'overcli ${OrgName}: engineering workers, logs, metrics and traces (OVERGO_AWSWORKER_ROLE_ENGINEERING)'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - { Effect: Allow, Principal: { AWS: !GetAtt InstanceRole.Arn }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - !Ref WorkerGuardrails
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/CloudWatchReadOnlyAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSXrayReadOnlyAccess
+
+  WorkerRoleDevops:
+    Type: AWS::IAM::Role
+    Condition: WantsExampleWorkerRoles
+    Properties:
+      RoleName: !Sub overgo-worker-${OrgName}-devops
+      Description: !Sub 'overcli ${OrgName}: DevOps workers, read-only across the account (OVERGO_AWSWORKER_ROLE_DEVOPS)'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - { Effect: Allow, Principal: { AWS: !GetAtt InstanceRole.Arn }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - !Ref WorkerGuardrails
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess
 
   # IMDSv2 only, one hop: a token is required, and it can't be fetched from a
-  # bridged container. The container runs on the host network, so it can: the
-  # server reads Secrets Manager and Bedrock through the instance role. That
-  # also means code a worker runs in the container can reach the role (an
-  # accepted risk; see deploy/aws.md).
+  # bridged container. The container runs on the host network, so the server
+  # can reach it: it reads Secrets Manager and Bedrock through the instance
+  # role. Workers run as user 1001, and the host's firewall rejects that user's
+  # packets to the metadata service (overcli-worker-fence below), so they
+  # can't. Their AWS access is their own role, above.
   InstanceLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -376,6 +492,8 @@ Resources:
               mode: '000600'
               owner: root
               group: root
+              # Workers run as user 1001 (the overcli-worker-fence unit below
+              # keys on that id), with the roles above as their AWS access.
               content: !Sub
                 - |
                   CLAUDE_CODE_USE_BEDROCK=1
@@ -384,7 +502,54 @@ Resources:
                   OVERCLI_CONTROL=0.0.0.0:7420
                   OVERCLI_TRUST_PROXY=1
                   OVERCLI_SLACK_ENABLED=1
+                  OVERCLI_WORKER_UID=1001
+                  OVERGO_AWSWORKER_ROLE=${WorkerRoleArn}
+                  ${QaLine}
+                  ${EngineeringLine}
+                  ${DevopsLine}
                 - Region: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref AWS::Region]
+                  WorkerRoleArn: !GetAtt WorkerRole.Arn
+                  QaLine: !If [WantsExampleWorkerRoles, !Sub 'OVERGO_AWSWORKER_ROLE_QA=${WorkerRoleQa.Arn}', '']
+                  EngineeringLine: !If [WantsExampleWorkerRoles, !Sub 'OVERGO_AWSWORKER_ROLE_ENGINEERING=${WorkerRoleEngineering.Arn}', '']
+                  DevopsLine: !If [WantsExampleWorkerRoles, !Sub 'OVERGO_AWSWORKER_ROLE_DEVOPS=${WorkerRoleDevops.Arn}', '']
+            # The fence: the worker user's packets to the instance metadata
+            # service are rejected at the host, so no worker can reach the
+            # instance role however it asks. overcli.service won't start
+            # without it.
+            /usr/local/bin/overcli-worker-fence:
+              mode: '000755'
+              owner: root
+              group: root
+              content: |
+                #!/bin/bash
+                set -euo pipefail
+                WORKER_UID=1001
+                command -v iptables >/dev/null || dnf install -y iptables-nft
+                fence() {
+                  local tool=$1 addr=$2
+                  "$tool" -C OUTPUT -d "$addr" -m owner --uid-owner "$WORKER_UID" -j REJECT 2>/dev/null \
+                    || "$tool" -I OUTPUT 1 -d "$addr" -m owner --uid-owner "$WORKER_UID" -j REJECT
+                }
+                fence iptables 169.254.169.254/32
+                if command -v ip6tables >/dev/null; then fence ip6tables fd00:ec2::254/128; fi
+                echo "overcli-worker-fence: user $WORKER_UID cannot reach the instance metadata service"
+            /etc/systemd/system/overcli-worker-fence.service:
+              mode: '000644'
+              owner: root
+              group: root
+              content: |
+                [Unit]
+                Description=Keep overcli's workers away from the instance role
+                Before=overcli.service
+                After=network-pre.target docker.service
+
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                ExecStart=/usr/local/bin/overcli-worker-fence
+
+                [Install]
+                WantedBy=multi-user.target
             # Pull the image, signing in to ECR first when it lives there.
             /usr/local/bin/overcli-pull:
               mode: '000755'
@@ -410,8 +575,8 @@ Resources:
               content: |
                 [Unit]
                 Description=overcli org server
-                Requires=docker.service
-                After=docker.service network-online.target
+                Requires=docker.service overcli-worker-fence.service
+                After=docker.service network-online.target overcli-worker-fence.service
                 Wants=network-online.target
                 RequiresMountsFor=/srv/overcli-data
 
@@ -420,7 +585,9 @@ Resources:
                 # A failed pull keeps the image already here.
                 ExecStartPre=-/usr/local/bin/overcli-pull
                 ExecStartPre=-/usr/bin/docker rm -f overcli
-                ExecStart=/usr/bin/docker run --rm --name overcli --network host \
+                # Started as root only so the entrypoint can run workers as
+                # user 1001; the server itself drops to node (entrypoint.sh).
+                ExecStart=/usr/bin/docker run --rm --name overcli --network host --user 0 \
                   --env-file /etc/overcli/overcli.env \
                   -v ${OVERCLI_DATA}:/data \
                   ${OVERCLI_IMAGE} \
@@ -450,7 +617,7 @@ Resources:
                 [overcli-update]
                 triggers=post.update
                 path=Resources.Instance.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Instance --configsets app --region ${AWS::Region} && systemctl daemon-reload && systemctl restart overcli
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Instance --configsets app --region ${AWS::Region} && systemctl daemon-reload && systemctl enable overcli-worker-fence && systemctl restart overcli-worker-fence overcli
                 runas=root
             /etc/systemd/system/cfn-hup.service:
               mode: '000644'
@@ -507,7 +674,7 @@ Resources:
             fail() { echo "overcli setup failed: $1"; signal 1 "$1"; exit 1; }
 
             # 1. Docker, and the CloudFormation helpers.
-            dnf install -y docker aws-cfn-bootstrap \
+            dnf install -y docker aws-cfn-bootstrap iptables-nft \
               || fail "could not install docker (does the subnet reach the internet through a NAT?)"
             systemctl enable --now docker || fail "docker did not start"
 
@@ -544,6 +711,7 @@ Resources:
               || fail "cfn-init failed"
             systemctl daemon-reload
             systemctl enable --now cfn-hup
+            systemctl enable --now overcli-worker-fence || fail "could not fence the workers off the instance role"
 
             # 4. The image, and the org's name and address, the first time only.
             . /etc/overcli/unit.env

@@ -246,6 +246,9 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.142",
     "@aws-sdk/client-secrets-manager": "^3.1152.0",
+    "@aws-sdk/client-sts": "^3.1152.0",
+    "@aws-sdk/credential-provider-node": "^3.972.86",
+    "@smithy/signature-v4": "^5.7.4",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "chokidar": "^4.0.3",
     "electron-updater": "^6.8.3",

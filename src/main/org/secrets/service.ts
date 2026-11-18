@@ -12,10 +12,18 @@
 // name must be one overcli knows, or look like a credential for a tool
 // (…_TOKEN, …_API_KEY), and never one of the prefixes those live under.
 
+import { isWorkerRoleSecret, WORKER_ROLE_SECRET } from '../workerCloud';
 import { SECRETS_KEY_ENV, type SecretMeta, type SecretStore } from './store';
+
+/// What a secret is for, so the Secrets page can show them together.
+export type SecretGroup = 'model' | 'git' | 'slack' | 'signin' | 'google' | 'cloud' | 'tools';
+
+/// The groups in the order the page shows them.
+export const SECRET_GROUPS: SecretGroup[] = ['model', 'git', 'slack', 'signin', 'google', 'cloud', 'tools'];
 
 export interface KnownSecret {
   name: string;
+  group: SecretGroup;
   label: string;
   /// What it unlocks, in a sentence.
   why: string;
@@ -27,72 +35,8 @@ export interface KnownSecret {
 
 export const KNOWN_SECRETS: KnownSecret[] = [
   {
-    name: 'GH_TOKEN',
-    label: 'GitHub token, for pushing to connected repos',
-    why: 'Lets workers push their branches to the github.com repos connected on the Repos tab.',
-    how: 'GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token. Give it access to only the connected repos, with Contents: read and write. Make it on a bot account rather than a person, so it outlives anyone leaving.',
-    link: 'https://github.com/settings/personal-access-tokens/new',
-  },
-  {
-    name: 'BITBUCKET_TOKEN',
-    label: 'Bitbucket access token, for pushing to connected repos',
-    why: 'Lets workers push their branches to the bitbucket.org repos connected on the Repos tab.',
-    how: 'In Bitbucket, open the repo (or the workspace, for several repos) → Settings → Access tokens → Create access token, with Repositories: read and write. An access token acts as its own bot user, so it needs no user name.',
-  },
-  {
-    name: 'BITBUCKET_USER',
-    label: 'Bitbucket user name, when the token needs one (default x-token-auth)',
-    why: 'Only for a Bitbucket token that signs in as a person, such as a personal API token. Access tokens need none.',
-    how: 'For a personal API token, the Atlassian account email it belongs to. Leave it unset for access tokens.',
-  },
-  {
-    name: 'GIT_TOKEN',
-    label: 'Token for another git host (Bitbucket Data Center, GitLab, …)',
-    why: 'Lets workers push to repos on a git host other than GitHub or bitbucket.org, over https.',
-    how: 'Bitbucket Data Center: your profile → HTTP access tokens, with repository write. GitLab: the project → Settings → Access tokens, with write_repository. Set GIT_USER to the user name the host expects with it.',
-  },
-  {
-    name: 'GIT_USER',
-    label: 'User name for that git host',
-    why: 'The user name that goes with GIT_TOKEN.',
-    how: 'GitLab: oauth2 (the default, so it can stay unset). Bitbucket Data Center: the user name of the token’s owner.',
-  },
-  {
-    name: 'OVERCLI_SLACK_BOT_TOKEN',
-    label: 'Slack bot token (xoxb-…)',
-    why: 'Workers ask their managers questions and approvals in Slack, and people ask workers for things with @overgo or a DM.',
-    how: 'Connect → Slack in this console makes the app: it opens Slack with the manifest filled in. Then OAuth & Permissions → Install to Workspace, and copy the Bot User OAuth Token. Add the app-level token too.',
-    link: 'https://api.slack.com/apps',
-  },
-  {
-    name: 'OVERCLI_SLACK_APP_TOKEN',
-    label: 'Slack app-level token (xapp-…)',
-    why: 'Socket Mode: Slack reaches this server over a connection the server opens, so no inbound port or public address is needed.',
-    how: 'In the same Slack app: Basic Information → App-Level Tokens → Generate Token and Scopes, with the connections:write scope.',
-    link: 'https://api.slack.com/apps',
-  },
-  {
-    name: 'OVERCLI_SSO_CLIENT_SECRET',
-    label: 'Company sign-in client secret',
-    why: 'Company sign-in (Okta, Entra ID, Google Workspace) with a confidential client. A public client using PKCE needs none.',
-    how: 'In your identity provider, the app registration made for overcli → its client secret. The issuer and client ID go on Setup → Sign-in.',
-  },
-  {
-    name: 'GOOGLE_OAUTH_CLIENT_ID',
-    label: 'Google sign-in client ID, for saving to people’s own Google Drive',
-    why: 'Lets each person connect their own Google account, so “Save to Google Drive” on a team task saves into their Drive, as them.',
-    how: 'Google Cloud console → APIs & Services → enable the Google Drive API → Credentials → Create credentials → OAuth client ID, type Web application. Add the redirect URI the console shows on Connections as an authorized redirect URI. Copy the client ID here and the client secret into GOOGLE_OAUTH_CLIENT_SECRET.',
-    link: 'https://console.cloud.google.com/apis/credentials',
-  },
-  {
-    name: 'GOOGLE_OAUTH_CLIENT_SECRET',
-    label: 'Google sign-in client secret',
-    why: 'Goes with GOOGLE_OAUTH_CLIENT_ID: the server uses it to keep each person’s Drive connection working.',
-    how: 'The same OAuth client in the Google Cloud console → its client secret.',
-    link: 'https://console.cloud.google.com/apis/credentials',
-  },
-  {
     name: 'ANTHROPIC_API_KEY',
+    group: 'model',
     label: 'Anthropic API key, when not using Bedrock or Vertex',
     why: 'Workers think with Claude through the Anthropic API.',
     how: 'console.anthropic.com → Settings → API keys → Create key, in a workspace with a spend limit you are comfortable with. Not needed when the server uses Bedrock or Vertex.',
@@ -100,21 +44,107 @@ export const KNOWN_SECRETS: KnownSecret[] = [
   },
   {
     name: 'AWS_BEARER_TOKEN_BEDROCK',
+    group: 'model',
     label: 'Bedrock API key, for a server using Bedrock without an AWS role (not on AWS, say)',
     why: 'Workers use Claude on Bedrock from a server that has no AWS role, such as one not running on AWS.',
     how: 'AWS console → Amazon Bedrock → API keys → Generate. The server also needs CLAUDE_CODE_USE_BEDROCK=1 and AWS_REGION in its environment. On AWS, give the instance or task role Bedrock access instead and skip this.',
   },
   {
     name: 'OPENAI_API_KEY',
+    group: 'model',
     label: 'OpenAI API key, for Codex',
     why: 'Workers that run on Codex instead of Claude.',
     how: 'platform.openai.com → API keys → Create new secret key. Only useful if the image was built with INSTALL_CODEX=1.',
     link: 'https://platform.openai.com/api-keys',
   },
+  {
+    name: 'GH_TOKEN',
+    group: 'git',
+    label: 'GitHub token, for pushing to connected repos',
+    why: 'Lets workers push their branches to the github.com repos connected on the Repos tab.',
+    how: 'GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token. Give it access to only the connected repos, with Contents: read and write. Make it on a bot account rather than a person, so it outlives anyone leaving.',
+    link: 'https://github.com/settings/personal-access-tokens/new',
+  },
+  {
+    name: 'BITBUCKET_TOKEN',
+    group: 'git',
+    label: 'Bitbucket access token, for pushing to connected repos',
+    why: 'Lets workers push their branches to the bitbucket.org repos connected on the Repos tab.',
+    how: 'In Bitbucket, open the repo (or the workspace, for several repos) → Settings → Access tokens → Create access token, with Repositories: read and write. An access token acts as its own bot user, so it needs no user name.',
+  },
+  {
+    name: 'BITBUCKET_USER',
+    group: 'git',
+    label: 'Bitbucket user name, when the token needs one (default x-token-auth)',
+    why: 'Only for a Bitbucket token that signs in as a person, such as a personal API token. Access tokens need none.',
+    how: 'For a personal API token, the Atlassian account email it belongs to. Leave it unset for access tokens.',
+  },
+  {
+    name: 'GIT_TOKEN',
+    group: 'git',
+    label: 'Token for another git host (Bitbucket Data Center, GitLab, …)',
+    why: 'Lets workers push to repos on a git host other than GitHub or bitbucket.org, over https.',
+    how: 'Bitbucket Data Center: your profile → HTTP access tokens, with repository write. GitLab: the project → Settings → Access tokens, with write_repository. Set GIT_USER to the user name the host expects with it.',
+  },
+  {
+    name: 'GIT_USER',
+    group: 'git',
+    label: 'User name for that git host',
+    why: 'The user name that goes with GIT_TOKEN.',
+    how: 'GitLab: oauth2 (the default, so it can stay unset). Bitbucket Data Center: the user name of the token’s owner.',
+  },
+  {
+    name: 'OVERCLI_SLACK_BOT_TOKEN',
+    group: 'slack',
+    label: 'Slack bot token (xoxb-…)',
+    why: 'Workers ask their managers questions and approvals in Slack, and people ask workers for things with @overgo or a DM.',
+    how: 'Connect → Slack in this console makes the app: it opens Slack with the manifest filled in. Then OAuth & Permissions → Install to Workspace, and copy the Bot User OAuth Token. Add the app-level token too.',
+    link: 'https://api.slack.com/apps',
+  },
+  {
+    name: 'OVERCLI_SLACK_APP_TOKEN',
+    group: 'slack',
+    label: 'Slack app-level token (xapp-…)',
+    why: 'Socket Mode: Slack reaches this server over a connection the server opens, so no inbound port or public address is needed.',
+    how: 'In the same Slack app: Basic Information → App-Level Tokens → Generate Token and Scopes, with the connections:write scope.',
+    link: 'https://api.slack.com/apps',
+  },
+  {
+    name: 'OVERCLI_SSO_CLIENT_SECRET',
+    group: 'signin',
+    label: 'Company sign-in client secret',
+    why: 'Company sign-in (Okta, Entra ID, Google Workspace) with a confidential client. A public client using PKCE needs none.',
+    how: 'In your identity provider, the app registration made for overcli → its client secret. The issuer and client ID go on Setup → Sign-in.',
+  },
+  {
+    name: 'GOOGLE_OAUTH_CLIENT_ID',
+    group: 'google',
+    label: 'Google sign-in client ID, for saving to people’s own Google Drive',
+    why: 'Lets each person connect their own Google account, so “Save to Google Drive” on a team task saves into their Drive, as them.',
+    how: 'Google Cloud console → APIs & Services → enable the Google Drive API → Credentials → Create credentials → OAuth client ID, type Web application. Add the redirect URI the console shows on Connections as an authorized redirect URI. Copy the client ID here and the client secret into GOOGLE_OAUTH_CLIENT_SECRET.',
+    link: 'https://console.cloud.google.com/apis/credentials',
+  },
+  {
+    name: 'GOOGLE_OAUTH_CLIENT_SECRET',
+    group: 'google',
+    label: 'Google sign-in client secret',
+    why: 'Goes with GOOGLE_OAUTH_CLIENT_ID: the server uses it to keep each person’s Drive connection working.',
+    how: 'The same OAuth client in the Google Cloud console → its client secret.',
+    link: 'https://console.cloud.google.com/apis/credentials',
+  },
+  {
+    name: WORKER_ROLE_SECRET,
+    group: 'cloud',
+    label: 'Cloud role for workers (an IAM role ARN)',
+    why: 'The role workers use for AWS: their shell and their tools get it, never the role this server is hosted with. Name more, like OVERGO_AWSWORKER_ROLE_QA, and set a worker to QA on its Access tab, to give different workers different read-only access.',
+    how: 'IAM → Roles → Create role, trusting this server\'s own role, with read-only access to what workers need (logs for QA, say, or ReadOnlyAccess for DevOps). Paste its ARN, arn:aws:iam::<account>:role/<name>. Unset: workers get no AWS access.',
+  },
 ];
 
 /// What a credential a person added is for.
 const CUSTOM_WHY = 'A credential for a tool. Tools and workers on this server read it from the environment by this name.';
+/// What an extra worker role is for.
+const ROLE_WHY = 'Another cloud role for workers: a worker set to this name on its Access tab uses it instead of OVERGO_AWSWORKER_ROLE.';
 
 const KNOWN = new Set(KNOWN_SECRETS.map((s) => s.name));
 /// Secrets overcli keeps for itself in the same store, never set in the
@@ -127,7 +157,7 @@ const MAX_VALUE = 16_000;
 
 /// Null when the name is fine; otherwise why not.
 export function checkSecretName(name: string): string | null {
-  if (KNOWN.has(name)) return null;
+  if (KNOWN.has(name) || isWorkerRoleSecret(name)) return null;
   if (!CREDENTIAL_SHAPE.test(name)) return 'Use one of the listed names, or a credential name like JIRA_API_TOKEN (capitals, ending _TOKEN, _API_KEY, _KEY, _SECRET or _PASSWORD).';
   if (RESERVED.test(name)) return 'That name is reserved: it could change how overcli, git or the model run. Use one of the listed names.';
   return null;
@@ -146,6 +176,7 @@ export interface SecretStatus {
   updatedBy?: string;
   /// What needs it, e.g. "pushing to app".
   neededBy: string[];
+  group: SecretGroup;
 }
 
 export interface ModelProvider {
@@ -270,7 +301,12 @@ export class SecretsService {
         const known = KNOWN_SECRETS.find((s) => s.name === name);
         return {
           name,
-          ...(known ? { label: known.label, why: known.why, how: known.how, ...(known.link ? { link: known.link } : {}) } : { why: CUSTOM_WHY }),
+          ...(known
+            ? { label: known.label, why: known.why, how: known.how, ...(known.link ? { link: known.link } : {}) }
+            : isWorkerRoleSecret(name)
+              ? { label: `Cloud role for workers set to ${name.slice(WORKER_ROLE_SECRET.length + 1)}`, why: ROLE_WHY }
+              : { why: CUSTOM_WHY }),
+          group: known?.group ?? (isWorkerRoleSecret(name) ? 'cloud' : 'tools'),
           state: this.pinned.has(name) ? 'environment' : this.applied.has(name) ? 'stored' : unused.has(name) ? 'notNeeded' : 'missing',
           ...(m?.updatedAt ? { updatedAt: m.updatedAt } : {}),
           ...(m?.updatedBy ? { updatedBy: m.updatedBy } : {}),

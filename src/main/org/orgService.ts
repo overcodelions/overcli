@@ -75,6 +75,7 @@ import type { DraftedHire, HireDraftResult } from './hireDraft';
 import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
 import { TOOL_NAME, parseTemplates } from './tools';
 import { OverdbOrg, type OverdbDeps } from './overdb';
+import { NO_CLOUD_ROLE, normalizeCloudRole } from './workerCloud';
 import { OverapiOrg, type OverapiDeps } from './overapi';
 import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTool } from './toolCatalog';
 import type { Discovery, SignInSummary } from './toolSignIn';
@@ -258,6 +259,11 @@ export interface WorkerSummary {
   alwaysAllow?: string[];
   /// Set by hand: whether it changes code. Absent: from its flows (`coding`).
   writesCode?: boolean;
+  /// Its cloud role (Worker.cloudRole): absent for the default, `none`, or a name.
+  cloudRole?: string;
+  /// The cloud roles set up on this server to pick from (workerCloud.ts):
+  /// `default` and the <NAME>s of OVERGO_AWSWORKER_ROLE_<NAME>.
+  cloudRoles?: string[];
   /// Who can ask it, picked; absent: `visibility` says.
   audience?: Audience;
   /// Slack channel IDs where it answers without being named.
@@ -856,6 +862,8 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
     /// Whether its work changes code, its flows' steps included
     /// (`WorkerEngine.writesCode`). Absent: judged from the worker alone.
     writesCode?(id: UUID): boolean;
+    /// The cloud roles set up on this server, by name (workerCloud.ts).
+    cloudRoles?(): string[];
     /// Its flows by name, its usual one first.
     flowsOf?(id: UUID): Array<{ id: string; name: string }>;
     /// One look-up run with the worker's tools, nothing to approve
@@ -1553,6 +1561,7 @@ export class OrgService {
       if (ws) return { kind: 'workspace', name: ws.name, repos: ws.repos };
       return { kind: 'folder', name: dir.split(/[\\/]/).filter(Boolean).pop() ?? dir };
     };
+    const cloudRoles = this.deps.workers.cloudRoles?.();
     return shown
       .map((w) => {
         const manager = managerFor(roster, w.id);
@@ -1620,6 +1629,8 @@ export class OrgService {
           ...(w.projectPath ? { place: placeOf(w.projectPath) } : {}),
           ...((this.deps.workers.writesCode?.(w.id) ?? isCodingWorker(w)) ? { coding: true } : {}),
           ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}),
+          ...(w.cloudRole ? { cloudRole: w.cloudRole } : {}),
+          ...(cloudRoles ? { cloudRoles } : {}),
           ...(w.audience ? { audience: w.audience } : {}),
           ...(w.slackHomeChannels?.length ? { slackHomeChannels: [...w.slackHomeChannels] } : {}),
         };
@@ -3857,6 +3868,8 @@ export class OrgService {
       alwaysAllow?: string[];
       /// Whether it changes code; null for "from its flows" again.
       writesCode?: boolean | null;
+      /// Its cloud role by name, `none`, or null for the default. An admin's call.
+      cloudRole?: string | null;
       /// Who can ask it, picked; null to go back to `visibility`.
       audience?: Audience | null;
       /// Slack channel IDs where it answers without being named; null for none.
@@ -3984,6 +3997,19 @@ export class OrgService {
     if (patch.writesCode !== undefined) {
       if (patch.writesCode === null) delete next.writesCode;
       else next.writesCode = patch.writesCode === true;
+    }
+    if (patch.cloudRole !== undefined) {
+      const role = normalizeCloudRole(patch.cloudRole);
+      if (!role.ok) return role;
+      if ((role.role ?? undefined) !== w.cloudRole) {
+        // What it can reach in the cloud: an admin says.
+        if (!admin) return { ok: false, error: 'Only an admin can change a worker\'s cloud role.' };
+        if (role.role && role.role !== NO_CLOUD_ROLE && !(this.deps.workers.cloudRoles?.() ?? []).includes(role.role)) {
+          return { ok: false, error: `No cloud role ${role.role} on this server. Set OVERGO_AWSWORKER_ROLE_${role.role} on Setup → Secrets first.` };
+        }
+        if (role.role) next.cloudRole = role.role;
+        else delete next.cloudRole;
+      }
     }
     if (patch.alwaysAllow !== undefined) {
       const list = [...new Set((Array.isArray(patch.alwaysAllow) ? patch.alwaysAllow : []).map(String))];

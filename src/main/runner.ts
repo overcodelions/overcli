@@ -127,7 +127,7 @@ import { isSafeIdSegment } from '../shared/flows/safeId';
 import { stripSecrets } from './org/secrets';
 import { activeWorkerUser, shareWithWorkers, workerLaunch } from './org/workerUser';
 import { withShellToolchain } from './services/shellEnv';
-import { runEnv } from './runEnv';
+import { conversationEnv, runEnv } from './runEnv';
 import { credentialDenyRules } from './org/credentialGuard';
 import { bindToolGateway, boundGatewayTools, builtinGatewayTools } from './org/toolGateway';
 import { overdbToolsForRun } from './org/overdbBinding';
@@ -2280,7 +2280,7 @@ export class RunnerManager {
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.
-      env: { ...stripSecrets(runEnv(withShellToolchain(process.env), args.cwd)), ...claudeArtifactEnv(this.artifactsFor('claude')), ...this.claudeBrokerEnvByConv.get(convId), ...runToolRelayEnv(convId) },
+      env: { ...stripSecrets(runEnv(withShellToolchain(process.env), args.cwd)), ...claudeArtifactEnv(this.artifactsFor('claude')), ...this.claudeBrokerEnvByConv.get(convId), ...runToolRelayEnv(convId), ...conversationEnv(convId) },
       // We don't ship the SDK's bundled binary; point it at the user's
       // installed `claude` (the same one the cli transport spawns).
       pathToClaudeCodeExecutable: claudeSdkExecutablePath(
@@ -4229,7 +4229,7 @@ export class RunnerManager {
 
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
-    const env = { ...this.buildEnv(binary, args.backend, args.cwd), ...(args.backend === 'claude' ? { ...this.claudeBrokerEnvByConv.get(args.conversationId), ...runToolRelayEnv(args.conversationId) } : {}) };
+    const env = { ...this.buildEnv(binary, args.backend, args.cwd), ...(args.backend === 'claude' ? { ...this.claudeBrokerEnvByConv.get(args.conversationId), ...runToolRelayEnv(args.conversationId) } : {}), ...conversationEnv(args.conversationId) };
     if (shouldSandboxSpawn(args)) {
       const scratch = sandboxScratchDir(args.conversationId);
       try {

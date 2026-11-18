@@ -67,6 +67,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
     workers: {
       roster: () => [...roster.values()],
       get: (id) => roster.get(id) ?? null,
+      cloudRoles: () => ['default', 'QA'],
       save: (w) => {
         roster.set(w.id, w);
         return { ok: true, worker: w };
@@ -687,6 +688,19 @@ describe('OrgService manage', () => {
     expect(svc.update(pat, 'mine', { writesCode: true })).toMatchObject({ ok: true, worker: { coding: true, writesCode: true } });
     expect(svc.update(pat, 'mine', { writesCode: null })).toMatchObject({ ok: true });
     expect((svc.getWorker(pat, 'mine') as { worker: { writesCode?: boolean } }).worker.writesCode).toBeUndefined();
+  });
+
+  it('lets only an admin change a worker\'s cloud role, and only to one set up', () => {
+    const robin: OrgCaller = { slackUserId: 'U0ADMIN', name: 'Robin', admin: true };
+    const { svc } = harness({ roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(svc.update(pat, 'mine', { cloudRole: 'QA' })).toMatchObject({ ok: false, error: expect.stringMatching(/admin/) });
+    expect(svc.update(robin, 'mine', { cloudRole: 'devops' })).toMatchObject({ ok: false, error: expect.stringMatching(/OVERGO_AWSWORKER_ROLE_DEVOPS/) });
+    expect(svc.update(robin, 'mine', { cloudRole: 'qa' })).toMatchObject({ ok: true, worker: { cloudRole: 'QA', cloudRoles: ['default', 'QA'] } });
+    // Saving the role it already has is no change, so its manager may.
+    expect(svc.update(pat, 'mine', { cloudRole: 'QA', writesCode: true })).toMatchObject({ ok: true });
+    expect(svc.update(robin, 'mine', { cloudRole: 'none' })).toMatchObject({ ok: true, worker: { cloudRole: 'none' } });
+    expect(svc.update(robin, 'mine', { cloudRole: null })).toMatchObject({ ok: true });
+    expect((svc.getWorker(pat, 'mine') as { worker: { cloudRole?: string } }).worker.cloudRole).toBeUndefined();
   });
 
   it('keeps steps its manager always allows, and takes them off again', () => {
