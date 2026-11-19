@@ -4,10 +4,24 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.3] - 2026-11-18
+
+### Upgrading
+- **Workers have no AWS access until you give them a role.** A worker's run no longer falls back to the role the server is hosted with. Set `OVERGO_AWSWORKER_ROLE`, or `OVERGO_AWSWORKER_ROLE_<NAME>` for a worker set to `<NAME>` on its Access tab; the EC2 stack sets the default. That includes repo tests and repo setup that call AWS. `OVERCLI_WORKER_CLOUD=host` restores the old behaviour, with a warning at every start. (#1201)
+- **Deploying the EC2 stack now needs `CAPABILITY_NAMED_IAM`.** The stack runs the container as root with workers as user 1001, like docker-compose, and installs `overcli-worker-fence`, which keeps user 1001 off the metadata service; overcli won't start without it. (#1201)
+- **Workers load only their own tools.** A flow step gets the worker's own MCP servers, the shared ones, its role's tools and any the step names, instead of every server installed. A worker that relied on a tool it was never given loses it. (#1208)
+
 ### Added
+- **Front door: "hand it to <name>".** After the desk answers, "hand it to Joe" or "pass it to the MLP team" sends the question, with the thread, to that worker. The desk never asks people to retype the question. (#1208)
+- **Front door says when a worker isn't shared with you,** names its manager and routes the question elsewhere. Repeat asks show up in Setup → Tuning as "Share <worker> with <people>". Private workers stay unnamed. (#1208)
+- **Setup → Secrets is grouped** by what each secret is for. (#1201)
 - **overdb can see which org it publishes to.** `~/.overcli/inbox/connections/.status.json` says whether this app is signed in to an org, which one and at what address, and why a database published from overdb is waiting. It never holds a token. It's rewritten on start, after each inbox scan and on every sign-in or sign-out, and only when it changes. (#1210)
 
 ### Fixed
+- **The inbox weekly trend counts every delivery,** not one 200-item Library page, and daylight-saving changes no longer shift its days. (#1208)
+- **Fields cleared on a worker stay cleared after saving** (audience, manager, reports to). With nobody picked under "who can ask", the worker's visibility setting applies. (#1208)
+- **Stack share no longer lists `${CHECKOUT}`, `${ROOT}`, `${REF}` and `${PORT}` as blanks to fill in.** (#1208)
+- **overdb's query log names the worker** for queries asked in its chat, Slack threads and colleague messages, not only flow runs. (#1201)
 - **A database from overdb that has to wait now says so,** with one notification per database and what to do about it, instead of a line in the log. The sign-in message names Settings → Your orgs, as Settings does. (#1209)
 
 ## [0.26.2] - 2026-11-17
@@ -1450,7 +1464,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.2...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.3...HEAD
+[0.26.3]: https://github.com/overcodelions/overcli/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/overcodelions/overcli/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/overcodelions/overcli/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/overcodelions/overcli/compare/v0.25.0...v0.26.0
