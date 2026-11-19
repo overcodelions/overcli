@@ -28,7 +28,8 @@ import { makeNotifyPerson, type NotifyPerson } from './notifyPerson';
 import { talkNotInPack } from '../../shared/flows/team';
 import type { AboutCard } from './aboutCards';
 import { isMissingScope, listPeople, unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
-import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
+import { FrontDoor, namedWorker, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
+import { isEmptyAudience } from '../../shared/org/policy';
 import { answerGeneral, routeRequest } from './frontDoorRoute';
 import { freshEnough, libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
 import { answerFromWork, type AnswerSource } from './existingAnswer';
@@ -180,6 +181,8 @@ export function createOrgControl(
   const org = createOrgService({
     ...engines,
     connections,
+    // Read when Setup → Tuning opens, long after the door below is made.
+    missedAsks: () => frontDoor.missedAsks(),
     toolSignIn,
     triggers: () => triggers,
     health: () => {
@@ -710,6 +713,17 @@ export function createOrgControl(
   };
   const frontDoor = new FrontDoor({
     gatherMs: QUIET_MS,
+    // A worker shared with someone, not this person: named so the door can
+    // say so. A private one stays unnamed, as if it weren't there.
+    unseen: (caller, text) => {
+      const visible = new Set(org.listWorkers(caller).map((w) => w.id));
+      const others = engines.workerEngine
+        .roster()
+        .filter((w) => w.enabled && !visible.has(w.id) && ((w.audience && !isEmptyAudience(w.audience)) || (w.visibility ?? 'private') !== 'private'));
+      const hit = namedWorker(text, others.map((w) => ({ id: w.id, name: w.name })));
+      const w = hit && others.find((x) => x.id === hit.worker.id);
+      return w ? { id: w.id, name: w.name, ...(w.manager?.name ? { manager: w.manager.name } : {}) } : null;
+    },
     // Only those the person may start: the router never offers one they can't.
     processes: (caller) =>
       processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.shortName ? { shortName: p.shortName, ...(p.shortNameAuto ? { shortNameAuto: true } : {}) } : {}), ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),

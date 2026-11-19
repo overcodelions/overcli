@@ -478,6 +478,11 @@ export function inAudience(policy: OrgPolicy, caller: OrgCaller, a: Audience): b
   return false;
 }
 
+/// Nobody picked: no people, groups or roles.
+export function isEmptyAudience(a: Audience): boolean {
+  return !a.people?.length && !a.groups?.length && !a.roles?.length;
+}
+
 /// An audience from a request, or an error saying what's wrong with it.
 export function parseAudience(raw: unknown): { ok: true; audience: Audience } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'Pick who can use it.' };
@@ -498,8 +503,10 @@ export function canSee(policy: OrgPolicy, roster: readonly RosterWorker[], worke
   if (canManage(policy, roster, workerId, caller)) return true;
   const worker = roster.find((w) => w.id === workerId);
   if (!worker) return false;
-  // Picked people, groups or roles, when set, say it all.
-  if (worker.audience) return inAudience(policy, caller, worker.audience);
+  // Picked people, groups or roles, when set, say it all. An empty pick is
+  // no pick: it would shut out everyone but managers and admins, which no
+  // setting means (the settings form refuses one), so the visibility stands.
+  if (worker.audience && !isEmptyAudience(worker.audience)) return inAudience(policy, caller, worker.audience);
   const visibility: WorkerVisibility = worker.visibility ?? 'private';
   if (visibility === 'org') return true;
   if (visibility === 'team') {

@@ -117,7 +117,7 @@ function formOf(d: SettingsDetail): Form {
     job: d.jobDescription,
     manager: w.managerSlackUserId ?? '',
     reportsTo: w.reportsTo?.id ?? '',
-    ask: w.audience ? 'picked' : w.visibility,
+    ask: w.audience && !emptyAudience(w.audience) ? 'picked' : w.visibility,
     audience: w.audience ?? {},
     start: w.anyoneMayStart ? 'anyone' : w.startAudience ? 'picked' : 'manager',
     startAudience: w.startAudience ?? {},

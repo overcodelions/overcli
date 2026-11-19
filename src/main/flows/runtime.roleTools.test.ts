@@ -27,14 +27,14 @@ function flow(): Flow {
 }
 
 function harness(run: Partial<FlowRun>) {
-  const sends: Array<{ permissionMode?: string; enabledTools?: string[]; mcpDeniedTools?: string[] }> = [];
+  const sends: Array<{ permissionMode?: string; enabledTools?: string[]; mcpAllowlist?: string[]; mcpDeniedTools?: string[] }> = [];
   const answers: Array<[string, boolean]> = [];
   const notes: string[] = [];
   const runner = {
     prewarm: () => {},
     dropIfPrewarmed: () => {},
-    send: (args: { permissionMode?: string; enabledTools?: string[]; mcpDeniedTools?: string[] }) => {
-      sends.push({ permissionMode: args.permissionMode, enabledTools: args.enabledTools, mcpDeniedTools: args.mcpDeniedTools });
+    send: (args: { permissionMode?: string; enabledTools?: string[]; mcpAllowlist?: string[]; mcpDeniedTools?: string[] }) => {
+      sends.push({ permissionMode: args.permissionMode, enabledTools: args.enabledTools, mcpAllowlist: args.mcpAllowlist, mcpDeniedTools: args.mcpDeniedTools });
       return { ok: true as const };
     },
     respondPermission: (_c: string, requestId: string, approved: boolean, ...rest: unknown[]) => { answers.push([requestId, approved]); notes.push(String(rest[3] ?? '')); },
@@ -102,6 +102,33 @@ describe('a worker’s role tools on its runs', () => {
     expect(h.notes[0]).toContain('doesn\'t have the test-systems tool');
     expect(h.notes[0]).toContain('Editing a flow isn\'t needed');
     expect(h.notes[1]).toContain('not among the tools this work was given');
+  });
+});
+
+describe('a tool installed on the server that the worker was never given', () => {
+  it('is not loaded on its runs, and a read of it is refused, not approved as a look', async () => {
+    const h = harness({ ...paused, roleTools: ['test-systems'] });
+    h.rt.setWorkerTools((id) => (id === 'robin' ? ['acme-tracker', 'playwright'] : undefined));
+    h.rt.resumeRun({ runId: RUN_ID });
+    await flush();
+    // Its own, its role's and the step's named server: never the rest.
+    expect(h.sends[0]?.mcpAllowlist?.sort()).toEqual(['acme-tracker', 'atlassian', 'playwright', 'test-systems']);
+    h.ask('r-logs', 'mcp__cloudwatch__describe_log_groups');
+    h.ask('r-own', 'mcp__acme-tracker__feature_list');
+    h.ask('r-role', 'mcp__test-systems__list_systems');
+    h.ask('r-server', 'mcp__overgo__list_runs');
+    expect(h.answers).toEqual([['r-logs', false], ['r-own', true], ['r-role', true], ['r-server', true]]);
+    expect(h.notes[0]).toContain('doesn\'t have the cloudwatch tool');
+  });
+
+  it('changes nothing for a worker whose record never named its servers', async () => {
+    const h = harness({ ...paused });
+    h.rt.setWorkerTools(() => undefined);
+    h.rt.resumeRun({ runId: RUN_ID });
+    await flush();
+    expect(h.sends[0]?.mcpAllowlist).toBeUndefined();
+    h.ask('r-logs', 'mcp__cloudwatch__describe_log_groups');
+    expect(h.answers).toEqual([['r-logs', true]]);
   });
 });
 

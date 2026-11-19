@@ -77,6 +77,9 @@ export interface OrgEngines {
   teams?: () => TeamEngine | null;
   /// Extra health lines from the host (the Slack bridge, chiefly).
   health?: () => HealthItem[];
+  /// Asks the Slack front door sent elsewhere: the worker named isn't
+  /// shared with the asker (Setup → Tuning).
+  missedAsks?: OrgServiceDeps['missedAsks'];
   /// The server's version and any newer release. `overcli serve` only.
   version?: () => ServerVersion;
   /// A getter: triggers are built after the plane they act through.
@@ -700,6 +703,7 @@ export function createOrgService(
     },
     handbook: fileHandbook,
     ...(engines.version ? { version: engines.version } : {}),
+    ...(engines.missedAsks ? { missedAsks: engines.missedAsks } : {}),
     health: (() => {
       const models = backendProbe();
       // "Run checkouts" describes the sweep, so only where it runs.

@@ -48,7 +48,7 @@ import {
   otherPeopleLimit,
   type OrgCaller,
   type OrgPolicy,
-  type OrgRole, inAudience, type Audience } from '../../shared/org/policy';
+  type OrgRole, inAudience, isEmptyAudience, type Audience } from '../../shared/org/policy';
 import { buildThreads, nowLine, summarize, type WorkThread } from './workThreads';
 import { LANDED_ARTIFACT, pullRequestsIn, pullRequestsOpened, type LandedPullRequest } from './landBranches';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
@@ -527,6 +527,10 @@ export interface WorkingItem {
   teamName?: string;
   costUSD?: number;
 }
+
+/// The most Library items a `since` read returns: a week of a busy org,
+/// with headroom, while still bounding a runaway.
+const LIBRARY_SINCE_CAP = 5000;
 
 export interface TodayView {
   org: string;
@@ -1167,6 +1171,9 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   version?(): ServerVersion;
   /// Everyone holding access, from the token list.
   people?(): Array<{ id?: string; name: string; slackUserId?: string; admin: boolean; device?: string; lastUsedAt?: number }>;
+  /// Each time someone asked the Slack front door for a worker by name that
+  /// isn't shared with them (frontDoor.ts): what Setup → Tuning offers to share.
+  missedAsks?(): Array<{ workerId: string; user: string; by: string; at: number }>;
   /// Tell the approvers a hire is waiting on them (a Slack DM, usually).
   onHireAwaitingApproval?(hire: PendingHire, approvers: string[]): void;
   /// Ask the admins to set up tools a hire wants (a Slack DM, usually).
@@ -3451,7 +3458,9 @@ export class OrgService {
   library(
     caller: OrgCaller,
     /// `documents`: each file teams delivered as an item of its own too.
-    opts: { workerId?: string; query?: string; limit?: number; kind?: LibraryKind; visibility?: WorkerVisibility; documents?: boolean } = {},
+    /// `since`: only items at or after it, and then not cut to the usual
+    /// page, so a busy day's count is the day's, not the page's.
+    opts: { workerId?: string; query?: string; limit?: number; kind?: LibraryKind; visibility?: WorkerVisibility; documents?: boolean; since?: number } = {},
   ): LibraryItem[] {
     const roster = this.deps.workers.roster();
     const policy = this.policy();
@@ -3745,10 +3754,17 @@ export class OrgService {
       .filter((x) => !opts.workerId || x.workerId === opts.workerId)
       .filter((x) => !opts.kind || x.kind === opts.kind)
       .filter((x) => !opts.visibility || x.visibility === opts.visibility)
+      .filter((x) => opts.since == null || x.at >= opts.since)
       .map(withOutcome)
       .filter((x) => words.every((w) => `${x.title} ${x.outcome ?? ''} ${x.workerName} ${x.body ?? ''}`.toLowerCase().includes(w)))
       .sort((a, b) => b.at - a.at)
-      .slice(0, Math.min(500, opts.limit ?? 200));
+      .slice(0, opts.since != null ? Math.min(LIBRARY_SINCE_CAP, opts.limit ?? LIBRARY_SINCE_CAP) : Math.min(500, opts.limit ?? 200));
+  }
+
+  /// When each delivered Library item landed, since a time: the Inbox's
+  /// per-day trend, without shipping every item's body to count them.
+  deliveredTimes(caller: OrgCaller, since: number): number[] {
+    return this.library(caller, { since }).filter((x) => x.status === 'delivered').map((x) => x.at);
   }
 
   /// One Library item in full. The list carries a preview (a run's report is
@@ -3991,7 +4007,8 @@ export class OrgService {
       next.caps = caps;
     }
     if (patch.audience !== undefined) {
-      if (patch.audience === null) delete next.audience;
+      // Nobody picked is no pick: the visibility says who can ask.
+      if (patch.audience === null || isEmptyAudience(patch.audience)) delete next.audience;
       else next.audience = patch.audience;
     }
     if (patch.writesCode !== undefined) {
@@ -4155,7 +4172,11 @@ export class OrgService {
     const invalid = validateOrgFields(next);
     if (invalid) return { ok: false, error: invalid };
     this.withTicketFlow(next);
-    const saved = this.deps.workers.save(next);
+    // save() spreads onto what's stored, so a field cleared above (audience,
+    // manager, reportsTo, …: "null clears") goes as undefined, or the stored
+    // value comes straight back.
+    const cleared = Object.fromEntries(Object.keys(w).filter((k) => !(k in next)).map((k) => [k, undefined]));
+    const saved = this.deps.workers.save({ ...cleared, ...next } as Worker);
     if (!saved.ok) return saved;
     this.version(caller, w, next);
     if (renamedFrom) this.record(caller, `Renamed ${renamedFrom} to ${next.name}. Asking for ${renamedFrom} still finds it.`);
@@ -9830,6 +9851,8 @@ export class OrgService {
       })),
       cleared: policy.allowedMcpServers ?? [],
       ...(this.deps.tools ? { installed: this.deps.tools.list([]).tools.map((t) => t.name) } : {}),
+      // Only asks still missed: once the worker is shared with them, gone.
+      missed: (this.deps.missedAsks?.() ?? []).filter((m) => !canSee(policy, roster, m.workerId, { name: m.by, slackUserId: m.user, admin: false })),
     });
     return { ok: true, suggestions, days: ORG_TUNING_DAYS, runsRead: runs.length };
   }
@@ -9843,6 +9866,23 @@ export class OrgService {
     const s = found.suggestions.find((x) => x.id === id);
     if (!s) return { ok: false, error: 'That’s already sorted, or no longer applies. Refresh to see what’s left.' };
     const a = s.action;
+    if (a.kind === 'shareWorker') {
+      const w = this.deps.workers.get(a.workerId);
+      if (!w) return { ok: false, error: 'That worker is gone.' };
+      // Added to whoever it's already open to: picked people keep theirs, a
+      // team worker stays open to its manager's teams.
+      const picked = w.audience && !isEmptyAudience(w.audience) ? w.audience : null;
+      const roster = this.deps.workers.roster();
+      const boss = managerFor(roster, w.id)?.slackUserId;
+      const teams = (w.visibility ?? 'private') === 'team' && boss ? Object.entries(this.policy().teams).filter(([, m]) => m.includes(boss)).map(([n]) => `team:${n}`) : [];
+      const audience: Audience = picked
+        ? { ...picked, people: [...new Set([...(picked.people ?? []), ...a.people])] }
+        : { people: a.people, ...(teams.length ? { groups: teams } : {}) };
+      const res = this.update(caller, w.id, { audience });
+      if (!res.ok) return { ok: false, error: `${w.name}: ${res.error}` };
+      this.record(caller, `Tuning: ${s.title}.`);
+      return { ok: true, done: s.title };
+    }
     if (a.kind === 'clearTool') {
       return { ok: true, done: s.title, rule: { allowedMcpServers: [...new Set([...(this.policy().allowedMcpServers ?? []), a.tool])] } };
     }

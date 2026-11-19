@@ -28,6 +28,10 @@ export interface SharePlace {
 
 /// Names that are filled in by overcli itself, never asked for.
 const BUILT_IN = new Set(['SERVICE_CONFIG_DIR', 'HOME']);
+/// The launch placeholders `projection.substitute` fills in a command and in
+/// injected variables. Only there: options resolve against machine values, so
+/// a `${CHECKOUT}` in an option is a real blank and stays on the list.
+const LAUNCH_PLACEHOLDERS = new Set(['CHECKOUT', 'ROOT', 'REF', 'PORT']);
 
 const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 /// A value that is already a reference, or holds one: `${DB_PASSWORD}`,
@@ -120,13 +124,16 @@ export function buildSharedStack(args: {
   // One name per secret value: the same password in six options is one blank
   // to fill, not six.
   const referenced = new Set<string>();
-  const noteRefs = (text: string | undefined) => {
-    for (const m of (text ?? '').matchAll(REFERENCE)) if (!BUILT_IN.has(m[1])) referenced.add(m[1]);
+  const noteRefs = (text: string | undefined, filledAtLaunch = false) => {
+    for (const m of (text ?? '').matchAll(REFERENCE)) {
+      if (BUILT_IN.has(m[1]) || (filledAtLaunch && LAUNCH_PLACEHOLDERS.has(m[1]))) continue;
+      referenced.add(m[1]);
+    }
   };
   for (const spec of chosen) {
     for (const o of spec.options ?? []) noteRefs(o.value);
-    for (const v of Object.values(spec.config.inject ?? {})) noteRefs(v);
-    for (const a of spec.command) noteRefs(a);
+    for (const v of Object.values(spec.config.inject ?? {})) noteRefs(v, true);
+    for (const a of spec.command) noteRefs(a, true);
   }
   const used = new Set(referenced);
   const scrubbedBy = new Map<string, string>();

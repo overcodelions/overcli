@@ -64,6 +64,16 @@ describe('permissions', () => {
     expect(canSee(p, roster, 'secret', sam)).toBe(true);
   });
 
+  it('reads an empty picked audience as no pick, so the visibility stands', () => {
+    const r = [
+      w('open', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org', audience: {} }),
+      w('picked', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org', audience: { people: [LEE] } }),
+    ] as never[];
+    expect(canSee(p, r, 'open', pat)).toBe(true);
+    expect(canSee(p, r, 'picked', lee)).toBe(true);
+    expect(canSee(p, r, 'picked', pat)).toBe(false);
+  });
+
   it('lets an admin do anything', () => {
     const admin = { name: 'ops', admin: true };
     expect(canManage(p, roster, 'secret', admin)).toBe(true);

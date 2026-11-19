@@ -215,6 +215,21 @@ describe('a worker changed by saying so once: its job, how it works, or both', (
   });
 });
 
+describe('clearing a worker setting', () => {
+  it('stays cleared when the store merges an edit onto what it has, as the worker engine does', () => {
+    const h = harness([worker('triage', { visibility: 'org', audience: {}, reportsTo: 'boss' })], [fix]);
+    const store = (h.svc as unknown as { deps: { workers: { save: (w: Worker) => unknown } } }).deps.workers;
+    store.save = (w: Worker) => {
+      const merged = { ...h.workers.get(w.id)!, ...w };
+      h.workers.set(w.id, merged);
+      return { ok: true, worker: merged };
+    };
+    expect(h.svc.update(admin, 'triage', { visibility: 'org', audience: null, reportsTo: null })).toMatchObject({ ok: true });
+    expect(h.workers.get('triage')!.audience).toBeUndefined();
+    expect(h.workers.get('triage')!.reportsTo).toBeUndefined();
+  });
+});
+
 describe('org tuning, applied', () => {
   const refusedRun = (workerId: string) =>
     ({ id: `r-${workerId}`, workerId, flowId: 'fix', createdAt: 0, attempts: [], refusedTools: ['mcp__test-systems__open_system'], flowSnapshot: fix, state: { kind: 'done', success: true } }) as unknown as Flow;
@@ -231,5 +246,19 @@ describe('org tuning, applied', () => {
     const after = h.svc.orgTuning(admin);
     expect(after.ok && after.suggestions).toEqual([]);
     expect(h.svc.applyOrgTuning(admin, 'give:test-systems').ok).toBe(false);
+  });
+
+  it('shares a worker with people who keep asking for it, keeping who it was open to, and then the suggestion is gone', () => {
+    const h = harness([worker('triage', { visibility: 'org', audience: { people: ['U0KEEP'] } })], [fix]);
+    const asks = [1, 2].map((i) => ({ workerId: 'triage', user: 'U0EMM', by: 'Emm', at: Date.now() - i * 1000 }));
+    (h.svc as unknown as { deps: Record<string, unknown> }).deps.missedAsks = () => asks;
+    const t = h.svc.orgTuning(admin);
+    if (!t.ok) throw new Error(t.error);
+    const s = t.suggestions.find((x) => x.action.kind === 'shareWorker')!;
+    expect(s.title).toBe('Share Triage with Emm');
+    expect(h.svc.applyOrgTuning(admin, s.id)).toMatchObject({ ok: true });
+    expect(h.workers.get('triage')!.audience).toEqual({ people: ['U0KEEP', 'U0EMM'] });
+    const after = h.svc.orgTuning(admin);
+    expect(after.ok && after.suggestions.filter((x) => x.action.kind === 'shareWorker')).toEqual([]);
   });
 });

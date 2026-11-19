@@ -111,6 +111,19 @@ describe('buildSharedStack', () => {
     expect(stack.values).toEqual(['DB_PASSWORD', 'DB_USER', 'STRIPE_SECRET_KEY']);
   });
 
+  it('does not ask for the launch placeholders overcli fills in a command or injected variable', () => {
+    const one = spec({
+      id: 'p-billing-api',
+      name: 'billing-api',
+      command: ['sh', '-c', 'ln -sfn "${CHECKOUT}/node_modules" nm && cd "${ROOT}" && echo ${REF} ${PORT} ${API_URL}'],
+      options: [{ key: '-Dapp.dir', value: '${CHECKOUT}/war' }],
+      config: { inject: { APP_ROOT: '${ROOT}', APP_PORT: '${PORT}' } },
+    });
+    const { stack } = buildSharedStack({ name: 'acme', services: [one], bindings: [], projects, remoteOf, home: HOME });
+    // An option is resolved against machine values, so its ${CHECKOUT} is still a blank to fill.
+    expect(stack.values).toEqual(['API_URL', 'CHECKOUT']);
+  });
+
   it('scrubs a password holding a $, and credentials passed as arguments', () => {
     const one = spec({
       id: 'p-billing-api',

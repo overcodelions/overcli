@@ -28,6 +28,22 @@ const run = (workerId: string, over: Partial<OrgTuningRun> = {}): OrgTuningRun =
 
 const base = { now: NOW, cleared: [] as string[], installed: ['test-systems', 'acme-tracker'] };
 
+describe('org tuning: workers people ask for but cannot use', () => {
+  const miss = (user: string, by: string, daysAgo = 1) => ({ workerId: 'mek', user, by, at: NOW - daysAgo * DAY });
+
+  it('suggests sharing a worker with whoever keeps asking for it', () => {
+    const s = orgTuning({ ...base, runs: [], workers: [worker('mek')], missed: [miss('U0EMM', 'Emm'), miss('U0EMM', 'Emm'), miss('U0EMM', 'Emm'), miss('U0ONE', 'Once')] });
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ title: 'Share Mek with Emm', apply: 'Share Mek with Emm', runs: 3, unit: 'asks', action: { kind: 'shareWorker', workerId: 'mek', people: ['U0EMM'] } });
+  });
+
+  it('leaves out a single ask, old asks, and retired workers', () => {
+    expect(orgTuning({ ...base, runs: [], workers: [worker('mek')], missed: [miss('U0EMM', 'Emm')] })).toEqual([]);
+    expect(orgTuning({ ...base, runs: [], workers: [worker('mek')], missed: [miss('U0EMM', 'Emm', 40), miss('U0EMM', 'Emm', 41)] })).toEqual([]);
+    expect(orgTuning({ ...base, runs: [], workers: [], missed: [miss('U0EMM', 'Emm'), miss('U0EMM', 'Emm')] })).toEqual([]);
+  });
+});
+
 describe('org tuning', () => {
   it('suggests giving a refused tool to the workers that lack it', () => {
     const s = orgTuning({

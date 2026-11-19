@@ -202,6 +202,28 @@ export const DOOR_TRACE_ACTION = 'overcli_door_trace';
 export const DOOR_WRITEUP_ACTION = 'overcli_door_writeup';
 /// A reply to the front desk's answer asking for a worker after all.
 const HAND_OFF = /^(?:hand (?:it|this) (?:off|over|to someone)|give (?:it|this) to (?:someone|a worker)|find someone|ask a worker|someone else)[.!]?$/i;
+/// "Hand it to Joe", "give this to the MLP Team please", "can you pass it to
+/// Hugo": the same, with the worker named after the verb, where `namedWorker`
+/// (name first) doesn't look.
+const HAND_TO = /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:hand|give|send|pass|route|forward|move)\s+(?:(?:it|this|that|these|them|both|this one|the question|the questions)\s+)?(?:(?:off|over)\s+)?to\s+(.+?)(?:,?\s+please)?[.!?]?$/i;
+
+/// Who a "hand it to …" reply names, as said.
+export function handOffName(text: string): string | null {
+  const m = HAND_TO.exec(text.trim());
+  return m ? m[1].replace(/^@/, '').trim() : null;
+}
+
+/// The worker a "hand it to …" reply names, among those the caller can ask.
+export function handOffTo(text: string, workers: FrontDoorWorker[]): FrontDoorWorker | null {
+  const name = handOffName(text);
+  return name ? namedWorker(name, workers)?.worker ?? null : null;
+}
+
+/// "Mek isn't shared with you": said when someone asks for a worker by name
+/// that they can't use, so it doesn't look like the door ignored them.
+function notShared(w: { name: string; manager?: string }, then: string): string {
+  return `*${w.name}* isn't shared with you, so ${then}. To use ${w.name}, ask ${w.manager ? `*${w.manager}*, who manages it,` : 'its manager'} to share it with you.`;
+}
 /// A worker saying the request isn't its job: the door finds someone else.
 const DECLINE = /\bNOT_MINE\b:?\s*([^\n]*)/;
 /// How many workers may say "not mine" before the door answers itself.
@@ -335,6 +357,9 @@ export interface DoorLog {
   kind?: DoorOutcome;
   who?: string;
   team?: boolean;
+  /// A worker they asked for by name that isn't shared with them, so it
+  /// went elsewhere: what Setup → Tuning offers to share.
+  wanted?: { id: string; name: string };
 }
 
 /// Someone who asked to hear, by DM, when something is posted in a thread.
@@ -582,6 +607,10 @@ export interface FrontDoorDeps {
   caller(slackUserId: string): Promise<OrgCaller>;
   /// The workers this person may ask, running ones only.
   workers(caller: OrgCaller): FrontDoorWorker[];
+  /// A worker the text opens with ("Mek, …", "ask Mek …") that is shared
+  /// with someone but not with this person, and who manages it. Private
+  /// workers never answer here: their names stay private.
+  unseen?(caller: OrgCaller, text: string): { id: string; name: string; manager?: string } | null;
   /// `conversation`: the thread, as a key, so the worker keeps one conversation per thread.
   ask(caller: OrgCaller, workerId: string, text: string, attachments: Attachment[], conversation?: string, said?: string, replyTo?: string): Started;
   /// A follow-up in a thread whose handed-off work has finished, said to
@@ -950,6 +979,23 @@ export class FrontDoor {
     return [...(this.state.log ?? [])].sort((a, b) => (b.lastAt ?? b.at) - (a.lastAt ?? a.at));
   }
 
+  /// Each time someone asked for a worker by name that isn't shared with
+  /// them, oldest first: what Setup → Tuning counts.
+  missedAsks(): Array<{ workerId: string; user: string; by: string; at: number }> {
+    return (this.state.log ?? [])
+      .filter((l) => l.wanted)
+      .map((l) => ({ workerId: l.wanted!.id, user: l.user, by: l.by, at: l.at }))
+      .sort((a, b) => a.at - b.at);
+  }
+
+  /// Note on a conversation that it asked for a worker the person can't use.
+  private wanted(key: string, w: { id: string; name: string }): void {
+    const l = this.state.log?.find((x) => x.key === key);
+    if (!l) return;
+    l.wanted = { id: w.id, name: w.name };
+    this.save();
+  }
+
   /// Say what came of a conversation. Kept even when nothing else is.
   /// `count` false keeps a follow-up out of the counts.
   private note(key: string, outcome: string, kind: DoorOutcome, url?: string, to?: { who: string; team?: boolean }, count = true): void {
@@ -1246,6 +1292,20 @@ export class FrontDoor {
         this.save();
         return this.route(req, key, caller, workers, desk.text, desk.files, [], false);
       }
+      // "Hand it to Joe": Joe takes what the desk was asked, with the thread.
+      const to = handOffTo(text, workers);
+      if (to) {
+        delete known.desk;
+        this.save();
+        return this.hand(req, key, caller, to, desk.text, desk.files, `${caller.name} asked for ${to.name}`);
+      }
+      const asked = handOffName(text);
+      const hidden = asked ? this.deps.unseen?.(caller, asked) ?? null : null;
+      if (hidden) {
+        this.wanted(key, hidden);
+        await say(notShared(hidden, 'I can’t hand it over. Say *hand it to* one of the workers named above'));
+        return;
+      }
       if (THANKS_ONLY.test(text.replace(/[’‘]/g, "'"))) {
         await say('Glad it helped.');
         return;
@@ -1358,6 +1418,13 @@ export class FrontDoor {
       return;
     }
     if (named) return this.hand(req, key, caller, named.worker, named.rest, req.files ?? [], '');
+    // "Mek, how would you test ACME-12" from someone Mek isn't shared with:
+    // said so, and counted for Setup → Tuning, then it goes to whoever fits.
+    const hidden = !known ? this.deps.unseen?.(caller, text) ?? null : null;
+    if (hidden) {
+      this.wanted(key, hidden);
+      await say(notShared(hidden, 'I’ll find another worker to take this'));
+    }
     // A question about something that may already exist: look first, so a
     // team's finished work isn't started again from scratch.
     let related: Array<{ title: string; who: string }> = offered ?? [];
@@ -1501,6 +1568,9 @@ export class FrontDoor {
     } catch (err) {
       this.deps.log(`Front door: answering at the front desk failed: ${String(err)}`);
     }
+    // The thread shows its earlier posts under the "overgo:" label, and the
+    // model can copy it; the post adds its own.
+    reply = reply?.replace(/^(?:\s*\*?overgo:\*?\s*)+/i, '') ?? null;
     if (!reply?.trim()) {
       // Nothing from the desk: the person picks, among those a question may go to.
       const declined = this.state.threads.find((t) => t.key === key)?.declined ?? [];
@@ -1514,14 +1584,15 @@ export class FrontDoor {
     this.note(key, 'Answered it itself', 'answered');
     await deliverText(this.io(), req.channel, root, 'overgo', reply, `${slug(text)}.md`);
     await this.notify(req.channel, root, 'overgo', reply);
-    const hint = 'Ask more here, or hand it to a worker.';
+    const named = workers.find((w) => !w.id.startsWith(PROCESS_ID) && !w.id.startsWith(TEAM_ID))?.name;
+    const hint = `Ask more here, or say _hand it to ${named ?? '<name>'}_ to pass it to a worker.`;
     const tapped =
       this.deps.slack.postBlocks &&
       (await this.deps.slack.postBlocks(req.channel, hint, [
         { type: 'context', elements: [{ type: 'mrkdwn', text: hint }] },
         { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Hand it to someone' }, action_id: `${DOOR_CHOICE_ACTION}_0`, value: 'Hand it to someone' }] },
       ], root));
-    if (!tapped) await this.deps.slack.post(req.channel, '_Ask more here, or reply *hand it off* and I\'ll find a worker to take it._', root);
+    if (!tapped) await this.deps.slack.post(req.channel, `_Ask more here, or reply *hand it to ${named ?? '<name>'}*, or *hand it off* and I'll find a worker to take it._`, root);
   }
 
   /// The ticket a "let me know" is about: named in it, or else in what the

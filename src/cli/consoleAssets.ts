@@ -4629,10 +4629,13 @@ export const CONSOLE_JS = String.raw`
   }
 
   function viewToday() {
-    return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/workers'), api('GET', '/api/library').catch(function () { return []; }), api('GET', '/api/inflight').catch(function () { return { ok: false }; })]).then(function (r) {
+    // The last day's items in full, and only the times for the week's trend:
+    // a plain Library page is the newest 200, which one busy day fills.
+    var dayAgo = Date.now() - 86400000;
+    var weekStart = new Date(); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(weekStart.getDate() - 6);
+    return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/workers'), api('GET', '/api/library?since=' + dayAgo).catch(function () { return []; }), api('GET', '/api/inflight').catch(function () { return { ok: false }; }), api('GET', '/api/library/delivered-at?since=' + weekStart.getTime()).catch(function () { return { ok: false }; })]).then(function (r) {
       var t = r[0], tl = r[1], workers = r[2].filter(function (w) { return w.enabled; });
       // Came in: what triggers delivered in the last day, then finished work.
-      var dayAgo = Date.now() - 86400000;
       // The Library's items, not raw work: each says where it came from, and a
       // team task is one entry rather than one per stage.
       var cameIn = (Array.isArray(r[3]) ? r[3] : []).filter(function (x) { return x.status === 'delivered' && x.at >= dayAgo; });
@@ -4832,11 +4835,11 @@ export const CONSOLE_JS = String.raw`
       };
       drawFinished();
       // The day's numbers as a row of figures, each with its trend.
-      var lib = Array.isArray(r[3]) ? r[3] : [];
+      var deliveredAt = r[5] && r[5].ok !== false && Array.isArray(r[5].at) ? r[5].at : [];
       var perDay = [6, 5, 4, 3, 2, 1, 0].map(function (back) {
         var d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - back);
-        var start = d.getTime(), end = start + 86400000;
-        return lib.filter(function (x) { return x.status === 'delivered' && x.at >= start && x.at < end; }).length;
+        var start = d.getTime(), end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+        return deliveredAt.filter(function (at) { return at >= start && at < end; }).length;
       });
       var spans = groups.map(function (g) { var ws = workSteps(g.items); return ws.ended - ws.began; }).sort(function (a, b) { return a - b; });
       var median = spans.length ? spans[Math.floor(spans.length / 2)] : null;
@@ -6686,11 +6689,13 @@ export const CONSOLE_JS = String.raw`
       if (w.youManage) {
         var reports = h('select', { 'aria-label': 'Reports to' }, h('option', { value: '', text: 'Nobody, it’s at the top' }),
           all.filter(function (x) { return x.id !== w.id; }).map(function (x) { return h('option', { value: x.id, text: x.name, selected: !!(w.reportsTo && w.reportsTo.id === x.id) }); }));
+        // An empty pick is no pick: the server reads it as the visibility.
+        var picked = w.audience && ((w.audience.people || []).length || (w.audience.groups || []).length || (w.audience.roles || []).length) ? w.audience : null;
         var whoAsks = audiencePicker({
           label: 'Who can ask it',
-          kind: w.audience || w.visibility === 'team' ? 'picked' : w.visibility === 'org' ? 'everyone' : 'manager',
-          audience: w.audience,
-          managerGroupsOf: !w.audience && w.visibility === 'team' ? w.managerSlackUserId : null,
+          kind: picked || w.visibility === 'team' ? 'picked' : w.visibility === 'org' ? 'everyone' : 'manager',
+          audience: picked,
+          managerGroupsOf: !picked && w.visibility === 'team' ? w.managerSlackUserId : null,
           onChange: function () { drawOthers(); later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
         });
         // Then what happens when they do: whose asks start straight away, and
@@ -16566,14 +16571,14 @@ export const CONSOLE_JS = String.raw`
     return api('GET', '/api/admin/tuning').then(function (r) {
       if (r.ok === false) return [top, msg(r)];
       var intro = h('p', { class: 'muted', style: 'margin:0 0 4px;max-width:84ch', text: 'Read from ' + r.runsRead + ' runs over the last ' + r.days + ' days. These are problems no single worker’s page can fix. Each one leaves this list once its fix is in.' });
-      if (!r.suggestions.length) return [top, intro, emptyState('Nothing to tune right now.', 'No tool keeps being refused, and no step stops for an OK that’s always given.')];
+      if (!r.suggestions.length) return [top, intro, emptyState('Nothing to tune right now.', 'No tool keeps being refused, nobody keeps asking for a worker they can’t use, and no step stops for an OK that’s always given.')];
       var cards = r.suggestions.map(function (s) {
         var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
         var go_ = h('button', { class: 'btn go small', text: s.apply });
         var card = h('section', { class: 'panel pad stack', style: 'gap:8px' },
           h('div', { class: 'row', style: 'gap:10px;justify-content:space-between;align-items:baseline' },
             h('b', { style: 'font-size:14.5px', text: s.title }),
-            h('span', { class: 'faint', style: 'font-size:12.5px', text: s.runs + (s.runs === 1 ? ' run' : ' runs') + ' · last ' + ago(s.lastAt) })),
+            h('span', { class: 'faint', style: 'font-size:12.5px', text: s.runs + (s.unit === 'asks' ? (s.runs === 1 ? ' ask' : ' asks') : (s.runs === 1 ? ' run' : ' runs')) + ' · last ' + ago(s.lastAt) })),
           h('p', { style: 'margin:0;font-size:13.5px;line-height:1.55;max-width:84ch', text: s.why }),
           h('div', { class: 'row', style: 'gap:10px;align-items:center' }, go_, out));
         go_.onclick = function () {
@@ -17887,12 +17892,13 @@ export const CONSOLE_JS = String.raw`
   /// keeps it, a line taken out drops it, a new line adds one.
   function toolEdit(t, reopen) {
     var out = h('div', { 'aria-live': 'polite' });
-    var box = h('div', { class: 'stack', style: 'gap:10px' });
+    // Padded as the Keys card's rows are, so the command doesn't sit on the border.
+    var box = h('div', { class: 'stack', style: 'gap:10px;padding:12px 14px' });
     var quote = function (a) { return /\s/.test(a) ? '"' + a + '"' : a; };
     var shut = function () {
-      fill(box, [h('div', { class: 'row', style: 'gap:8px' },
-        h('code', { style: 'font-size:12.5px;overflow-wrap:anywhere;flex:1 1 auto;min-width:0', text: t.target }),
-        h('button', { class: 'btn small', text: 'Edit', onclick: open_ })), out]);
+      fill(box, [h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap;align-items:flex-start' },
+        h('code', { style: 'font-size:12.5px;line-height:1.5;overflow-wrap:anywhere;flex:1 1 auto;min-width:0;padding-top:3px', text: t.target }),
+        h('button', { class: 'btn small', style: 'flex:none', text: 'Edit', onclick: open_ })), out]);
     };
     var open_ = function () {
       var cmd = h('input', { type: 'text', class: 'tp-ctl', value: [t.command || ''].concat(t.args || []).map(quote).join(' '), 'aria-label': 'Command', spellcheck: 'false' });
