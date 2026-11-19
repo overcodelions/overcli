@@ -58,30 +58,53 @@ afterEach(() => {
 });
 
 describe('detectBaseBranch', () => {
-  it('prefers the currently checked out branch', () => {
+  // A main checkout left on someone's feature branch must not become the
+  // base for new worktrees: their PRs would carry that branch's commits.
+  it('ignores the checked out feature branch in favour of origin/HEAD', () => {
+    mockSpawnSync.mockImplementation((_bin, args) => {
+      const cmd = args.join(' ');
+      if (cmd === 'branch --show-current') return ok('bugfix/acme-123-other-ticket\n');
+      if (cmd === 'symbolic-ref --quiet refs/remotes/origin/HEAD') return ok('refs/remotes/origin/master\n');
+      return fail();
+    });
+
+    expect(detectBaseBranch('/repo')).toBe('master');
+  });
+
+  it('keeps a slashed default branch whole', () => {
+    mockSpawnSync.mockImplementation((_bin, args) => {
+      const cmd = args.join(' ');
+      if (cmd === 'symbolic-ref --quiet refs/remotes/origin/HEAD') return ok('refs/remotes/origin/release/2\n');
+      return fail();
+    });
+
+    expect(detectBaseBranch('/repo')).toBe('release/2');
+  });
+
+  it('without origin/HEAD, picks master over the checked out branch', () => {
     mockSpawnSync.mockImplementation((_bin, args) => {
       const cmd = args.join(' ');
       if (cmd === 'branch --show-current') return ok('feature/wip\n');
+      if (cmd === 'rev-parse --verify --quiet refs/remotes/origin/master') return ok('sha\n');
       return fail();
     });
 
-    expect(detectBaseBranch('/repo')).toBe('feature/wip');
+    expect(detectBaseBranch('/repo')).toBe('master');
   });
 
-  it('falls back to origin/HEAD when the current branch is empty', () => {
+  it('falls back to the checked out branch only when there is no main or master', () => {
     mockSpawnSync.mockImplementation((_bin, args) => {
       const cmd = args.join(' ');
-      if (cmd === 'branch --show-current') return ok('');
-      if (cmd === 'symbolic-ref refs/remotes/origin/HEAD') return ok('refs/remotes/origin/main\n');
+      if (cmd === 'branch --show-current') return ok('develop\n');
       return fail();
     });
 
-    expect(detectBaseBranch('/repo')).toBe('main');
+    expect(detectBaseBranch('/repo')).toBe('develop');
   });
 });
 
 describe('listBaseBranches', () => {
-  it('dedupes local and remote refs and prepends the detected base branch', () => {
+  it('dedupes local and remote refs and puts the default branch first, not the checked out one', () => {
     mockSpawnSync.mockImplementation((_bin, args) => {
       const cmd = args.join(' ');
       if (cmd === 'branch --show-current') return ok('feature/wip\n');
@@ -91,13 +114,14 @@ describe('listBaseBranches', () => {
       if (cmd === 'for-each-ref --sort=-committerdate --format=%(refname:short) refs/remotes') {
         return ok('origin\norigin/HEAD\norigin/main\nupstream/release\n');
       }
-      if (cmd === 'rev-parse --verify --quiet feature/wip^{commit}') return ok('sha\n');
+      if (cmd === 'rev-parse --verify --quiet refs/heads/main') return ok('sha\n');
+      if (cmd === 'rev-parse --verify --quiet main^{commit}') return ok('sha\n');
       return fail();
     });
 
     expect(listBaseBranches('/repo')).toEqual([
-      'feature/wip',
       'main',
+      'feature/wip',
       'release',
       'origin/main',
       'upstream/release',
@@ -114,7 +138,6 @@ describe('option-injecting ref names', () => {
     mockSpawnSync.mockImplementation((_bin, args) => {
       const cmd = args.join(' ');
       if (cmd === 'branch --show-current') return ok('--output=/tmp/pwned\n');
-      if (cmd === 'rev-parse --verify main') return ok('sha\n');
       return fail();
     });
 

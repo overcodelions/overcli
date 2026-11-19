@@ -66,8 +66,8 @@ export async function auditWorkerLandings(
 
   const resolveBase = (o: Orchestration, item: OrchestrationItem): Promise<string> => {
     // The item's own base wins: it is what the work actually forked from.
-    // detectBaseBranch prefers whatever is checked out right now, which is
-    // only a guess about a shift that ran days ago.
+    // The repo's default branch today is only a guess about a shift that
+    // ran days ago.
     const explicit = item.baseBranch?.trim() || o.baseBranch?.trim();
     if (explicit) return Promise.resolve(explicit);
     let p = detected.get(o.projectPath);
