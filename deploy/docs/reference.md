@@ -21,8 +21,8 @@ Set these in `deploy/.env`, the task definition, or the shell. Secrets can also 
 | Variable | Meaning |
 |---|---|
 | `ANTHROPIC_API_KEY` | The Anthropic API. |
-| `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` | Bedrock, through the server's AWS role. Workers' `claude` reaches it through a signing proxy in the server, never the role itself. |
-| `AWS_BEARER_TOKEN_BEDROCK` | A Bedrock API key, for a server without an AWS role. |
+| `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` | Bedrock, through the server's AWS role. Workers' `claude` reaches it through a signing proxy in the server, never the role itself, so the server's role needs Bedrock access, not the workers' roles. `AWS_REGION` (or `AWS_DEFAULT_REGION`) is required: the server won't start on Bedrock without it. |
+| `AWS_BEARER_TOKEN_BEDROCK` | A Bedrock API key, for a server without an AWS role. With it set there is no signing proxy: workers' `claude` calls Bedrock with the key directly, and can read it. |
 | `CLAUDE_CODE_USE_VERTEX`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID` | Vertex AI, through the service account. |
 | `OPENAI_API_KEY` | Codex, if the image was built with `INSTALL_CODEX=1`. |
 
