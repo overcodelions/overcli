@@ -197,3 +197,21 @@ export function overdbCredentialNote(c: OverdbConnection): string {
       return c.engine === 'dynamodb' ? "Reads DynamoDB with this server's AWS role." : 'Signs in with no password.';
   }
 }
+
+/// What this app tells overdb about where a published connection would go,
+/// kept beside the pushes as `.status.json` (a dot name, so the inbox scan
+/// never takes it for a push). overdb reads it to say, before Publish,
+/// which org a database goes to — or that this app has to be signed in to
+/// one first, which is the step people miss. Written when the inbox starts,
+/// after each scan and on every sign-in or sign-out. Never holds a token.
+export const CONNECTIONS_STATUS_FILE = '.status.json';
+export const CONNECTIONS_STATUS_VERSION = 1;
+
+export type ConnectionsOrg = { signedIn: true; org?: string; url: string } | { signedIn: false; error: string };
+
+export type ConnectionsStatus = ConnectionsOrg & {
+  version: typeof CONNECTIONS_STATUS_VERSION;
+  updatedAt: string;
+  /// Why the oldest waiting push did not go, when one is waiting.
+  waiting?: string;
+};

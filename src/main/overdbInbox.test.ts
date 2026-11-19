@@ -119,4 +119,62 @@ describe('ConnectionsInbox', () => {
     }).scan();
     expect(sent).toEqual([]);
   });
+
+  describe('status for overdb', () => {
+    function withOrg(org: () => import('../shared/overdbConnection').ConnectionsOrg, push: (p: ConnectionPush) => Promise<PushOutcome>) {
+      return new ConnectionsInbox(dir, push, { pushed: () => {}, waiting: () => {}, rejected: () => {} }, org);
+    }
+    const status = () => JSON.parse(fs.readFileSync(path.join(dir, '.status.json'), 'utf-8'));
+
+    it('says which org a push goes to, from the start', () => {
+      const box = withOrg(() => ({ signedIn: true, org: 'Acme', url: 'https://overgo.acme.dev' }), async () => ({ ok: true, message: '' }));
+      box.start();
+      box.dispose();
+      expect(status()).toMatchObject({ version: 1, signedIn: true, org: 'Acme', url: 'https://overgo.acme.dev' });
+      expect(status().waiting).toBeUndefined();
+    });
+
+    it('says nobody is signed in, and why a push is waiting, until one lands', async () => {
+      let signedIn = false;
+      const box = withOrg(
+        () => (signedIn ? { signedIn: true, url: 'https://overgo.acme.dev' } : { signedIn: false, error: 'Sign in first.' }),
+        async () => (signedIn ? { ok: true, message: '' } : { ok: false, error: 'Sign in first.', retry: true }),
+      );
+      fs.mkdirSync(dir, { recursive: true });
+      drop('2026-01-01-a.json', envelope('a', 'shop-staging'));
+      box.start();
+      await box.scan();
+      expect(status()).toMatchObject({ signedIn: false, error: 'Sign in first.', waiting: 'Sign in first.' });
+      signedIn = true;
+      await box.retry();
+      box.dispose();
+      expect(status()).toMatchObject({ signedIn: true });
+      expect(status().waiting).toBeUndefined();
+      expect(fs.readdirSync(path.join(dir, 'done'))).toEqual(['2026-01-01-a.json']);
+    });
+
+    it('is never taken for a push', async () => {
+      const sent: string[] = [];
+      const box = withOrg(() => ({ signedIn: false, error: 'no' }), async (p) => {
+        sent.push(p.id);
+        return { ok: true, message: '' };
+      });
+      box.start();
+      await box.scan();
+      box.dispose();
+      expect(sent).toEqual([]);
+      expect(fs.readdirSync(path.join(dir, 'rejected'))).toEqual([]);
+    });
+
+    it('does not set its own watcher off: an unchanged status is not rewritten', async () => {
+      const box = withOrg(() => ({ signedIn: true, url: 'https://overgo.acme.dev' }), async () => ({ ok: true, message: '' }));
+      box.start();
+      await box.scan();
+      const first = fs.statSync(path.join(dir, '.status.json')).mtimeMs;
+      await new Promise((r) => setTimeout(r, 600));
+      await box.scan();
+      box.dispose();
+      expect(fs.statSync(path.join(dir, '.status.json')).mtimeMs).toBe(first);
+    });
+  });
 });

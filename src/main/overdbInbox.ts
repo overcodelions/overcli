@@ -14,6 +14,10 @@
 //                     → stays put, and is pushed again on the next sign-in,
 //                       the next file, or the next launch
 //
+// Beside them it keeps `.status.json`: which org a push would go to, or
+// that nobody is signed in yet. overdb shows that before Publish, so the
+// sign-in a push needs is asked for up front rather than found out later.
+//
 // The person already pressed Publish in overdb, after reading the record
 // and typing a prod connection's name, so nothing here asks again.
 //
@@ -22,7 +26,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { CONNECTION_PUSH_MAX_BYTES, parseConnectionPush, type ConnectionPush } from '../shared/overdbConnection';
+import {
+  CONNECTION_PUSH_MAX_BYTES,
+  CONNECTIONS_STATUS_FILE,
+  CONNECTIONS_STATUS_VERSION,
+  parseConnectionPush,
+  type ConnectionPush,
+  type ConnectionsOrg,
+  type ConnectionsStatus,
+} from '../shared/overdbConnection';
 import { defaultInboxDir } from './handoffInbox';
 
 export function defaultConnectionsDir(): string {
@@ -47,19 +59,31 @@ export class ConnectionsInbox {
   private timer: ReturnType<typeof setTimeout> | null = null;
   /// Files being pushed right now, so a rescan mid-push does not send twice.
   private inFlight = new Set<string>();
+  /// Why the oldest waiting push is waiting; cleared once one lands.
+  private waitingOn: string | null = null;
+  /// The status last written, less its time: an unchanged one isn't rewritten.
+  private lastStatus: string | null = null;
 
   constructor(
     private readonly dir: string,
     private readonly push: (push: ConnectionPush) => Promise<PushOutcome>,
     private readonly events: ConnectionsInboxEvents,
+    /// Which org a push would go to right now. Without it, no status file.
+    private readonly org?: () => ConnectionsOrg,
   ) {}
 
   start(): void {
     for (const sub of ['', 'done', 'rejected']) fs.mkdirSync(path.join(this.dir, sub), { recursive: true });
+    this.writeStatus();
     this.purge();
     void this.scan();
     try {
-      this.watcher = fs.watch(this.dir, { persistent: false }, () => this.scheduleScan());
+      // Dot names are this inbox's own (the status file and its tmp): a
+      // rescan for them would write the status again, and round it goes.
+      this.watcher = fs.watch(this.dir, { persistent: false }, (_event, name) => {
+        if (name && String(name).startsWith('.')) return;
+        this.scheduleScan();
+      });
       this.watcher.on('error', () => this.closeWatcher());
     } catch {
       this.watcher = null;
@@ -69,6 +93,40 @@ export class ConnectionsInbox {
   /// After a sign-in: whatever was waiting on one goes now.
   retry(): Promise<void> {
     return this.scan();
+  }
+
+  /// After a sign-out, or the default org changing: tell overdb.
+  refreshStatus(): void {
+    this.writeStatus();
+  }
+
+  /// Exposed for tests. Written whole, through a dot-named tmp file, so
+  /// overdb never reads half of one and the scan never sees either.
+  writeStatus(now = Date.now()): void {
+    if (!this.org) return;
+    let org: ConnectionsOrg;
+    try {
+      org = this.org();
+    } catch (e) {
+      org = { signedIn: false, error: (e as Error).message };
+    }
+    const same = JSON.stringify({ ...org, waiting: this.waitingOn });
+    const final = path.join(this.dir, CONNECTIONS_STATUS_FILE);
+    if (same === this.lastStatus && fs.existsSync(final)) return;
+    const status: ConnectionsStatus = {
+      ...org,
+      version: CONNECTIONS_STATUS_VERSION,
+      updatedAt: new Date(now).toISOString(),
+      ...(this.waitingOn ? { waiting: this.waitingOn } : {}),
+    };
+    const tmp = `${final}.tmp`;
+    try {
+      fs.writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
+      fs.renameSync(tmp, final);
+      this.lastStatus = same;
+    } catch {
+      // overdb then shows what it knew last, or nothing; pushing goes on.
+    }
   }
 
   dispose(): void {
@@ -113,6 +171,14 @@ export class ConnectionsInbox {
   /// Exposed for tests. Pushes one file at a time, oldest first: two
   /// connections published together arrive in the order they were made.
   async scan(): Promise<void> {
+    try {
+      await this.scanFiles();
+    } finally {
+      this.writeStatus();
+    }
+  }
+
+  private async scanFiles(): Promise<void> {
     let names: string[];
     try {
       names = fs.readdirSync(this.dir);
@@ -150,9 +216,11 @@ export class ConnectionsInbox {
       try {
         const res = await this.push(parsed.push);
         if (res.ok) {
+          this.waitingOn = null;
           this.moveTo('done', name);
           this.events.pushed(parsed.push, res.message);
         } else if (res.retry) {
+          this.waitingOn = res.error;
           this.events.waiting(parsed.push, res.error);
           // Everything after it is waiting on the same thing.
           return;
