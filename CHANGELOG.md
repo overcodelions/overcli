@@ -4,6 +4,17 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.5] - 2026-11-19
+
+### Changed
+- **New worktrees start from the repo's default branch,** not whatever branch the main checkout is on. It's found from `origin/HEAD`, then `main`, then `master`; a default with a slash in its name is kept whole. The default branch is fetched first (up to 20 seconds, and a failed fetch doesn't stop it) and the worktree starts from `origin/<default>`. The worktree sweep, the stranded-landings check and workspace cleanup compare against the default branch too. (#1221)
+
+### Added
+- **Replies under a worker's channel post reach that worker,** with its run as context. (#1221)
+- **A worker's manager speaking in a channel the worker listens in counts as its manager.** Only a Slack message says who wrote it: a webhook or a watched item can't pose as the manager. (#1221)
+- **People lists those who ask a worker only in its channels,** and **Setup → Tuning flags a tool a worker's job names that no step uses.** (#1221)
+- **The console keeps its place between pages** and says when a newer release is out. (#1221)
+
 ## [0.26.4] - 2026-11-18
 
 ### Changed
@@ -1469,7 +1480,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.4...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.5...HEAD
+[0.26.5]: https://github.com/overcodelions/overcli/compare/v0.26.4...v0.26.5
 [0.26.4]: https://github.com/overcodelions/overcli/compare/v0.26.3...v0.26.4
 [0.26.3]: https://github.com/overcodelions/overcli/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/overcodelions/overcli/compare/v0.26.1...v0.26.2
