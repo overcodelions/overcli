@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Attachment } from '../../shared/types';
 import type { TeamRoom } from '../../shared/flows/team';
 import type { ErrandProgress } from '../org/orgService';
-import { FrontDoor, DOOR_SUBSCRIBE_ACTION, DOOR_TRACE_ACTION, DOOR_WRITEUP_ACTION, liveCard, namedWorker, OPENERS, openerFor, traceView, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
+import { FrontDoor, DOOR_SUBSCRIBE_ACTION, DOOR_TRACE_ACTION, DOOR_WRITEUP_ACTION, handOffTo, liveCard, namedWorker, OPENERS, openerFor, traceView, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
 import { readRoute, routePrompt } from './frontDoorRoute';
 import type { SlackMessage } from './slackApi';
 
@@ -1388,6 +1388,39 @@ describe('the front desk', () => {
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.2', threadTs: '1.0', user: 'U1', text: 'hand it off', dm: false });
     expect(h.desked).toHaveLength(2);
     expect(h.posts.at(-1)).toContain('Who should take this?');
+  });
+
+  it('hands a desk answer to the worker a reply names, wherever the name sits', async () => {
+    const h = harness({ route: null, general: () => '*overgo:* I can not see that. Vantage could look it up.' });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '9.0', user: 'U1', text: 'does the portal keep asset links on update?', dm: false });
+    await tick();
+    expect(h.posts.join('\n')).not.toContain('*overgo:* *overgo:*');
+    await h.door.onMessage({ channel: 'C0ACME', ts: '9.1', threadTs: '9.0', user: 'U1', text: 'Hand it to Vantage', dm: false });
+    await tick();
+    expect(h.desked).toHaveLength(1);
+    expect(h.asks.map((a) => a.workerId)).toEqual(['w-vantage']);
+    expect(h.asks[0].text).toContain('does the portal keep asset links on update?');
+  });
+
+  it('says when a worker asked for by name is not shared with them, notes it, and still finds someone', async () => {
+    const h = harness({ route: { workerId: 'w-triage', why: 'fits' } });
+    (h.door as unknown as { deps: Record<string, unknown> }).deps.unseen = (_c: unknown, t: string) => (/^mek\b/i.test(t) ? { id: 'w-mek', name: 'Mek', manager: 'Kim' } : null);
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.0', user: 'U1', text: 'mek how would you test this bug fix', dm: true });
+    await tick();
+    expect(h.posts.join('\n')).toContain("*Mek* isn't shared with you");
+    expect(h.posts.join('\n')).toContain('*Kim*, who manages it');
+    expect(h.asks.map((a) => a.workerId)).toEqual(['w-triage']);
+    expect(h.door.missedAsks()).toMatchObject([{ workerId: 'w-mek', user: 'U1' }]);
+  });
+
+  it('reads "hand it to <name>" in the ways people say it', () => {
+    const ws = [TRIAGE, VANTAGE];
+    for (const t of ['Hand it to Vantage', 'hand this over to vantage.', 'can you pass it to Vantage please', 'give it to @Vantage', 'send the question to Vantage!']) {
+      expect(handOffTo(t, ws)?.id).toBe('w-vantage');
+    }
+    expect(handOffTo('hand it to Ada', ws)).toBeNull();
+    expect(handOffTo('hand it off', ws)).toBeNull();
+    expect(handOffTo('how do I hand it to a partner?', ws)).toBeNull();
   });
 
   it('never offers a team or a process for a question, and asks the person when the desk has nothing', async () => {

@@ -1616,6 +1616,12 @@ export class WorkerEngine {
     return { ...(mcpAllowlist !== undefined ? { mcpAllowlist } : {}), ...(denied.length ? { mcpDeniedTools: denied } : {}) };
   }
 
+  /// The MCP servers a worker's runs load: see `mcpServersOf`.
+  runToolsOf(id: UUID): string[] | undefined {
+    const w = this.workers.get(id);
+    return w ? this.mcpServersOf(w) : undefined;
+  }
+
   private mcpServersOf(w: Worker): string[] | undefined {
     const shared = this.deps.sharedMcpServers?.() ?? [];
     const role = this.deps.roleTools?.(w) ?? [];

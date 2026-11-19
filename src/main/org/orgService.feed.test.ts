@@ -237,6 +237,18 @@ describe('delivered work from a run without a completed entry', () => {
     expect(svc.library(pat).map((x) => x.id)).toEqual(['c1']);
   });
 
+  it('reads past the usual page when asked for everything since a time', () => {
+    // 260 items in the last day: one busy day fills the default page of 200.
+    const many = Array.from({ length: 260 }, (_, i) => completed('ana', `c${i}`, NOW - i * 60_000));
+    const older = Array.from({ length: 5 }, (_, i) => completed('ana', `o${i}`, NOW - 3 * DAY - i * 60_000));
+    const { svc } = harness({ journal: { ana: [...many, ...older] } });
+    expect(svc.library(pat)).toHaveLength(200);
+    expect(svc.library(pat, { since: NOW - DAY })).toHaveLength(260);
+    const times = svc.deliveredTimes(pat, NOW - 4 * DAY);
+    expect(times).toHaveLength(265);
+    expect(times.filter((at) => at < NOW - 2 * DAY)).toHaveLength(5);
+  });
+
   it('leaves out failed and stopped runs', () => {
     const runs = [flowRun('bad', 'ana', NOW - DAY, { state: { kind: 'done', success: false } }), flowRun('ab', 'ana', NOW - DAY, { state: { kind: 'aborted' } })];
     expect(harness({ runs }).svc.work(pat)).toEqual([]);

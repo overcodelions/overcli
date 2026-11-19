@@ -1726,8 +1726,15 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
           ...(url.searchParams.get('documents') === '1' ? { documents: true } : {}),
           ...(visibility === 'private' || visibility === 'team' || visibility === 'org' ? { visibility } : {}),
           ...(numParam(url, 'limit') ? { limit: Math.max(1, numParam(url, 'limit')!) } : {}),
+          ...(numParam(url, 'since') != null ? { since: numParam(url, 'since')! } : {}),
         });
       },
+    },
+    // Before the item route, which would take "delivered-at" for an id.
+    {
+      method: 'GET',
+      path: /^\/api\/library\/delivered-at$/,
+      handle: (c, _b, _p, url) => ({ ok: true, at: org.deliveredTimes(c, numParam(url, 'since') ?? Date.now() - 7 * 86_400_000) }),
     },
     { method: 'GET', path: /^\/api\/library\/([^/]+)$/, handle: (c, _b, [id]) => org.libraryItem(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/library\/([^/]+)\/rate$/, handle: (c, b, [id]) => org.rateDeliverable(c, decodeURIComponent(id), b.useful === true, typeof b.note === 'string' ? b.note : undefined) },

@@ -52,7 +52,21 @@ export type OrgTuningAction =
   | { kind: 'giveTool'; tool: string; workerIds: string[] }
   | { kind: 'clearTool'; tool: string }
   | { kind: 'useOwnTools'; workerIds: string[] }
-  | { kind: 'alwaysAllowStep'; workerId: string; key: string };
+  | { kind: 'alwaysAllowStep'; workerId: string; key: string }
+  | { kind: 'shareWorker'; workerId: string; people: string[] };
+
+/// Someone asked the Slack front door for a worker by name that isn't
+/// shared with them, so it went to another worker.
+export interface OrgTuningMiss {
+  workerId: string;
+  /// Their Slack id, and their name as read then.
+  user: string;
+  by: string;
+  at: number;
+}
+
+/// Asked for a worker they can't use at least this many times…
+export const MISS_MIN_ASKS = 2;
 
 export interface OrgTuningSuggestion {
   /// Stable while the problem stands: what Apply names.
@@ -63,6 +77,8 @@ export interface OrgTuningSuggestion {
   apply: string;
   action: OrgTuningAction;
   runs: number;
+  /// What `runs` counts, when not runs.
+  unit?: 'asks';
   workers: string[];
   lastAt: number;
 }
@@ -75,6 +91,8 @@ export function orgTuning(input: {
   cleared: string[];
   /// Tools installed on this server. Absent: no registry to ask, so any.
   installed?: string[];
+  /// Asks for a worker that still isn't shared with the asker.
+  missed?: OrgTuningMiss[];
 }): OrgTuningSuggestion[] {
   const since = input.now - ORG_TUNING_DAYS * 86_400_000;
   const runs = input.runs.filter((r) => r.createdAt >= since);
@@ -182,6 +200,39 @@ export function orgTuning(input: {
       runs: e.paused,
       workers: [name],
       lastAt: e.lastAt,
+    });
+  }
+
+  // ---- Workers people ask for by name but can't use ----
+  // Each such ask went to some other worker, often one that does a worse
+  // job of it, and the person may never learn why.
+  const wanted = new Map<string, Map<string, { by: string; n: number; lastAt: number }>>();
+  for (const m of input.missed ?? []) {
+    if (m.at < since || !byId.has(m.workerId)) continue;
+    const people = wanted.get(m.workerId) ?? new Map();
+    const p = people.get(m.user) ?? { by: m.by, n: 0, lastAt: 0 };
+    p.n += 1;
+    p.lastAt = Math.max(p.lastAt, m.at);
+    p.by = m.by;
+    people.set(m.user, p);
+    wanted.set(m.workerId, people);
+  }
+  for (const [workerId, people] of wanted) {
+    const askers = [...people.entries()].filter(([, p]) => p.n >= MISS_MIN_ASKS);
+    if (!askers.length) continue;
+    const name = byId.get(workerId)!.name;
+    const who = askers.map(([, p]) => p.by);
+    const n = askers.reduce((s, [, p]) => s + p.n, 0);
+    out.push({
+      id: `share:${workerId}:${askers.map(([u]) => u).sort().join(',')}`,
+      title: `Share ${name} with ${list(who)}`,
+      why: `${list(who)} asked for ${name} by name ${plural(n, 'time')} in the last ${ORG_TUNING_DAYS} days, but ${name} isn’t shared with ${who.length === 1 ? 'them' : 'them all'}, so each ask went to another worker. Sharing changes who can ask ${name}, so check with its manager first.`,
+      apply: who.length === 1 ? `Share ${name} with ${who[0]}` : `Share ${name} with all ${who.length}`,
+      action: { kind: 'shareWorker', workerId, people: askers.map(([u]) => u) },
+      runs: n,
+      unit: 'asks',
+      workers: [name],
+      lastAt: Math.max(...askers.map(([, p]) => p.lastAt)),
     });
   }
 

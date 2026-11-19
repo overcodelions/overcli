@@ -688,6 +688,8 @@ export function registerIpc(): void {
   // and notifies. Each ignores runs it didn't launch, so the fan-out is free.
   // A worker's tool scopes, enforced on its runs (toolScope.ts).
   flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine?.get(id)?.toolScopes, undefined));
+  // The tools a worker holds: all its runs load, and all a read may use.
+  flowRuntime.setWorkerTools((id) => workerEngine?.runToolsOf(id));
   flowRuntime.setRunObserver((run) => {
     orchestrator?.onRunUpdate(run);
     scheduler?.onRunUpdate(run);

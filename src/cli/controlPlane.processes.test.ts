@@ -52,7 +52,8 @@ describe('process routes', () => {
     teams: () => [{ id: 't-product', name: 'Product' }],
     spendView: (c: OrgCaller, opts: { all?: boolean }) => ({ ok: true, who: c.name, all: !!opts.all }),
     stopTeamWork: (c: OrgCaller, id: string) => ({ ok: true, who: c.name, id }),
-    library: (_c: OrgCaller, opts: { documents?: boolean; kind?: string }) => [{ documents: !!opts.documents, kind: opts.kind ?? null }],
+    library: (_c: OrgCaller, opts: { documents?: boolean; kind?: string; since?: number }) => [{ documents: !!opts.documents, kind: opts.kind ?? null, ...(opts.since != null ? { since: opts.since } : {}) }],
+    deliveredTimes: (_c: OrgCaller, since: number) => [since + 1],
     listWorkers: () => [],
     directory: () => ({ people: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }], groups: [] }),
     peopleDirectory: (slack: Array<{ id: string; name: string; handle?: string }>) => buildPeopleDirectory({ seen: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }], slack }),
@@ -122,6 +123,8 @@ describe('process routes', () => {
       expect(await call(PAT, 'GET', '/api/library?documents=1')).toEqual([{ documents: true, kind: null }]);
       expect(await call(PAT, 'GET', '/api/library')).toEqual([{ documents: false, kind: null }]);
       expect(await call(PAT, 'GET', '/api/library?kind=document')).toEqual([{ documents: false, kind: 'document' }]);
+      expect(await call(PAT, 'GET', '/api/library?since=1000')).toEqual([{ documents: false, kind: null, since: 1000 }]);
+      expect(await call(PAT, 'GET', '/api/library/delivered-at?since=1000')).toEqual({ ok: true, at: [1001] });
     });
 
     it('says what a file needs that isn’t on this server', async () => {

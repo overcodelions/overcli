@@ -955,7 +955,10 @@ export class FlowRuntimeImpl {
             // So is a shell line that only reads inside the run's own folder
             // (`git log`, `rg`, `ls`): nobody needs to approve a look.
             const roots = [run.projectPath, ...(run.workspaceWorktrees ?? []).map((m) => m.worktreePath)];
-            const read = readsOnlyWithin(ev.kind.info.toolName, ev.kind.info.toolInput, run.projectPath, roots);
+            // A read of a tool it doesn't hold is not a look around: it is a
+            // tool nobody gave it, on the server's credentials.
+            const read = readsOnlyWithin(ev.kind.info.toolName, ev.kind.info.toolInput, run.projectPath, roots)
+              && this.holdsMcpServer(run, current, ev.kind.info.toolName);
             // A step the grant names may use the tools it lists, by name or
             // by server (`mcp__tracker`): the ticket follow-up's tracker,
             // nothing else.
@@ -4970,6 +4973,14 @@ export class FlowRuntimeImpl {
     this.toolScopesFor = fn;
   }
 
+  private workerToolsFor: ((workerId: UUID) => string[] | undefined) | null = null;
+
+  /// The MCP servers a worker holds (its own, the shared ones, its role's),
+  /// by config name. Undefined: its record never named any, so it loads all.
+  setWorkerTools(fn: (workerId: UUID) => string[] | undefined): void {
+    this.workerToolsFor = fn;
+  }
+
   private callGuard: ((call: CallGuardCall) => boolean | undefined) | null = null;
 
   /// A check on one call's input, for a step a grant names: `false` keeps
@@ -5000,7 +5011,7 @@ export class FlowRuntimeImpl {
   /// difference is a launch-param change, and the real send then kills the
   /// warm process and spawns another, which is exactly the cold start the
   /// warm-up was meant to save.
-  private stepToolArgs(run: FlowRun, step: FlowStep): { enabledTools: string[]; mcpDeniedTools?: string[] } {
+  private stepToolArgs(run: FlowRun, step: FlowStep): { enabledTools: string[]; mcpAllowlist?: string[]; mcpDeniedTools?: string[] } {
     // The allowlist the approval gate classifies by is the allowlist the
     // process gets: Ollama enforces it in-dispatcher, claude via
     // --allowedTools (see backends/claude.ts). See resolveStepEffect.
@@ -5020,10 +5031,40 @@ export class FlowRuntimeImpl {
       // A test run: no outside tool is approved ahead, so each call reaches the check.
       .filter((t) => !run.trial || !t.startsWith('mcp__') || trialAllowsMcp(t));
     const scopes = this.scopesOf(run);
+    const mcpAllowlist = this.runMcpServers(run, step);
     return {
       enabledTools: scopes ? tools.filter((t) => inToolScope(scopes, t)) : tools,
+      ...(mcpAllowlist ? { mcpAllowlist } : {}),
       ...this.scopeDeniedArgs(run),
     };
+  }
+
+  /// The MCP servers a worker's step may load: the ones the worker holds
+  /// (its own, the shared ones, its role's) and any the step names. Without
+  /// this a step inherited every tool installed on the server, so a worker
+  /// never given a tool could still call it, on the server's credentials.
+  /// Undefined (load everything) off a worker's run, or for a worker whose
+  /// record has never said which servers it uses.
+  private runMcpServers(run: Pick<FlowRun, 'workerId' | 'roleTools'>, step: Pick<FlowStep, 'tools'> | undefined): string[] | undefined {
+    const held = run.workerId ? this.workerToolsFor?.(run.workerId) : undefined;
+    if (held === undefined) return undefined;
+    const named = (step?.tools ?? []).flatMap((t) => {
+      const server = parseMcpToolName(t)?.server ?? /^mcp__([^_]+(?:_[^_]+)*)$/.exec(t)?.[1];
+      if (!server) return [];
+      // An account connector is listed by Claude's name for it, not its key.
+      return [/^claude_ai_/.test(server) ? `claude.ai ${server.replace(/^claude_ai_/, '').replace(/_/g, ' ')}` : server];
+    });
+    return [...new Set([...held, ...(run.roleTools ?? []), ...named])];
+  }
+
+  /// Whether a worker's run holds the server `toolName` belongs to: what the
+  /// read-only auto-approval checks first, so a read of a tool the worker was
+  /// never given is refused rather than let through on the server's key.
+  private holdsMcpServer(run: Pick<FlowRun, 'workerId' | 'roleTools'>, step: Pick<FlowStep, 'tools'> | undefined, toolName: string): boolean {
+    const server = parseMcpToolName(toolName)?.server;
+    if (!server || server === mcpServerKey(SERVER_TOOL)) return true;
+    const servers = this.runMcpServers(run, step);
+    return !servers || servers.some((s) => mcpServerKey(s) === server);
   }
 
   private scopeDeniedArgs(run: Pick<FlowRun, 'workerId'>): { mcpDeniedTools?: string[] } {
