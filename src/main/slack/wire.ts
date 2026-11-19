@@ -1006,8 +1006,12 @@ export function createOrgControl(
     workerFor: (conversationId) => {
       const runId = engines.flowRuntime.runIdForConversation(conversationId);
       const run = runId ? engines.flowRuntime.getRun(runId) : null;
-      return (run?.workerId ? engines.workerEngine.get(run.workerId) : undefined) ?? undefined;
+      const w = run?.workerId ? engines.workerEngine.get(run.workerId) : undefined;
+      return w ? { id: w.id, name: w.name, ...(w.avatarUrl ? { avatarUrl: w.avatarUrl } : {}), ...(run?.id ? { runId: run.id } : {}) } : undefined;
     },
+    // A reply under a worker's channel post (its shift's top ten, say) goes
+    // to that worker, with the run as its context.
+    posted: ({ channel, ts, worker, runId }) => frontDoor.adopt(channel, ts, worker, runId ? `run:${runId}` : undefined),
     managerSlackId: (id) => org.managerSlackId(id),
     listPeople: (bot) => listPeople(bot),
     postMessage: (bot, post) => postMessage(bot, post),

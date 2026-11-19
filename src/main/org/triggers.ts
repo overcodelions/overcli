@@ -1272,8 +1272,12 @@ function revisePrompt(t: WorkerTrigger, d: Deliverable, feedback: string): strin
 }
 
 /// A Slack message's own words, author and channel, when that's what set the
-/// trigger off: what its ask is shown by. Nothing for other events.
-export function slackSaid(t: { name: string }, item: { data?: unknown }): { said: string; slackUserId?: string; where: string } | undefined {
+/// trigger off: what its ask is shown by. Nothing for other events, however
+/// their data is shaped: the author decides whether the worker's manager is
+/// speaking, so it must come from Slack, never from a webhook's or a watched
+/// item's fields.
+export function slackSaid(t: { name: string; kind: WorkerTrigger['kind'] }, item: { data?: unknown }): { said: string; slackUserId?: string; where: string } | undefined {
+  if (t.kind !== 'slack') return undefined;
   const d = item.data as { channel?: unknown; text?: unknown; user?: unknown } | undefined;
   if (!d || typeof d.channel !== 'string' || typeof d.text !== 'string' || !d.text.trim()) return undefined;
   return { said: d.text.trim().slice(0, 4000), ...(typeof d.user === 'string' && d.user ? { slackUserId: d.user } : {}), where: t.name };

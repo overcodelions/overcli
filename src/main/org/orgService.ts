@@ -2202,8 +2202,15 @@ export class OrgService {
     // so nothing in them is remembered as the manager's word. An autonomous
     // worker's triggers start alone; one on probation or trusted proposes.
     const startsAlone = via === 'trigger' && w.trust === 'autonomous';
+    // The worker's own manager, speaking in a channel it listens in: Slack
+    // vouches for who sent it, so a "yes, rerun it" there is the manager's
+    // say. The message itself stays untrusted: the thread holds others' words.
+    const boss = via === 'trigger' && about?.slackUserId ? managerFor(this.deps.workers.roster(), w.id) : undefined;
+    const managerSpeaks = !!boss?.slackUserId && boss.slackUserId === about?.slackUserId;
     const from = manages
       ? ''
+      : managerSpeaks
+        ? `(Asked by ${boss!.name}, your manager, in Slack. Do it as you would any ask of theirs.)\n`
       : startsAlone
         ? `${TRIGGER_STARTS}\n`
         : readsOnly
@@ -2217,8 +2224,8 @@ export class OrgService {
       id: randomUUID(),
       workerId: w.id,
       workerName: w.name,
-      by: caller.name,
-      ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
+      by: managerSpeaks ? boss!.name : caller.name,
+      ...(managerSpeaks ? { slackUserId: about!.slackUserId } : caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
       text: (said?.trim() || text.trim()).slice(0, 4000),
       at: this.now(),
       status: 'working',
@@ -2231,7 +2238,7 @@ export class OrgService {
       ...(attachments?.length ? { attachments: attachments.length } : {}),
     };
     this.putAsk(record);
-    const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages, readsOnly || startsAlone || openToAll));
+    const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages, readsOnly || startsAlone || openToAll || managerSpeaks));
     return { ok: true, askId: record.id, done, ...(use?.state === 'warn' ? { warning: `You've used ${use.text} on ${w.name} this month. It stops taking work from you at the limit.` } : {}) };
   }
 
@@ -9811,7 +9818,16 @@ export class OrgService {
       if (seen) row.lastSeen = seen;
       rows.set(who.slackUserId, row);
     };
-    for (const a of this.allAsks()) if (a.via !== 'trigger' && a.slackUserId) used({ name: a.by, slackUserId: a.slackUserId }, a.workerName, a.at);
+    // A listener's ask is shown by its trigger's name, but says who in Slack
+    // spoke: they asked a worker as surely as a DM would have.
+    const named = new Map<string, string>();
+    // The name they went by when they asked some other way, else Slack's.
+    for (const a of this.allAsks()) if (a.via !== 'trigger' && a.slackUserId && !named.has(a.slackUserId)) named.set(a.slackUserId, a.by);
+    const nameOf = (id: string) => named.get(id) ?? named.set(id, this.namesFor([id])[0]).get(id)!;
+    for (const a of this.allAsks()) {
+      const id = a.via === 'trigger' ? (a.slackUserId ?? a.from?.slackUserId) : a.slackUserId;
+      if (id) used({ name: a.via === 'trigger' && !a.slackUserId ? nameOf(id) : a.by, slackUserId: id }, a.workerName, a.at);
+    }
     for (const t of this.deps.teams?.list().tasks ?? []) if (t.requestedBy?.slackUserId) used({ name: t.requestedBy.name, slackUserId: t.requestedBy.slackUserId }, t.teamName, t.createdAt);
     return { ok: true, people: [...rows.values()].sort((a, b) => a.name.localeCompare(b.name)) };
   }
@@ -9848,6 +9864,10 @@ export class OrgService {
         tools: this.toolsOf(w),
         roleToolsAlways: w.caps.roleToolsAlways === true,
         alwaysAllow: w.caps.alwaysAllow ?? [],
+        ...(w.jobDescription ? { job: w.jobDescription } : {}),
+        ...(this.deps.models
+          ? { flows: this.deps.models.flows(w.flowIds).map((f) => ({ name: f.name, steps: f.steps.map((s) => ({ id: s.id, ...(s.tools ? { tools: s.tools } : {}), text: s.systemPromptOverride ?? '' })) })) }
+          : {}),
       })),
       cleared: policy.allowedMcpServers ?? [],
       ...(this.deps.tools ? { installed: this.deps.tools.list([]).tools.map((t) => t.name) } : {}),
@@ -9866,6 +9886,8 @@ export class OrgService {
     const s = found.suggestions.find((x) => x.id === id);
     if (!s) return { ok: false, error: 'That’s already sorted, or no longer applies. Refresh to see what’s left.' };
     const a = s.action;
+    // A flow change is drafted and tried on the worker's own Tuning tab.
+    if (a.kind === 'tuneFlow') return { ok: false, error: `Change it on ${s.workers[0]}’s Tuning tab: say what's wrong there and try the change on a past run.` };
     if (a.kind === 'shareWorker') {
       const w = this.deps.workers.get(a.workerId);
       if (!w) return { ok: false, error: 'That worker is gone.' };

@@ -106,3 +106,52 @@ describe('org tuning', () => {
     expect(orgTuning({ ...base, workers: [worker('pilot')], runs: [checkpoint, checkpoint, checkpoint] })).toEqual([]);
   });
 });
+
+describe('org tuning: a tool its job names that no step uses', () => {
+  const gather = { id: 'gather', tools: ['Read', 'mcp__acme-tracker__get_issue'], text: 'Read every open ticket in the tracker.' };
+  const rank = { id: 'rank', tools: ['Read', 'Write'], text: 'Rank what gather found.' };
+  const ranker = (over: Partial<OrgTuningWorker> = {}) =>
+    worker('oscar', {
+      tools: ['acme-tracker', 'overapi-roadboard'],
+      job: 'Rank the review queue. For each ticket, find its linked Roadboard feature and its insight count.',
+      flows: [{ name: 'Queue ranking', steps: [gather, rank] }],
+      ...over,
+    });
+  const runs = [run('oscar', { createdAt: NOW - 2 * DAY }), run('oscar', { createdAt: NOW - DAY })];
+
+  it('says so when the job names it, by name or by its last word, and no step lists or mentions it', () => {
+    const s = orgTuning({ ...base, runs, workers: [ranker()] });
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({
+      id: 'unused:oscar:overapi-roadboard',
+      title: 'Oscar’s job uses overapi-roadboard, but no step of its flow does',
+      apply: 'Change Oscar’s flow',
+      runs: 2,
+      lastAt: NOW - DAY,
+      action: { kind: 'tuneFlow', workerId: 'oscar', tool: 'overapi-roadboard', ask: expect.stringContaining('Add overapi-roadboard to the step') },
+    });
+    expect(s[0].why).toContain('“Queue ranking”');
+  });
+
+  it('goes away once a step lists it, by tool or by server, or says to use it', () => {
+    const listed = (tools: string[]) => ranker({ flows: [{ name: 'Queue ranking', steps: [{ ...gather, tools: [...gather.tools, ...tools] }, rank] }] });
+    expect(orgTuning({ ...base, runs, workers: [listed(['mcp__overapi-roadboard__feature_get'])] })).toEqual([]);
+    expect(orgTuning({ ...base, runs, workers: [listed(['mcp__overapi-roadboard'])] })).toEqual([]);
+    expect(orgTuning({ ...base, runs, workers: [ranker({ flows: [{ name: 'Queue ranking', steps: [{ ...gather, text: 'Then read each Roadboard feature.' }, rank] }] })] })).toEqual([]);
+  });
+
+  it('still says so when only a step that reads files names it', () => {
+    const s = orgTuning({ ...base, runs, workers: [ranker({ flows: [{ name: 'Queue ranking', steps: [gather, { ...rank, text: 'Rank by Roadboard insight count.' }] }] })] });
+    expect(s.map((x) => x.id)).toEqual(['unused:oscar:overapi-roadboard']);
+  });
+
+  it('stays quiet for a tool the job never names, a step that may use any tool, or a worker with no runs', () => {
+    expect(orgTuning({ ...base, runs, workers: [ranker({ job: 'Rank the review queue.' })] })).toEqual([]);
+    expect(orgTuning({ ...base, runs, workers: [ranker({ flows: [{ name: 'Queue ranking', steps: [gather, { id: 'rank', text: 'Rank.' }] }] })] })).toEqual([]);
+    expect(orgTuning({ ...base, runs: [], workers: [ranker()] })).toEqual([]);
+  });
+
+  it('doesn’t take a short or common last word for the tool', () => {
+    expect(orgTuning({ ...base, runs, workers: [ranker({ tools: ['acme-tracker', 'team-db'], job: 'Use the db for counts.' })] })).toEqual([]);
+  });
+});
