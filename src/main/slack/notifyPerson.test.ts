@@ -51,6 +51,17 @@ describe('a worker telling someone through the server', () => {
     expect(h.posts.map((p) => p.channel)).toEqual(['U0ACMEPAT', 'C0ACMEQA1']);
   });
 
+  it('hands a channel post to the worker’s thread, with its run, and leaves DMs alone', async () => {
+    const seen: unknown[] = [];
+    const h = harness({
+      workerFor: (conv) => (conv === 'conv-robin' ? { id: 'w-robin', name: 'Robin', runId: 'run-7' } : undefined),
+      posted: (p) => seen.push(p),
+    });
+    await h.send('C0ACMEQA1');
+    await h.send('U0ACMEPAT');
+    expect(seen).toEqual([{ channel: 'C0ACMEQA1', ts: '1.2', worker: { id: 'w-robin', name: 'Robin' }, runId: 'run-7' }]);
+  });
+
   it('asks for a channel’s id, not its name', async () => {
     const h = harness();
     expect(await h.send('#qa')).toMatchObject({ ok: false, error: expect.stringContaining('starts with C') });
@@ -91,7 +102,7 @@ describe('a worker telling someone through the server', () => {
     const h = harness({
       postMessage: async (_bot, post) => {
         posts.push(post);
-        return post.username ? { ok: false, error: 'missing_scope' } : { ok: true, data: {} };
+        return post.username ? { ok: false, error: 'missing_scope' } : { ok: true, data: { channel: post.channel, ts: '1.3' } };
       },
     });
     expect((await h.send('U0ACMEPAT', 'done')).ok).toBe(true);

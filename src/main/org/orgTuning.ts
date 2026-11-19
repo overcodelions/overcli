@@ -14,6 +14,7 @@
 // the step allowed): there is nothing to dismiss or keep in step.
 
 import { parseMcpToolName } from '../../shared/flows/mcpTools';
+import { mcpServerKey } from '../../shared/flows/toolScope';
 
 export const ORG_TUNING_DAYS = 30;
 /// A step stopped for an OK in at least this many runs…
@@ -46,6 +47,11 @@ export interface OrgTuningWorker {
   tools: string[];
   roleToolsAlways: boolean;
   alwaysAllow: string[];
+  /// Its job description: what says a tool is meant for its runs.
+  job?: string;
+  /// Its flows' steps: the tools each lists (absent: it may use any) and
+  /// the step's own instructions.
+  flows?: Array<{ name: string; steps: Array<{ id: string; tools?: string[]; text: string }> }>;
 }
 
 export type OrgTuningAction =
@@ -53,7 +59,9 @@ export type OrgTuningAction =
   | { kind: 'clearTool'; tool: string }
   | { kind: 'useOwnTools'; workerIds: string[] }
   | { kind: 'alwaysAllowStep'; workerId: string; key: string }
-  | { kind: 'shareWorker'; workerId: string; people: string[] };
+  | { kind: 'shareWorker'; workerId: string; people: string[] }
+  /// A flow change, not a switch: opens the worker's own Tuning with `ask`.
+  | { kind: 'tuneFlow'; workerId: string; tool: string; ask: string };
 
 /// Someone asked the Slack front door for a worker by name that isn't
 /// shared with them, so it went to another worker.
@@ -236,7 +244,54 @@ export function orgTuning(input: {
     });
   }
 
+  // ---- A tool its job names that no step of its flow uses ----
+  // Holding a tool isn't using it: a step with its own tool list and its own
+  // checklist does what those say. A ranking worker's job said to read the
+  // roadmap tool; its gather step listed every other tool and never that one,
+  // so every run ranked without it, and the worker said it had no access.
+  for (const w of input.workers) {
+    const steps = (w.flows ?? []).flatMap((f) => f.steps.map((s) => ({ ...s, flow: f.name })));
+    // A step with no list may use any tool it holds: nothing is skipped.
+    if (!steps.length || !w.job?.trim() || steps.some((s) => s.tools === undefined)) continue;
+    const mine = runs.filter((r) => r.workerId === w.id);
+    if (!mine.length) continue;
+    for (const tool of w.tools) {
+      if (!namedIn(w.job, tool)) continue;
+      const key = mcpServerKey(tool);
+      const listed = steps.some((s) => (s.tools ?? []).some((t) => (parseMcpToolName(t)?.server ?? /^mcp__(.+)$/.exec(t)?.[1]) === key));
+      // Named in a step that can reach outside tools; a step that only reads
+      // files ("rank by its insight count") uses what another step fetched.
+      if (listed || steps.some((s) => (s.tools ?? []).some((t) => t.startsWith('mcp__')) && namedIn(s.text, tool))) continue;
+      const flows = [...new Set(steps.map((s) => s.flow))];
+      out.push({
+        id: `unused:${w.id}:${tool}`,
+        title: `${w.name}’s job uses ${tool}, but no step of its flow does`,
+        why: `${w.name} has ${tool} and its job says to use it, but each step of ${list(flows.map((f) => `“${f}”`))} lists its own tools and follows its own instructions, and none names ${tool}. So its runs never call it, and work that needs it goes without. Add it to the step that should use it, and say in that step what to get from it.`,
+        apply: `Change ${w.name}’s flow`,
+        action: {
+          kind: 'tuneFlow',
+          workerId: w.id,
+          tool,
+          ask: `My job says to use ${tool}, but no step of my flow lists it or says what to do with it, so my runs never call it. Add ${tool} to the step that gathers what the job needs from it (read calls only) and say in that step exactly what to get from it and where to record it, so later steps can use it.`,
+        },
+        runs: mine.length,
+        workers: [w.name],
+        lastAt: Math.max(...mine.map((r) => r.createdAt)),
+      });
+    }
+  }
+
   return out.sort((a, b) => b.runs - a.runs || b.lastAt - a.lastAt);
+}
+
+/// Whether text names a tool: by its name, or by its last distinctive word
+/// (`overapi-productboard` is the job's "Productboard").
+function namedIn(text: string, tool: string): boolean {
+  const t = text.toLowerCase();
+  const name = tool.toLowerCase();
+  if (t.includes(name)) return true;
+  const last = name.split(/[^a-z0-9]+/).filter(Boolean).pop() ?? '';
+  return last.length >= 6 && last !== name && new RegExp(`(^|[^a-z0-9])${last}($|[^a-z0-9])`).test(t);
 }
 
 function plural(n: number, one: string): string {

@@ -229,7 +229,7 @@ describe('whether a tool\'s keys sign in', () => {
 });
 
 describe('a trigger starting work on its own', () => {
-  const fire = (trust: Worker['trust'], starts: boolean) => {
+  const fire = (trust: Worker['trust'], starts: boolean, from?: string) => {
     const seen: Array<{ text: string; untrusted?: boolean; mayLaunch?: boolean }> = [];
     const w = { ...triage, trust };
     const h = harness(fakeTriggers(), {
@@ -248,7 +248,7 @@ describe('a trigger starting work on its own', () => {
         workerNames: () => [w.name],
       } as never,
     });
-    h.svc.startAsk(service, 'triage', 'Fix ACME-9', 'trigger', undefined, undefined, undefined, undefined, false, starts);
+    h.svc.startAsk(service, 'triage', 'Fix ACME-9', 'trigger', undefined, undefined, undefined, undefined, false, starts, from ? { slackUserId: from, where: 'Queue questions' } : undefined);
     return seen[0];
   };
 
@@ -267,6 +267,19 @@ describe('a trigger starting work on its own', () => {
   it('still proposes for a worker that is not autonomous, opted in or not', () => {
     expect(fire('trusted', true).mayLaunch).toBe(false);
     expect(fire('probation', true).mayLaunch).toBe(false);
+  });
+
+  it('takes its manager speaking in a channel it listens in as the manager, still untrusted text', () => {
+    const got = fire('trusted', false, PAT);
+    expect(got).toMatchObject({ untrusted: true, mayLaunch: true });
+    expect(got.text).toContain('Asked by Pat, your manager, in Slack.');
+    expect(got.text).not.toContain('not your manager');
+  });
+
+  it('still proposes when someone else speaks there', () => {
+    const got = fire('trusted', false, 'U0ACMESAM');
+    expect(got.mayLaunch).toBe(false);
+    expect(got.text).toContain('who is not your manager');
   });
 });
 

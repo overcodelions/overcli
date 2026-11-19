@@ -178,24 +178,36 @@ function isSafeRefName(name: string): boolean {
   return name.length > 0 && !name.startsWith('-');
 }
 
-/// Best-guess "base branch" for new agents. Prefers the currently
-/// checked-out local branch (so agents inherit the user's WIP branch),
-/// falls back to origin/HEAD → main → master. Mirrors the Swift
-/// preferredAgentBaseBranch + defaultBranch pair.
+/// `refs/remotes/origin/HEAD` points at e.g. `refs/remotes/origin/release/2`;
+/// the default branch is everything after the remote, slashes and all.
+function originHeadBranch(symbolicRefStdout: string): string | null {
+  const name = symbolicRefStdout.trim().replace(/^refs\/remotes\/origin\//, '');
+  return name && isSafeRefName(name) ? name : null;
+}
+
+/// The repo's default branch: what new agents, flows and team tasks fork
+/// from, and what "has this landed?" checks compare against. origin/HEAD →
+/// main → master (local or on origin). Never the branch the main checkout
+/// happens to be on: a checkout left on someone's feature branch would hand
+/// that branch's commits to every new worktree, and its PR would carry them.
+/// The current branch is only a last resort, for a repo with no
+/// main/master and no origin/HEAD.
 export function detectBaseBranch(projectPath: string): string {
+  const head = runGit(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], projectPath);
+  if (head.exitCode === 0) {
+    const name = originHeadBranch(head.stdout);
+    if (name) return name;
+  }
+  for (const name of ['main', 'master']) {
+    for (const ref of [`refs/heads/${name}`, `refs/remotes/origin/${name}`]) {
+      if (runGit(['rev-parse', '--verify', '--quiet', ref], projectPath).exitCode === 0) return name;
+    }
+  }
   const current = runGit(['branch', '--show-current'], projectPath);
   if (current.exitCode === 0) {
     const trimmed = current.stdout.trim();
     if (isSafeRefName(trimmed)) return trimmed;
   }
-  const head = runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], projectPath);
-  if (head.exitCode === 0) {
-    const parts = head.stdout.trim().split('/');
-    const short = parts[parts.length - 1];
-    if (short) return short;
-  }
-  if (runGit(['rev-parse', '--verify', 'main'], projectPath).exitCode === 0) return 'main';
-  if (runGit(['rev-parse', '--verify', 'master'], projectPath).exitCode === 0) return 'master';
   return 'main';
 }
 
@@ -475,21 +487,36 @@ export function runGitAsync(
 /// Async sibling of `detectBaseBranch` — same fallback chain, non-blocking
 /// git. Used by the flow-launch worktree path.
 export async function detectBaseBranchAsync(projectPath: string): Promise<string> {
+  const head = await runGitAsync(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], projectPath);
+  if (head.exitCode === 0) {
+    const name = originHeadBranch(head.stdout);
+    if (name) return name;
+  }
+  for (const name of ['main', 'master']) {
+    for (const ref of [`refs/heads/${name}`, `refs/remotes/origin/${name}`]) {
+      if ((await runGitAsync(['rev-parse', '--verify', '--quiet', ref], projectPath)).exitCode === 0) {
+        return name;
+      }
+    }
+  }
   const current = await runGitAsync(['branch', '--show-current'], projectPath);
   if (current.exitCode === 0) {
     const trimmed = current.stdout.trim();
-    if (trimmed) return trimmed;
+    if (isSafeRefName(trimmed)) return trimmed;
   }
-  const head = await runGitAsync(['symbolic-ref', 'refs/remotes/origin/HEAD'], projectPath);
-  if (head.exitCode === 0) {
-    const parts = head.stdout.trim().split('/');
-    const short = parts[parts.length - 1];
-    if (short) return short;
-  }
-  if ((await runGitAsync(['rev-parse', '--verify', 'main'], projectPath)).exitCode === 0) return 'main';
-  if ((await runGitAsync(['rev-parse', '--verify', 'master'], projectPath)).exitCode === 0)
-    return 'master';
   return 'main';
+}
+
+/// Bring `origin/<branch>` up to date before forking from it. Bounded and
+/// non-fatal: offline or no credentials just means we fork from what's here.
+async function refreshRemoteBranch(projectPath: string, branch: string): Promise<void> {
+  if ((await runGitAsync(['remote', 'get-url', 'origin'], projectPath)).exitCode !== 0) return;
+  await runGitAsync(
+    ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+    projectPath,
+    { GIT_TERMINAL_PROMPT: '0' },
+    FETCH_TIMEOUT_MS,
+  );
 }
 
 /// Does `baseBranch` resolve to a commit in this repo? Lets a caller that
@@ -675,7 +702,16 @@ export async function createWorktreeAsync(
       error: `${args.projectPath} isn't a git repo. Initialize one (\`git init\`) or pick a different project.`,
     };
   }
-  const startPoint = await resolveBaseBranchStartPointAsync(args.projectPath, args.baseBranch, args.preferRemote === true);
+  // Forking from the default branch means forking from what origin has:
+  // a local master nobody has pulled in a week would put a week of other
+  // people's commits into the new branch's PR.
+  const isDefault = args.baseBranch === (await detectBaseBranchAsync(args.projectPath));
+  if (isDefault) await refreshRemoteBranch(args.projectPath, args.baseBranch);
+  const startPoint = await resolveBaseBranchStartPointAsync(
+    args.projectPath,
+    args.baseBranch,
+    args.preferRemote === true || isDefault,
+  );
   if (!startPoint) {
     return {
       ok: false,

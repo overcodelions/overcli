@@ -8,5 +8,5 @@ export const TRIGGER_STARTS =
 
 /// The text without the preface line in front of it, when it has one.
 export function withoutPreface(text: string): string {
-  return text.replace(/^\((?:Set off by a trigger|Asked by [^\n]*?, who is not your manager)[^\n]*\)\n/, '');
+  return text.replace(/^\((?:Set off by a trigger|Asked by [^\n]*?, (?:who is not your manager|your manager, in Slack))[^\n]*\)\n/, '');
 }

@@ -3197,7 +3197,9 @@ export const CONSOLE_JS = String.raw`
     if (extra && extra.processId && extra.processId !== state.processId) state.processView = null;
     state.tab = tab; state.hashQuery = null; if (extra) Object.assign(state, extra);
     try { history.pushState(null, '', '#' + hashFor()); } catch (e) {}
-    render(); window.scrollTo(0, 0);
+    // No scroll here: the page on screen stays put until the next one is
+    // up, and render() takes a new page to the top as it swaps in.
+    render();
   }
   function openWorker(id) { go('worker', { workerId: id, workerTab: 'talk' }); }
   function openRun(runId) { go('run', { runId: runId }); }
@@ -16582,6 +16584,8 @@ export const CONSOLE_JS = String.raw`
           h('p', { style: 'margin:0;font-size:13.5px;line-height:1.55;max-width:84ch', text: s.why }),
           h('div', { class: 'row', style: 'gap:10px;align-items:center' }, go_, out));
         go_.onclick = function () {
+          // A flow change: its manager drafts and tries it on the worker's Tuning tab.
+          if (s.action && s.action.kind === 'tuneFlow') { state.tuneAsk = { workerId: s.action.workerId, text: s.action.ask }; go('worker', { workerId: s.action.workerId, workerTab: 'tuning' }); return; }
           var restore = busy(go_, 'Applying…');
           api('POST', '/api/admin/tuning/apply', { id: s.id }).then(function (x) {
             restore(); out.textContent = '';
@@ -18377,8 +18381,18 @@ export const CONSOLE_JS = String.raw`
       var m = wk && /^(\d+) working.*?(\d+) stuck/.exec(wk.detail);
       var n = state.totals && state.totals.workers;
       var row = function (k, v, title) { return v ? h('div', { class: 'rd-kv' }, h('span', { text: k }), h('span', { text: v, title: title || v })) : null; };
+      // A newer release only shows for admins (whoami). It links to what's
+      // new and says how to upgrade: the server never replaces itself.
+      var newer = state.me && state.me.newer;
+      var version = state.me && state.me.version ? 'v' + state.me.version : '';
       fill(body, [
-        row('Version', state.me && state.me.version ? 'v' + state.me.version : ''),
+        newer && version
+          ? h('div', { class: 'rd-kv' }, h('span', { text: 'Version' }),
+              h('span', null, version + ' · ', h('a', { href: newer.url, target: '_blank', rel: 'noopener', title: 'What’s new in ' + newer.version, text: newer.version + ' is out' })))
+          : row('Version', version),
+        newer && version
+          ? h('p', { class: 'faint rd-pad', style: 'font-size:12.5px', text: 'To upgrade, set OVERCLI_VERSION in deploy/.env if it pins an older one, then docker compose pull && docker compose up -d. Everything is on the volume, so nothing is lost.' })
+          : null,
         row('Organization', hl.org && hl.org.name),
         row('Models', model ? String(model.detail).replace(/^Signed in: /, '').replace(/\.$/, '') : '', model && model.detail),
         row('Workers', m ? (n ? n + ' · ' : '') + m[1] + ' working' + (+m[2] ? ', ' + m[2] + ' stuck' : '') : wk ? wk.detail : '', wk && wk.detail),
@@ -18951,6 +18965,8 @@ export const CONSOLE_JS = String.raw`
     var post = function (p, body) { return api('POST', path + p, body); };
     var data = null, shown = null;
     var complaint = h('textarea', { 'aria-label': 'What’s wrong', placeholder: 'The more you say, the better: “the answers are too technical for a sales rep”, “it marks things BLOCKED when it could have tried”. Leave it blank and it looks for what would help most.', style: 'min-height:112px;font-size:13.5px' });
+    // Sent here from Setup → Tuning with what to change already said.
+    if (state.tuneAsk && state.tuneAsk.workerId === w.id) { complaint.value = state.tuneAsk.text; state.tuneAsk = null; }
     var go = h('button', { class: 'btn go', text: 'Review its work' });
     // Enter reviews, as the conversation box sends. Shift or Cmd+Enter is a new line.
     // Only with something written: a blank box's review is the button's to start.

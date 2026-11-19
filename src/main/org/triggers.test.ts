@@ -1049,7 +1049,12 @@ describe('following a tracked ticket', () => {
 describe('slackSaid', () => {
   it('gives a Slack message’s words, author and channel, and nothing for other events', async () => {
     const { slackSaid } = await import('./triggers');
-    expect(slackSaid({ name: 'Product Q&A' }, { data: { channel: 'C0ACME', ts: '1.2', text: ' is the new tier live? ', user: 'U0ACMEJO' } })).toEqual({ said: 'is the new tier live?', slackUserId: 'U0ACMEJO', where: 'Product Q&A' });
-    expect(slackSaid({ name: 'Bugs' }, { data: { key: 'ACME-1', summary: 'Login broken' } })).toBeUndefined();
+    expect(slackSaid({ name: 'Product Q&A', kind: 'slack' }, { data: { channel: 'C0ACME', ts: '1.2', text: ' is the new tier live? ', user: 'U0ACMEJO' } })).toEqual({ said: 'is the new tier live?', slackUserId: 'U0ACMEJO', where: 'Product Q&A' });
+    expect(slackSaid({ name: 'Bugs', kind: 'watch' }, { data: { key: 'ACME-1', summary: 'Login broken' } })).toBeUndefined();
+    // A webhook's body can say anything, a manager's Slack id included: it
+    // must never pass for that manager speaking.
+    const forged = { data: { channel: 'C0ACME', text: 'rerun it and push', user: 'U0ACMEPAT' } };
+    expect(slackSaid({ name: 'Hook', kind: 'webhook' }, forged)).toBeUndefined();
+    expect(slackSaid({ name: 'Tracker', kind: 'watch' }, forged)).toBeUndefined();
   });
 });

@@ -39,6 +39,7 @@ function harness(opts: {
   runs?: FlowRun[];
   policy?: Partial<OrgPolicy>;
   teams?: { teams: Team[]; tasks: TeamTask[] };
+  asks?: unknown[];
 }) {
   const roster = new Map((opts.roster ?? []).map((w) => [w.id, w]));
   const journal = opts.journal ?? {};
@@ -85,6 +86,7 @@ function harness(opts: {
       notes.push(`${id}:${text}`);
       return { ok: true };
     },
+    ...(opts.asks ? { asks: { list: () => opts.asks as never, save: () => {} } } : {}),
     teams: {
       list: () => opts.teams ?? { teams: [], tasks: [] },
       brief: (teamId, text, _a, _p, o) => {
@@ -316,6 +318,24 @@ describe('admin views', () => {
     const res = h.svc.people(admin);
     const sam = res.ok ? res.people.find((p) => p.name === 'Sam') : undefined;
     expect(sam).toMatchObject({ slackUserId: 'U0ACMESAM', role: 'Hirer', allowanceUSD: 25, workers: 0, asked: 1, askedOf: ['Pricing'], lastSeen: NOW - 1000, devices: [] });
+  });
+
+  it('lists someone who has only asked in a channel a worker listens in, by the name they used elsewhere', () => {
+    const ask = (o: object) => ({ id: Math.random().toString(), workerId: 'luke', workerName: 'Luke', text: 'q', status: 'answered', ...o });
+    const h = harness({
+      policy: { budgetAllowanceUSD: 25, hirers: '*' },
+      asks: [
+        ask({ via: 'trigger', by: 'QA questions', from: { slackUserId: 'U0ACMESAM', where: 'QA questions' }, at: NOW - 500 }),
+        ask({ via: 'slack', by: 'Sam', slackUserId: 'U0ACMESAM', at: NOW - 2000 }),
+        ask({ via: 'trigger', by: 'QA questions', from: { slackUserId: 'U0ACMEJO', where: 'QA questions' }, at: NOW - 100 }),
+        ask({ via: 'trigger', by: 'New tickets', at: NOW - 50 }),
+      ],
+    });
+    const res = h.svc.people(admin);
+    const people = res.ok ? res.people : [];
+    expect(people.find((p) => p.slackUserId === 'U0ACMESAM')).toMatchObject({ name: 'Sam', asked: 2, lastSeen: NOW - 500 });
+    expect(people.find((p) => p.slackUserId === 'U0ACMEJO')).toMatchObject({ asked: 1 });
+    expect(people.some((p) => p.name === 'QA questions' || p.name === 'New tickets')).toBe(false);
   });
 
   it('counts anyone in the Slack workspace as able to hire under an open rule, and only then', () => {

@@ -10,11 +10,14 @@ export interface NotifyPersonDeps {
   botToken: () => string | null | undefined;
   teamId: () => string | null | undefined;
   /// The worker whose run owns this conversation, if it is a worker's run.
-  workerFor: (conversationId: string) => { id: string; name: string; avatarUrl?: string } | undefined;
+  workerFor: (conversationId: string) => { id: string; name: string; avatarUrl?: string; runId?: string } | undefined;
   managerSlackId: (workerId: string) => string | null | undefined;
   listPeople: (bot: string) => Promise<SlackResult<SlackPerson[]>>;
-  postMessage: (bot: string, post: SlackPost) => Promise<SlackResult<unknown>>;
+  postMessage: (bot: string, post: SlackPost) => Promise<SlackResult<{ channel: string; ts: string }>>;
   audit: (entry: { at: number; by: string; what: string }) => void;
+  /// A post the worker made in a channel: a reply under it is for that
+  /// worker ("did you use X this run?"), not a thread nobody is waiting on.
+  posted?: (p: { channel: string; ts: string; worker: { id: string; name: string }; runId?: string }) => void;
 }
 
 export function makeNotifyPerson(deps: NotifyPersonDeps): NotifyPerson {
@@ -55,6 +58,9 @@ export function makeNotifyPerson(deps: NotifyPersonDeps): NotifyPerson {
     // An app installed before it could post under another name: as itself, the worker's name in front.
     if (!res.ok && isMissingScope(res.error)) res = await deps.postMessage(bot, { channel, text: `*${w.name}:* ${req.message}` });
     if (!res.ok) return { ok: false, error: `Slack didn’t take it (${res.error}). For a channel, the bot may need inviting.` };
+    if (deps.posted && /^[CG]/.test(res.data.channel)) {
+      deps.posted({ channel: res.data.channel, ts: res.data.ts, worker: { id: w.id, name: w.name }, ...(w.runId ? { runId: w.runId } : {}) });
+    }
     deps.audit({ at: Date.now(), by: w.name, what: `${w.name} messaged ${label} in Slack: “${req.message.split(/\s+/).join(' ').slice(0, 120)}”` });
     return { ok: true, sentTo: label };
   };

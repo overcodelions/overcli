@@ -28,7 +28,7 @@ import {
 import { primeBackendUpdates } from './backendUpdater';
 import {
   runGit,
-  createWorktree,
+  createWorktreeAsync,
   createReviewWorktree,
   worktreeForBranch,
   promoteReviewWorktree,
@@ -1849,7 +1849,7 @@ export function registerIpc(): void {
     }
     return runGit(args, cwd);
   });
-  ipcMain.handle('git:createWorktree', (_e, args) => createWorktree(args));
+  ipcMain.handle('git:createWorktree', (_e, args) => createWorktreeAsync(args));
   ipcMain.handle('git:createReviewWorktree', (_e, args) => createReviewWorktree(args));
   ipcMain.handle('git:worktreeForBranch', (_e, args) => worktreeForBranch(args));
   ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));

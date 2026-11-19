@@ -204,6 +204,12 @@ type PublicHandler = (body: Record<string, unknown>, params: string[], base: str
 const ROLES = new Set(['member', 'hirer', 'approver', 'admin']);
 
 /// People: invites, join requests, roles, sign-ins.
+/// People rows whose name is still a bare Slack id, named from Slack's list.
+export function withSlackNames<T extends { name: string; slackUserId?: string }>(rows: T[], slack: readonly SlackPerson[]): T[] {
+  const byId = new Map(slack.map((p) => [p.id, p.name]));
+  return rows.map((r) => (r.slackUserId && r.name === r.slackUserId && byId.get(r.slackUserId) ? { ...r, name: byId.get(r.slackUserId)! } : r));
+}
+
 function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () => Promise<SlackPerson[]>): Array<{ method: string; path: RegExp; handle: Handler }> {
   const str = (v: unknown): string => (typeof v === 'string' ? v : '');
   const role = (v: unknown): PersonRole => (ROLES.has(str(v)) ? (str(v) as PersonRole) : 'member');
@@ -1638,7 +1644,17 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         return { ok: false, error: 'Say answer, approve, revise, continue, cancel, accept or retryPiece.' };
       },
     },
-    { method: 'GET', path: /^\/api\/admin\/people$/, handle: (c) => org.people(c) },
+    {
+      method: 'GET',
+      path: /^\/api\/admin\/people$/,
+      handle: async (c) => {
+        const res = org.people(c);
+        // Someone known only by their Slack id (they asked in a channel a
+        // worker listens in, and nowhere else) goes by their Slack name.
+        if (!res.ok || !slackPeople || !res.people.some((p) => p.name === p.slackUserId)) return res;
+        return { ...res, people: withSlackNames(res.people, await slackPeople().catch(() => [])) };
+      },
+    },
     { method: 'GET', path: /^\/api\/admin\/health$/, handle: (c) => org.health(c) },
     {
       // The Slack app to create, for Connect → Slack.

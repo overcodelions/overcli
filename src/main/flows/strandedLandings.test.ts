@@ -171,12 +171,13 @@ describe('auditWorkerLandings (real git)', () => {
   });
 
   it("prefers the item's recorded base over whatever is checked out", async () => {
-    // With prometheus/clean checked out, detectBaseBranch says "prometheus/clean"
-    // and the clean shift reads as merged — wrong. The recorded base is right.
+    // With prometheus/clean checked out, the clean shift must still be judged
+    // against master: neither the detected default nor the recorded base may
+    // take the checked out branch as the base.
     git(repo, 'checkout', '-q', 'prometheus/clean');
     try {
       const detected = await auditWorkerLandings([workerBatch([item('clean', { headSha: sha.clean })])]);
-      expect(detected.merged).toHaveLength(1);
+      expect(detected.stranded.map((s) => s.baseBranch)).toEqual(['master']);
 
       const recorded = await auditWorkerLandings([
         workerBatch([item('clean', { headSha: sha.clean, baseBranch: 'master' })]),
