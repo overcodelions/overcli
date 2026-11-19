@@ -4,6 +4,11 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.4] - 2026-11-18
+
+### Changed
+- **The reference says who needs Bedrock access.** On Bedrock the server's role does, not the workers' roles: workers' `claude` goes through the server's signing proxy. `AWS_REGION` (or `AWS_DEFAULT_REGION`) is required there, and with `AWS_BEARER_TOKEN_BEDROCK` set there is no proxy: workers call Bedrock with the key directly.
+
 ## [0.26.3] - 2026-11-18
 
 ### Upgrading
@@ -1464,7 +1469,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.3...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.4...HEAD
+[0.26.4]: https://github.com/overcodelions/overcli/compare/v0.26.3...v0.26.4
 [0.26.3]: https://github.com/overcodelions/overcli/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/overcodelions/overcli/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/overcodelions/overcli/compare/v0.26.0...v0.26.1
