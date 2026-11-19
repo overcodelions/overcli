@@ -60,6 +60,7 @@ vi.mock('./flows/runtime', () => ({
   FlowRuntime: class {
     setRunObserver() {}
     setToolScopes() {}
+    setWorkerTools() {}
     setWorkerSupervisor() {}
     observeEvent() {}
     listRuns() {
