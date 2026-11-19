@@ -4,6 +4,12 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **overdb can see which org it publishes to.** `~/.overcli/inbox/connections/.status.json` says whether this app is signed in to an org, which one and at what address, and why a database published from overdb is waiting. It never holds a token. It's rewritten on start, after each inbox scan and on every sign-in or sign-out, and only when it changes. (#1210)
+
+### Fixed
+- **A database from overdb that has to wait now says so,** with one notification per database and what to do about it, instead of a line in the log. The sign-in message names Settings → Your orgs, as Settings does. (#1209)
+
 ## [0.26.2] - 2026-11-17
 
 ### Upgrading

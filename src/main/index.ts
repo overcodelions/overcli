@@ -639,7 +639,10 @@ export function registerIpc(): void {
   // in a dialog the model can't answer for them (org/orgChatTools.ts).
   installOrgChatGuard(confirmOrgChange);
   // Main changes the org server list; the renderer's copy follows.
-  onOrgServersChanged((s) => emitToRenderer({ type: 'orgServers', servers: s.orgServers ?? [], ...(s.orgDefaultServerId ? { defaultId: s.orgDefaultServerId } : {}), ...(s.orgServerUrl ? { orgServerUrl: s.orgServerUrl } : {}) }));
+  onOrgServersChanged((s) => {
+    connectionsInbox?.refreshStatus();
+    emitToRenderer({ type: 'orgServers', servers: s.orgServers ?? [], ...(s.orgDefaultServerId ? { defaultId: s.orgDefaultServerId } : {}), ...(s.orgServerUrl ? { orgServerUrl: s.orgServerUrl } : {}) });
+  });
   flowRuntime = new FlowRuntime(
     runner,
     flowAwareEmit,
@@ -1063,6 +1066,8 @@ export function registerIpc(): void {
       if (ok && token?.trim()) {
         void connectionsInbox?.retry();
         void apisInbox?.retry();
+      } else if (ok) {
+        connectionsInbox?.refreshStatus();
       }
       return ok ? { ok } : { ok, error: 'This build cannot store secrets — set $OVERCLI_ORG_TOKEN instead.' };
     } catch (err) {
@@ -1236,7 +1241,10 @@ export function registerIpc(): void {
     if (!id) return { ok: true };
     const at = orgServerAccess(id);
     if (at.ok) await signOutAt(at.url, at.token);
-    return { ok: forgetOrgServer(id) };
+    const ok = forgetOrgServer(id);
+    // A sign-out need not change the list, so it is told here too.
+    connectionsInbox?.refreshStatus();
+    return { ok };
   });
   ipcMain.handle('org:publishWorker', async (_e, { id, visibility, serverId }) => {
     const at = orgServerAccess(serverId);
@@ -4579,7 +4587,9 @@ function confirmOrgChange(req: OrgChangeRequest): Promise<boolean> {
 /// org; what arrives before a sign-in waits for one. Not in `registerIpc`,
 /// for the same reason as the handoff inbox.
 function startConnectionsInbox(): void {
-  const signInFirst = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org.', retry: true };
+  const signInFirst = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your orgs.', retry: true };
+  // One notice per push that has to wait, not one per scan.
+  const toldWaiting = new Set<string>();
   connectionsInbox = new ConnectionsInbox(
     defaultConnectionsDir(),
     async (push) => {
@@ -4591,9 +4601,21 @@ function startConnectionsInbox(): void {
       return publishOverdbConnectionToOrg(url.url, token, push);
     },
     {
-      pushed: (push, message) => host().notify({ title: `${push.connection.name} sent to your org`, body: message }),
-      waiting: (push, error) => log('info', 'overdbInbox', `${push.connection.name} is waiting: ${error}`),
+      pushed: (push, message) => {
+        toldWaiting.delete(push.id);
+        host().notify({ title: `${push.connection.name} sent to your org`, body: message });
+      },
+      waiting: (push, error) => {
+        log('info', 'overdbInbox', `${push.connection.name} is waiting: ${error}`);
+        if (toldWaiting.has(push.id)) return;
+        toldWaiting.add(push.id);
+        host().notify({ title: `${push.connection.name} from overdb is waiting`, body: `It goes to your org once this is fixed: ${error}` });
+      },
       rejected: (name, reason) => host().notify({ title: 'A database from overdb was not sent', body: `${name}: ${reason}` }),
+    },
+    () => {
+      const at = orgServerAccess();
+      return at.ok ? { signedIn: true, url: at.url, ...(at.entry.name ? { org: at.entry.name } : {}) } : { signedIn: false, error: at.error };
     },
   );
   try {
