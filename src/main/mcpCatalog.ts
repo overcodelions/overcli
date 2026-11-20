@@ -266,10 +266,12 @@ const CATALOG: CatalogEntry[] = [
     category: 'Cloud',
     transport: 'stdio',
     targets: ALL_CLIS,
-    // Replaces the retired `awslabs.aws-api-mcp-server`, which AWS put into
-    // end-of-development (see MIGRATION.md linked from docsUrl). Two things
-    // the guide is explicit about, both easy to get wrong:
-    //   - pin the proxy version; `@latest` is called out as unsupported here
+    // The AWS MCP Server from AWS's Agent Toolkit. Replaces the retired
+    // `awslabs.aws-api-mcp-server`, which AWS put into end-of-development.
+    // Things the guide is explicit about, easy to get wrong:
+    //   - run the `mcp-proxy-for-aws-cli` distribution under uvx (its deps
+    //     pinned); plain `mcp-proxy-for-aws` is now the library. We pin its
+    //     version as well rather than track @latest.
     //   - the default region rides in `--metadata`, NOT `env`. The managed
     //     server reads its region from proxy metadata; an `AWS_REGION` env
     //     var would only steer local credential resolution, so the old
@@ -278,16 +280,20 @@ const CATALOG: CatalogEntry[] = [
     config: {
       command: 'uvx',
       args: [
-        'mcp-proxy-for-aws@1.6.3',
+        'mcp-proxy-for-aws-cli@1.8.0',
         'https://aws-mcp.us-east-1.api.aws/mcp',
         '--metadata',
         'AWS_REGION=${AWS_REGION}',
       ],
     },
+    // The retired server, or the proxy run from its library package (what
+    // this entry installed before AWS shipped the `-cli` distribution).
     legacy: (config) =>
-      asArgs(config).some((a) => a.startsWith('awslabs.aws-api-mcp-server')),
+      asArgs(config).some(
+        (a) => a.startsWith('awslabs.aws-api-mcp-server') || a.startsWith('mcp-proxy-for-aws@'),
+      ),
     legacyNote:
-      'This is the retired AWS API MCP server — AWS has stopped developing it. Reinstall to switch to the managed AWS MCP endpoint.',
+      'This is an older AWS MCP setup (the retired AWS API MCP server, or the proxy\'s library package). Reinstall to switch to the Agent Toolkit\'s AWS MCP Server setup.',
     authNote:
       'No keys to paste — the proxy uses your machine\'s AWS credentials via the standard SDK chain (env vars, `~/.aws/credentials`/`config`, SSO, or an IAM role). Static keys come from `aws configure`; SSO profiles can be signed in below.',
     secrets: [
@@ -305,7 +311,7 @@ const CATALOG: CatalogEntry[] = [
         optional: true,
       },
     ],
-    docsUrl: 'https://github.com/awslabs/mcp/blob/main/src/aws-api-mcp-server/MIGRATION.md',
+    docsUrl: 'https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html',
   },
   {
     id: 'google-cloud-run',

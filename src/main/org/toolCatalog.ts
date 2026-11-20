@@ -245,12 +245,19 @@ export const TOOL_CATALOG: CatalogTool[] = [
       SUPABASE_ACCESS_TOKEN: 'a personal access token from Account → Access tokens; add --project-ref=<ref> to the command to keep it to one project',
     }),
   }),
-  command('aws', ['uvx', 'awslabs.aws-api-mcp-server@latest'], ['AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'], {
+  // The AWS MCP Server from AWS's Agent Toolkit: a managed endpoint, reached
+  // through AWS's signing proxy. It replaces aws-api-mcp-server, which AWS
+  // has stopped developing. The `-cli` package is the one AWS ships for uvx
+  // (its dependencies pinned); the version is pinned too, like the community
+  // servers above. No keys: the proxy signs with the standard credential
+  // chain, so a worker's run gives it the worker's own role (workerCloud.ts).
+  // The endpoint picks the server; `--metadata AWS_REGION=` is the region
+  // calls go to when a worker doesn't name one.
+  command('aws', ['uvx', 'mcp-proxy-for-aws-cli@1.8.0', 'https://aws-mcp.us-east-1.api.aws/mcp', '--metadata', 'AWS_REGION=us-east-1'], [], {
     title: 'AWS',
-    blurb: 'Any AWS CLI call, with the rights of the keys you give it.',
+    blurb: 'AWS’s own MCP server: call any AWS API, search the docs and use AWS’s skills, as the worker’s role. Change AWS_REGION=us-east-1 in the command to default to another region.',
     category: 'Cloud and data',
-    docs: 'https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server',
-    settings: { AWS_ACCESS_KEY_ID: 'an IAM user or role with only the rights workers need' },
+    docs: 'https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html',
   }),
   command('mongodb', ['npx', '-y', 'mongodb-mcp-server'], ['MDB_MCP_CONNECTION_STRING'], {
     title: 'MongoDB',

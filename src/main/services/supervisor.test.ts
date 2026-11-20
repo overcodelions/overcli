@@ -1061,6 +1061,62 @@ describe('Supervisor.adopt', () => {
     expect(sup.runtime('api').adopted).toBeUndefined();
   });
 
+  it('relaunches an adopted service moved to another branch, rather than leaving it stopped', async () => {
+    // An adopted leftover is no child of ours, so "was it running" cannot be
+    // asked of the spawned processes alone — the switch stopped it and then
+    // treated it as something deliberately stopped.
+    let leftover = true;
+    const { deps, spawns } = harness({
+      portOwners: async (wanted) =>
+        leftover ? holding('stale')() : new Map(wanted.map((w) => [w.port, [] as PortOwner[]])),
+      stopProcess: async () => {
+        leftover = false;
+      },
+    });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.adopt();
+
+    await sup.rebind('api', { ref: 'feat/x', path: '/wt/x' });
+
+    expect(spawns.map((s) => s.cwd)).toEqual(['/wt/x']);
+    expect(sup.runtime('api').status).toBe('ready');
+    expect(sup.runtime('api').adopted).toBeUndefined();
+  });
+
+  it('waits for an adopted process to let go of its port before relaunching', async () => {
+    let leftover = true;
+    let answering = 3;
+    const order: string[] = [];
+    const { deps, spawns } = harness({
+      portOwners: async (wanted) =>
+        leftover ? holding('stale')() : new Map(wanted.map((w) => [w.port, [] as PortOwner[]])),
+      stopProcess: async () => {
+        leftover = false;
+      },
+    });
+    deps.probe = {
+      ...deps.probe,
+      tcpOpen: async () => {
+        if (spawns.length === 0) {
+          const open = answering-- > 0;
+          order.push(open ? 'held' : 'free');
+          return open;
+        }
+        return true;
+      },
+    };
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.adopt();
+
+    await sup.restart('api');
+
+    expect(order).toEqual(['held', 'held', 'held', 'free']);
+    expect(spawns).toHaveLength(1);
+    expect(sup.runtime('api').stopping).toBeUndefined();
+  });
+
   it('asks once for the whole stack, not once per service', async () => {
     // The defect this replaced: a lookup per service is two `lsof`s and a `ps`
     // each, and a stack's worth started together time each other out against a

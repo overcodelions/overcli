@@ -227,6 +227,11 @@ const URL_RE = /https?:\/\/[^\s<>)"'\]]+/g;
 /// full stop only as PASS ("PASS. Nothing to add"): "Pass: all checks are
 /// green" and "Pass. All checks are green" are replies.
 const PASS_RE = /^\W*(?:[Pp][Aa][Ss][Ss]\b(?:\W*$|\W*?\s*[—–-]\s)|(?:PASS|pass)\b\W*?\s*:\s|PASS\.\s)/;
+/// A worker that explains itself before passing ("This is only thanks, so
+/// nothing needs answering.\n\nPASS") still passed: a bare PASS on the last
+/// line, in capitals, means nothing is posted. Its reasoning never is.
+const LAST_LINE_PASS_RE = /(?:^|\n)\W*PASS\W*$/;
+const passes = (reply: string): boolean => PASS_RE.test(reply) || LAST_LINE_PASS_RE.test(reply.trim());
 const MENTION_REFUSED = "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message.";
 
 export class TriggerService {
@@ -741,7 +746,7 @@ export class TriggerService {
         return;
       }
       const rehearsing = rehearses(t) && !!thread;
-      if (PASS_RE.test(res.reply)) {
+      if (passes(res.reply)) {
         this.putDeliverable({ ...d, status: 'skipped', error: `${worker.name} passed: nothing worth saying.`, doneAt: this.now() });
         // Staying quiet is half of what a test is checking.
         if (rehearsing) await this.deps.tellOwner?.(t.workerId, `_Test mode · ${t.name}:_ *${worker.name}* would stay quiet on _${item.title}_.`);
@@ -830,7 +835,7 @@ export class TriggerService {
     const now = this.deps.deliverables.list().find((x) => x.id === deliverableId);
     if (!now || now.status !== 'held') return;
     if (!res.ok) return note(`_I couldn't revise it: ${res.error}_`);
-    if (PASS_RE.test(res.reply)) {
+    if (passes(res.reply)) {
       this.putDeliverable({ ...now, status: 'skipped', error: 'Not posted: its manager said it should not answer.', doneAt: this.now() });
       return note(`_Understood: I won't answer this one. Nothing was posted._`);
     }
@@ -881,7 +886,7 @@ export class TriggerService {
       .flatMap((d) => {
         const t = d.source.triggerId ? this.get(d.source.triggerId) : undefined;
         const answer = d.answer ?? (t && listens(t) ? finishedPart(d.result) : undefined);
-        return answer && !PASS_RE.test(answer) ? [{ d, answer, at: d.doneAt ?? d.at }] : [];
+        return answer && !passes(answer) ? [{ d, answer, at: d.doneAt ?? d.at }] : [];
       });
     return candidates
       .map((c) => ({ c, s: score(words, { hit: { kind: 'worker', title: c.d.title, who: '', at: c.at }, body: `${c.d.title}\n${c.answer}` }, now) }))
@@ -958,7 +963,7 @@ export class TriggerService {
     const t = d?.source.triggerId ? this.get(d.source.triggerId) : undefined;
     const worker = d ? this.deps.worker(d.workerId) : null;
     if (!d || !t || !worker) return;
-    this.endLive(d, res.ok && !PASS_RE.test(res.reply));
+    this.endLive(d, res.ok && !passes(res.reply));
     if (!res.ok) {
       // The thread was told an answer is coming (and only then): don't leave
       // it waiting. In test mode that is only so once its manager released
@@ -970,7 +975,7 @@ export class TriggerService {
       await this.deps.tellOwner?.(t.workerId, `*${worker.name}* finished the work for _${d.title}_${d.source.url ? ` (<${d.source.url}|source>)` : ''} but couldn't write up what it found: ${res.error}\nReply here to have it try again.`, undefined, `ask:${askId}`);
       return;
     }
-    if (PASS_RE.test(res.reply)) return;
+    if (passes(res.reply)) return;
     // Test mode: the finished work is held too, as an answer of its own.
     if (rehearses(t) && d.thread) {
       const { askId: _askId, rating: _rating, review: _review, ...rest } = d;
@@ -1130,6 +1135,7 @@ export const LISTEN_RULES = [
   'Stay silent unless this message asks something you can answer well from what you know: the product, its code, your tools and notes.',
   'Then answer briefly, in the thread, and say where the answer comes from.',
   "For anything else (chatter, an announcement, thanks, a question you can't answer with confidence, one someone is already handling), reply with only PASS: nothing is posted.",
+  'Whatever you write is posted to the thread as it is, so never explain your decision, your triage, flows or candidates: either answer, or reply with only PASS.',
 ].join(' ');
 
 /// Under a first answer that started work: the rest is on its way.
@@ -1159,7 +1165,8 @@ export const NAMED_RULES = [
 export const FOLLOW_UP_RULES = [
   'This message is a reply in a Slack thread you already answered in; the thread so far is in the details, your own answer among it.',
   'Answer if it follows up on what you said or asks you something, even without naming you.',
-  'If people are talking among themselves, or it is only thanks, reply with only PASS.',
+  'If people are talking among themselves, it is only thanks or an emoji, or the thread is settled, reply with only PASS.',
+  'When you do answer, keep it to a sentence or two: answer only the new question, with no headings, no recap of your earlier answer and no closing offer, unless they ask for the full detail.',
 ].join(' ');
 
 /// Test mode applies to Slack triggers, the ones that answer in a thread.

@@ -50,7 +50,7 @@ describe('catalog install: value substitution', () => {
   it('pins the proxy version rather than tracking @latest', () => {
     installMcpCatalogEntry('aws', ['claude'], {}, paths);
     const args = readMcpServer('claude', 'aws', paths)!.args as string[];
-    expect(args[0]).toMatch(/^mcp-proxy-for-aws@\d+\.\d+\.\d+$/);
+    expect(args[0]).toMatch(/^mcp-proxy-for-aws-cli@\d+\.\d+\.\d+$/);
     expect(args).toContain('https://aws-mcp.us-east-1.api.aws/mcp');
   });
 
@@ -108,6 +108,11 @@ describe('catalog listing: legacy detection', () => {
     const aws = listMcpCatalog(paths).find((e) => e.id === 'aws')!;
     expect(aws.installed.claude).toBe(false);
     expect(aws.legacy.claude).toBe(false);
+  });
+
+  it('flags the proxy run from its library package, not the -cli one', () => {
+    writeMcpServer('claude', 'aws', { command: 'uvx', args: ['mcp-proxy-for-aws@1.6.3', 'https://aws-mcp.us-east-1.api.aws/mcp'] }, paths);
+    expect(listMcpCatalog(paths).find((e) => e.id === 'aws')!.legacy.claude).toBe(true);
   });
 
   it('survives a hand-edited config with a non-array args', () => {
