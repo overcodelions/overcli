@@ -1,7 +1,7 @@
 {
   "name": "@overcodelions/overcli",
   "productName": "Overcli",
-  "version": "0.26.5",
+  "version": "0.26.6",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
     "access": "restricted"

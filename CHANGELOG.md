@@ -4,6 +4,16 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.26.6] - 2026-11-19
+
+### Changed
+- **The AWS MCP tool runs AWS's Agent Toolkit server.** The catalog entry uses the pinned `mcp-proxy-for-aws-cli` distribution; an install on the proxy's library package is flagged so it can be reinstalled. The worker tool swaps the retired `aws-api-mcp-server` and its static keys for the managed endpoint, signed with the worker's own role. (#1227)
+- **Slack workers stay quieter.** A reply ending on a bare `PASS` line posts nothing, so a worker's triage reasoning never reaches the thread. Follow-ups pass on thanks, emoji or settled threads, and otherwise answer in a sentence or two. (#1227)
+
+### Fixed
+- **Switching an adopted service to another branch relaunches it** instead of leaving it stopped; so does a service still waiting on a dependency or its turn. (#1227)
+- **Restarting an adopted service waits for its port to free,** so the relaunch no longer fails while the old process lets go. (#1227)
+
 ## [0.26.5] - 2026-11-19
 
 ### Changed
@@ -1480,7 +1490,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.5...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.6...HEAD
+[0.26.6]: https://github.com/overcodelions/overcli/compare/v0.26.5...v0.26.6
 [0.26.5]: https://github.com/overcodelions/overcli/compare/v0.26.4...v0.26.5
 [0.26.4]: https://github.com/overcodelions/overcli/compare/v0.26.3...v0.26.4
 [0.26.3]: https://github.com/overcodelions/overcli/compare/v0.26.2...v0.26.3
