@@ -737,6 +737,9 @@ export class Supervisor {
           status: 'stopped', adopted: undefined, pid: undefined,
           debugKind: undefined, debugPort: undefined,
         });
+        // As for a child of ours: a restart or rebind launches straight after,
+        // and a JVM still letting go of its port fails that launch.
+        await this.adoptedPortsReleased(runtime);
         return;
       }
       if (runtime.adopted && runtime.port !== undefined && this.deps.stopHolder) {
@@ -746,6 +749,7 @@ export class Supervisor {
           status: 'stopped', adopted: undefined, pid: undefined, port: undefined,
           debugKind: undefined, debugPort: undefined,
         });
+        await this.adoptedPortsReleased(runtime);
         return;
       }
       // Waiting on something it depends on, or for a turn to build: nothing to
@@ -797,6 +801,18 @@ export class Supervisor {
   /// Poll until nothing answers on any of these ports, or give up. Counted in
   /// attempts rather than against the clock, so a test's instant sleep cannot
   /// spin forever on a port it reports open.
+  /// Wait out an adopted process's ports, shown as `stopping` meanwhile.
+  private async adoptedPortsReleased(runtime: ServiceRuntime): Promise<void> {
+    const ports = [runtime.port, runtime.debugPort].filter((p): p is number => p !== undefined);
+    if (ports.length === 0) return;
+    this.setStatus(runtime.serviceId, { stopping: true });
+    try {
+      await this.portsReleased(ports);
+    } finally {
+      if (this.runtime(runtime.serviceId).stopping) this.setStatus(runtime.serviceId, { stopping: undefined });
+    }
+  }
+
   /// The ports still answering when it gave up — empty when all let go.
   private async portsReleased(ports: readonly number[]): Promise<number[]> {
     let open: number[] = [...ports];
@@ -839,7 +855,13 @@ export class Supervisor {
     if (spec.pinnedRef && spec.pinnedRef !== binding.ref) return;
 
     const previous = this.binding(serviceId);
-    const wasRunning = this.procs.has(serviceId);
+    // Running is more than a child of ours: an adopted leftover has no entry
+    // in `procs`, nor does a start still waiting on a dependency or its turn.
+    // Counting only `procs` made a branch switch stop an adopted service and
+    // then leave it stopped, as if it had never been running.
+    const before = this.runtime(serviceId);
+    const wasRunning =
+      this.procs.has(serviceId) || !!before.adopted || !!before.waitingOn || !!before.queued;
     await this.stop(serviceId);
 
     this.bindings = [

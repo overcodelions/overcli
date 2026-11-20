@@ -881,7 +881,19 @@ describe('slack triggers', () => {
     expect(h.posts).toEqual([]);
   });
 
-  it.each(['Passed the export through the new parser: ACME-10.', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.', 'Pass: all 12 smoke checks are green on staging.'])('still posts "%s"', async (reply) => {
+  it.each([
+    'This message is only a thumbs-up on a thread that is already resolved. It asks nothing, so there is nothing to answer.\n\nPASS',
+    'A side remark, not a question. Staying silent.\n**PASS**',
+  ])('posts nothing when the worker explains itself and ends on PASS', async (reply) => {
+    const h = harness({ reply });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '3.1', text: 'thanks all' });
+    await tick();
+    expect(h.posts).toEqual([]);
+  });
+
+  it.each(['Passed the export through the new parser: ACME-10.', 'Smoke run on staging:\npass', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.', 'Pass: all 12 smoke checks are green on staging.'])('still posts "%s"', async (reply) => {
     const h = harness({ reply });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
     if (!made.ok) throw new Error(made.error);
