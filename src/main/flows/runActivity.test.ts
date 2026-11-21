@@ -21,6 +21,19 @@ describe('run activity', () => {
   let dir = '';
   afterEach(() => dir && fs.rmSync(dir, { recursive: true, force: true }));
 
+  it('forgets a purged run, in memory and on disk', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-activity-'));
+    const a = new RunActivity((c) => (c === 'c1' ? 'r1' : undefined), { dir, keepDays: () => 7 });
+    a.observe(stream([assistant('Looking', [['Read', { file_path: '/srv/acme/notes.md' }]])]));
+    await a.flushed();
+    expect(a.list('r1').length).toBeGreaterThan(0);
+    expect(fs.readdirSync(dir).length).toBeGreaterThan(0);
+    await a.forget('r1');
+    expect(a.list('r1')).toEqual([]);
+    expect(fs.readdirSync(dir)).toEqual([]);
+    await a.forget('never-ran');
+  });
+
   it('names a refused command in one line, and keeps a refusal with its own reason', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-activity-'));
     const a = new RunActivity((c) => (c === 'c1' ? 'r1' : undefined), { dir, keepDays: () => 7 });

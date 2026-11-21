@@ -49,6 +49,7 @@ import {
   type OrgCaller,
   type OrgPolicy,
   type OrgRole, inAudience, isEmptyAudience, type Audience } from '../../shared/org/policy';
+import { isEphemeralWorker, sensitiveToolsHeld } from '../../shared/org/ephemeral';
 import { buildThreads, nowLine, summarize, type WorkThread } from './workThreads';
 import { LANDED_ARTIFACT, pullRequestsIn, pullRequestsOpened, type LandedPullRequest } from './landBranches';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
@@ -223,6 +224,10 @@ export interface WorkerSummary {
   /// 30 days before for a trend, and how its newest one went.
   last30: { jobs: number; failed: number; prior: number; lastRun?: { at: number; outcome: 'done' | 'failed' | 'stopped' } };
   waiting: number;
+  /// Set when it holds a tool the org marked as returning customer data
+  /// (Setup → Data protection): it keeps nothing past a conversation. The
+  /// tools that make it so.
+  ephemeral?: { tools: string[] };
   youManage: boolean;
   /// One of the caller's own: they are its manager (directly, or the nearest
   /// one up its chain). Unlike `youManage`, an admin's reach over everyone
@@ -1616,6 +1621,7 @@ export class OrgService {
           month: this.monthOf(runsBy.get(w.id) ?? [], prsBy.get(w.id) ?? []),
           last30: this.last30Of(runsBy.get(w.id) ?? []),
           waiting: waiting.get(w.id) ?? 0,
+          ...(isEphemeralWorker(w, policy) ? { ephemeral: { tools: sensitiveToolsHeld(w, policy) } } : {}),
           youManage: canManage(policy, roster, w.id, caller),
           yours: managesDirectly(roster, w.id, caller) || (!caller.admin && canManage(policy, roster, w.id, caller)),
           schedule: scheduleText(w.cadence),

@@ -44,6 +44,28 @@ export function isEphemeralWorker(w: EphemeralWorkerShape, policy: EphemeralPoli
   return sensitiveToolsHeld(w, policy).length > 0;
 }
 
+export interface EphemeralMessageWorker extends EphemeralWorkerShape {
+  name: string;
+  threadSessions?: Record<string, unknown>;
+}
+
+/// Whether an outbound Slack message is an ephemeral worker's, so personal
+/// data is scrubbed out of it: posted under its name, signed with it
+/// (`*Name:* …`), or in a thread it is talking in.
+export function isEphemeralMessage(
+  ctx: { channel?: string; threadTs?: string; username?: string; text?: string },
+  roster: readonly EphemeralMessageWorker[],
+  policy: EphemeralPolicy,
+): boolean {
+  if (!policy.sensitiveTools?.length) return false;
+  const thread = ctx.channel && ctx.threadTs ? `slack:${ctx.channel}:${ctx.threadTs}` : null;
+  return roster.some(
+    (w) =>
+      isEphemeralWorker(w, policy) &&
+      (ctx.username === w.name || !!ctx.text?.startsWith(`*${w.name}:*`) || (!!thread && !!w.threadSessions?.[thread])),
+  );
+}
+
 /// Whether a conversation that began at `startedAt` and last spoke at
 /// `lastAt` is over, and so due for the purge.
 export function conversationEnded(startedAt: number, lastAt: number, now: number): boolean {

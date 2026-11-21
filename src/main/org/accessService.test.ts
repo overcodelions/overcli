@@ -261,6 +261,16 @@ describe('rules from the console', () => {
     expect(h.svc.setRules(pat, { otherPeopleLimitUSD: 1 }).ok).toBe(false);
   });
 
+  it('reads, sets and clears the tools that make a worker ephemeral', () => {
+    const h = harness();
+    expect(h.svc.rules(admin)).toMatchObject({ ok: true, rules: { sensitiveTools: [] } });
+    expect(h.svc.setRules(admin, { sensitiveTools: ['acme-logs'] })).toMatchObject({ ok: true, rules: { sensitiveTools: ['acme-logs'] } });
+    expect(h.raw()).toMatchObject({ sensitiveTools: ['acme-logs'] });
+    expect(h.svc.setRules(pat, { sensitiveTools: [] }).ok).toBe(false);
+    expect(h.svc.setRules(admin, { sensitiveTools: null })).toMatchObject({ ok: true, rules: { sensitiveTools: [] } });
+    expect('sensitiveTools' in h.raw()).toBe(false);
+  });
+
   it('changes what it is given, refuses what would not read back, and logs it', () => {
     const h = harness({ teams: { old: [PAT] } });
     expect(h.svc.setRules(pat, { hirers: '*' }).ok).toBe(false);

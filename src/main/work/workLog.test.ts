@@ -92,6 +92,17 @@ describe('appendWorkLog', () => {
     read.mockRestore();
   });
 
+  it('forgets purged runs outright, on disk too', async () => {
+    const { appendWorkLog, forgetWorkLogRuns, loadWorkLog } = await freshLog();
+    appendWorkLog(makeRun({ id: 'run-1' }));
+    appendWorkLog(makeRun({ id: 'run-2' }));
+    expect(forgetWorkLogRuns([])).toBe(0);
+    expect(forgetWorkLogRuns(['run-1', 'never'])).toBe(1);
+    expect((await loadWorkLog()).map((e) => e.runId)).toEqual(['run-2']);
+    const reread = await freshLog();
+    expect((await reread.loadWorkLog()).map((e) => e.runId)).toEqual(['run-2']);
+  });
+
   it('compacts once superseded lines pile up', async () => {
     const { appendWorkLog, loadWorkLog } = await freshLog();
     for (let i = 0; i < 260; i++) {

@@ -36,7 +36,7 @@ const batch = (id: string, origin: Record<string, unknown>, statuses: string[]) 
   items: statuses.map((status, i) => ({ status, candidate: { id: `${id}-${i}`, title: `Item ${i}` } })),
 });
 
-function harness(opts: { shared?: string[] } = {}) {
+function harness(opts: { shared?: string[]; sensitive?: string[] } = {}) {
   const roster: Worker[] = [
     worker('ana', {
       manager: { name: PAT, slackUserId: PAT },
@@ -61,7 +61,11 @@ function harness(opts: { shared?: string[] } = {}) {
     batch('b2', { kind: 'worker', workerId: 'ana', workerName: 'Ana', task: 'errand' }, ['queued']),
     batch('b3', { kind: 'person' }, ['proposed']),
   ];
-  const policy: OrgPolicy = { ...DEFAULT_ORG_POLICY, sharedMcpServers: opts.shared ?? ['acme-drive'] };
+  const policy: OrgPolicy = {
+    ...DEFAULT_ORG_POLICY,
+    sharedMcpServers: opts.shared ?? ['acme-drive'],
+    ...(opts.sensitive ? { sensitiveTools: opts.sensitive } : {}),
+  };
   const calls = { snapshots: 0, tools: 0, repos: 0, workspaces: 0, people: 0, listRuns: 0, batches: 0 };
   const deps = {
     workers: {
@@ -114,6 +118,20 @@ function harness(opts: { shared?: string[] } = {}) {
   } as unknown as OrgServiceDeps;
   return { svc: new OrgService(deps), roster, calls };
 }
+
+describe('a worker that keeps nothing past a conversation', () => {
+  it('says so, with the tools that make it ephemeral', () => {
+    const h = harness({ sensitive: ['acme-jira'] });
+    const byId = new Map(h.svc.listWorkers(admin).map((w) => [w.id, w]));
+    expect(byId.get('ana')?.ephemeral).toEqual({ tools: ['acme-jira'] });
+    expect(byId.get('cy')?.ephemeral).toBeUndefined();
+  });
+
+  it('is every worker when a shared tool is marked, and none when nothing is', () => {
+    expect(harness({ sensitive: ['acme-drive'] }).svc.listWorkers(admin).every((w) => w.ephemeral)).toBe(true);
+    expect(harness().svc.listWorkers(admin).some((w) => w.ephemeral)).toBe(false);
+  });
+});
 
 describe("one worker's summary", () => {
   it('is the same as its line in the roster, for everyone who can see it', () => {

@@ -7280,13 +7280,15 @@ export const CONSOLE_JS = String.raw`
           w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
           h('div', { class: 'wk-id-main' },
             h('div', { class: 'wk-name-row' }, h('h1', { class: 'page-title', text: w.name }), workerHeadBadge(w), trustMeter(w.trust),
+              w.ephemeral ? h('span', { class: 'teamtag', style: 'color:var(--need);border-color:var(--need)', title: 'Ephemeral: it holds ' + w.ephemeral.tools.join(', ') + ', which may return customer data. It keeps nothing past a conversation. Set on Setup → Data protection.', text: 'Ephemeral' }) : null,
               teamNames.map(function (t) { return h('span', { class: 'teamtag', title: 'On the ' + t + ' team' }, icon('team', 12), t); }), w.coding ? codingTag() : null),
             w.tagline ? h('p', { class: 'wk-tagline', text: w.tagline }) : null,
             // How it starts, who it answers to and who can ask, in a line.
             h('div', { class: 'wk-meta' },
               w.manager ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Managed by' }), whoChip(w.manager), w.managerInherited ? h('span', { class: 'faint', text: '(through its boss)' }) : null) : h('span', { class: 'wk-meta-i faint', text: 'No manager yet' }),
               h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Runs' }), h('span', { text: w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'When asked' })),
-              h('button', { class: 'linkish wk-meta-i', style: 'color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } })),
+              h('button', { class: 'linkish wk-meta-i', style: 'color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } }),
+              w.ephemeral ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Ephemeral' }), h('span', { text: 'keeps nothing past a conversation, because it holds ' + w.ephemeral.tools.join(', ') })) : null),
             monthLine(w)),
           h('div', { class: 'wk-stats-row', role: 'group', 'aria-label': 'At a glance' },
             stat(String(l30.jobs), 'jobs, 30 days', null, l30.failed ? l30.failed + ' failed' : null),
@@ -13331,13 +13333,33 @@ export const CONSOLE_JS = String.raw`
         return sec;
       })();
 
-      // Credentials scrubbed out of what workers say.
+      // Data protection: credentials scrubbed out of what workers say, and
+      // the tools whose output may hold customer data, which make a worker
+      // ephemeral (nothing kept past its conversation).
       var redact = h('input', { type: 'checkbox', checked: R.redactSecrets !== false });
-      var redaction = ruleSection('Secrets in answers', 'Passwords, AWS keys, tokens and every secret stored on Setup → Secrets, replaced with [REDACTED] in anything a worker says to people.',
-        h('div', { class: 'stack' },
-          h('label', { class: 'toggle' }, redact, h('span', { text: 'Redact credentials from Slack messages, answers, attached files and notifications' })),
-          h('p', { class: 'faint', style: 'font-size:13px', text: 'Known formats (AWS access keys, GitHub, Slack and Stripe tokens, private keys, bearer tokens, password= lines) and the exact values this server holds are caught. Anything encoded or split across lines can still get through, so keep secrets out of the work itself too. Run logs on this server are not changed.' })),
-        function () { return { redactSecrets: redact.checked }; });
+      var sensitive = toolPicker(installed, R.sensitiveTools, 'Tools that may return customer data');
+      var sharedAll = R.sharedMcpServers || [];
+      var sharedWarn = h('p', { class: 'faint', style: 'font-size:13px;color:var(--need);margin:0', hidden: true });
+      var syncShared = function () {
+        var hit = sensitive.value().filter(function (n) { return sharedAll.indexOf(n) >= 0; });
+        sharedWarn.hidden = !hit.length;
+        sharedWarn.textContent = hit.length ? hit.join(', ') + (hit.length > 1 ? ' are' : ' is') + ' shared with every worker, so every worker becomes ephemeral.' : '';
+      };
+      sensitive.node.addEventListener('change', syncShared); syncShared();
+      var dpHead = function (text) { return h('h3', { style: 'margin:0;font-size:15px;font-weight:650', text: text }); };
+      var redaction = ruleSection('Data protection', 'What workers may repeat to people, and what they may keep once a conversation is over.',
+        h('div', { class: 'stack', style: 'gap:22px' },
+          h('div', { class: 'stack', style: 'gap:8px' },
+            dpHead('Secrets in answers'),
+            h('label', { class: 'toggle' }, redact, h('span', { text: 'Redact credentials from Slack messages, answers, attached files and notifications' })),
+            h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Passwords, AWS keys, tokens and every secret stored on Setup → Secrets become [REDACTED]. Known formats (AWS access keys, GitHub, Slack and Stripe tokens, private keys, bearer tokens, password= lines) and the exact values this server holds are caught. Anything encoded or split across lines can still get through, so keep secrets out of the work itself too. Run logs on this server are not changed.' })),
+          h('div', { class: 'stack', style: 'gap:8px;padding-top:18px;border-top:1px solid var(--line)' },
+            dpHead('Tools that may return customer data'),
+            h('p', { class: 'hint', style: 'font-size:13px;margin:0', text: 'A log reader, a support inbox, a CRM. A worker that has one of these, on its own, through its role or shared with everyone, is ephemeral: it keeps nothing past its conversation.' }),
+            sensitive.node,
+            sharedWarn,
+            h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Once its conversation has been quiet for 2 hours, or 24 hours after it began, its transcripts, runs, work log, journal, files and answered asks are deleted, leaving one line in the decision log. Emails, card numbers and phone numbers are taken out of what it posts, even with redaction above off, and it never files what it makes into a project.' }))),
+        function () { var s = sensitive.value(); return { redactSecrets: redact.checked, sensitiveTools: s.length ? s : null }; });
 
       // Model ids as the server's provider (Bedrock, Vertex) names them: a
       // row per model overcli offers, its default shown until one is typed.
@@ -16472,7 +16494,7 @@ export const CONSOLE_JS = String.raw`
       ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.'],
       ['capacity', 'Capacity', 'Whether this server is the right size, and how many questions and code runs every worker together may have going at once.'],
       ['permissions', 'Permissions', 'What workers may do on this server without asking: read only, edit files, run listed commands, or everything.'],
-      ['redaction', 'Secrets in answers', 'Passwords, AWS keys, tokens and stored secrets kept out of what workers say to people.'],
+      ['redaction', 'Data protection', 'Secrets kept out of what workers say, and tools whose customer data workers must not keep.'],
       ['models', 'Model ids', 'The id each model goes by on Bedrock or Vertex.']] },
     { group: 'Connections', pages: [
       ['tools', 'Tools', 'The MCP servers workers here can use, and which workers have each.'],
@@ -16488,7 +16510,7 @@ export const CONSOLE_JS = String.raw`
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
   var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, capacity: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { move: 'setup--move-org', offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', capacity: 'setup--capacity', people: 'people', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_LEARN = { move: 'setup--move-org', offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', capacity: 'setup--capacity', people: 'people', permissions: 'setup--permissions', redaction: 'setup--data-protection', models: 'setup--model-ids' };
   /// Words people search for that a Setup page's own title and blurb don't
   /// say, so the finder takes "concurrency" to Capacity.
   var SETUP_WORDS = {
@@ -16506,7 +16528,7 @@ export const CONSOLE_JS = String.raw`
     people: 'users members invite invitations roles admins approvers hirers access join offboard sign out',
     capacity: 'work at once concurrency concurrent parallel parallelism simultaneous limit limits throttle queue slots load cpu memory capacity performance answers code runs',
     permissions: 'access tools shell commands allow list allowlist sandbox',
-    redaction: 'redact scrub mask secrets passwords keys tokens',
+    redaction: 'redact scrub mask secrets passwords keys tokens security privacy pii personal customer data sensitive tools ephemeral purge gdpr',
     models: 'bedrock vertex model ids provider aws gcp',
     tools: 'mcp servers integrations connectors',
     secrets: 'keys tokens credentials env environment api key',
