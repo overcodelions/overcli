@@ -147,7 +147,7 @@ export const EDITABLE_RULES = [
   'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'tuningWatch', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
   'answersAtOnce', 'codeRunsAtOnce',
-  'redactSecrets', 'providerModels', 'workerAccess',
+  'redactSecrets', 'sensitiveTools', 'providerModels', 'workerAccess',
 ] as const;
 
 export interface EditableRules {
@@ -182,6 +182,9 @@ export interface EditableRules {
   people: Record<string, string>;
   fleet: Array<{ name: string; url: string }>;
   redactSecrets: boolean;
+  /// Tools whose output may hold customer data: a worker holding one is
+  /// ephemeral (shared/org/ephemeral.ts). Set on Setup → Data protection.
+  sensitiveTools: string[];
   providerModels: Record<string, string>;
   /// Read only, for the Model ids page: the Claude models overcli offers, and
   /// which provider this server's environment sends them to.
@@ -707,6 +710,7 @@ export class AccessService {
         people: p.people,
         fleet: p.fleet,
         redactSecrets: p.redactSecrets,
+        sensitiveTools: p.sensitiveTools ?? [],
         providerModels: p.providerModels ?? {},
         claudeModels: [...PREMIUM_MODELS.claude],
         modelProvider: modelProvider(),

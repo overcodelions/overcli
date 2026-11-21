@@ -157,6 +157,17 @@ function appendLines(list: WorkLogEntry[]): void {
   if (cache!.lines - byId.size > COMPACT_SLACK) compact();
 }
 
+/// Remove these runs' entries outright: the ephemeral purge, for runs whose
+/// prompt and summary must not outlive their conversation. Returns how many went.
+export function forgetWorkLogRuns(runIds: readonly string[]): number {
+  if (!runIds.length) return 0;
+  const byId = entries();
+  let gone = 0;
+  for (const id of runIds) if (byId.delete(id)) gone++;
+  if (gone) compact();
+  return gone;
+}
+
 function compact(): void {
   if (!cache) return;
   const file = filePath();

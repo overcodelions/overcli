@@ -366,7 +366,7 @@ People can save a team's files into their own Google Drive, as themselves. There
 
 ## Setup → Rules, spending and sign-in
 
-The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **Groups**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; what workers may do on **Permissions**; credentials kept out of answers on **Secrets in answers**; Bedrock and Vertex model ids on **Model ids**; how long records are kept on **Records**; company sign-in on **Sign-in**.
+The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **Groups**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; what workers may do on **Permissions**; credentials kept out of answers, and tools that may return customer data, on **Data protection**; Bedrock and Vertex model ids on **Model ids**; how long records are kept on **Records**; company sign-in on **Sign-in**.
 
 - **Who may hire:** anyone in your Slack workspace, or a list of people.
 - **Allowances:** what one person's workers may cost a month before a hire needs an approver; per-person overrides; who the approvers are.
@@ -440,9 +440,12 @@ The server caps the level with `--max-access` (the compose file uses `shell`); l
 
 The level and the trust level are separate: trust decides how much work a worker starts without a manager's OK; the level decides which tools any worker may use at all.
 
-## Setup → Secrets in answers
+## Setup → Data protection
 
-On by default. Credentials are replaced with `[REDACTED]` in everything workers say to people: Slack, the console, MCP, attached text files and notifications. See [Security model](security.md#secrets).
+What workers may repeat to people, and what they may keep.
+
+- **Secrets in answers:** on by default. Credentials are replaced with `[REDACTED]` in everything workers say to people: Slack, the console, MCP, attached text files and notifications. See [Security model](security.md#secrets).
+- **Tools that may return customer data** (`sensitiveTools` in `org.json`): tick the tools whose output may hold customer data, such as a log reader, a support inbox or a CRM. A worker that has one of them makes it *ephemeral*, whether the tool is its own, its role's or shared with every worker. An ephemeral worker keeps nothing after its conversation ends. Once the conversation has been quiet for 2 hours, or 24 hours after it began, its session transcripts, runs, work log, journal, files and answered asks are deleted. One line in the decision log records what was purged, with counts and no content. Emails, card numbers and phone numbers are removed from what it posts, even with secret redaction off. It never files deliverables into a project, where a checkpoint would commit them. A tool shared with every worker makes every worker ephemeral, and the page warns you when you tick one.
 
 ## Setup → Model ids
 

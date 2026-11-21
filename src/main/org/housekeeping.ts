@@ -9,6 +9,8 @@
 //   - Spend warnings: a worker's manager when it passes `alertAtPercent` of
 //     its budget, the admins when the org does. Once a month each.
 //   - Retention, once a day.
+//   - Ephemeral workers' ended conversations, purged every tick
+//     (ephemeralPurge.ts), and at start for any that ended while down.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,6 +44,8 @@ export interface HousekeepingDeps {
   log(message: string): void;
   /// Whether TZ was set from org.json at start (and so may follow it).
   zoneFromOrg: boolean;
+  /// Purge ephemeral workers' ended conversations (ephemeralPurge.ts).
+  purgeEphemeral?(): void;
   now?(): number;
 }
 
@@ -99,6 +103,16 @@ export function runHousekeeping(deps: HousekeepingDeps): void {
           `$${spent.toFixed(2)} of $${cap.toFixed(0)}. At the cap, scheduled runs stop until the month turns. Raise it on Admin → Rules, or pause some workers.`,
         );
       }
+    }
+  }
+
+  if (deps.purgeEphemeral) {
+    try {
+      deps.purgeEphemeral();
+    } catch (err) {
+      // Logged and tried again next tick: one bad worker must not stop the
+      // budget warnings and retention below.
+      deps.log(`org: ephemeral purge failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

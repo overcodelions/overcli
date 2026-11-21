@@ -90,6 +90,7 @@ function makeHarness(
     readsInPlace?: boolean;
     answerPool?: WorkerEngineDeps['answerPool'];
     sharedMcpServers?: WorkerEngineDeps['sharedMcpServers'];
+    isEphemeral?: WorkerEngineDeps['isEphemeral'];
     activeRuns?: WorkerEngineDeps['activeRuns'];
     pieceFlow?: WorkerEngineDeps['pieceFlow'];
     away?: WorkersAway;
@@ -248,6 +249,7 @@ function makeHarness(
     deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
     deliverablesFor: opts.deliverablesFor,
+    isEphemeral: opts.isEphemeral,
     runHandoffOutputs: opts.runHandoffOutputs,
     runIdForConversation: opts.runIdForConversation,
     checkpoint: (args) => checkpoints.push(args),
@@ -725,6 +727,29 @@ describe('WorkerEngine on-demand workers', () => {
     // The whole pot is still reachable by the scheduled worker below it.
     expect(nadia.availableUSD).toBe(20);
     expect(nadia.blocked).toBe('none');
+  });
+});
+
+describe('forgetConversations (the ephemeral purge)', () => {
+  it('drops the ended thread and desk sessions, keeps live ones, and saves only on a change', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({
+          threadSessions: { 'slack:C1:1.1': { conversationId: 'a', at: 1 }, 'slack:C1:2.2': { conversationId: 'b', at: 2 } },
+          deskSession: { conversationId: 'd', day: 3 },
+        }),
+      ],
+    });
+    h.engine.start();
+    h.engine.forgetConversations('worker-1' as Worker['id'], { threadKeys: ['slack:C1:1.1', 'slack:C9:9.9'], desk: true });
+    const w = h.engine.get('worker-1' as Worker['id'])!;
+    expect(Object.keys(w.threadSessions ?? {})).toEqual(['slack:C1:2.2']);
+    expect(w.deskSession).toBeUndefined();
+    const saves = h.saved.length;
+    expect(saves).toBeGreaterThan(0);
+    h.engine.forgetConversations('worker-1' as Worker['id'], { threadKeys: ['slack:C1:1.1'], desk: true });
+    h.engine.forgetConversations('nobody' as Worker['id'], { threadKeys: ['slack:C1:2.2'], desk: true });
+    expect(h.saved.length).toBe(saves);
   });
 });
 
@@ -1845,6 +1870,20 @@ describe('WorkerEngine delivery to the project folder', () => {
       folder: ['Scout', expect.stringMatching(/^\d{4}-\d{2}-\d{2} /)],
     });
     expect(h.checkpoints).toEqual([{ projectPath: '/documents/Course', message: 'Scout added Summary.md' }]);
+  });
+
+  it('never files an ephemeral worker’s deliverable into the folder', () => {
+    publishMock.mockClear();
+    publishMock.mockReturnValue({ written: ['Summary.md'] });
+    const h = makeHarness({
+      seed: [seedWorker({ projectPath: '/documents/Course', caps: { maxItemsPerShift: 3, runIn: 'worktree', fileIntoProject: true } })],
+      deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
+      isEphemeral: () => true,
+    });
+    h.engine.start();
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+    expect(publishMock).not.toHaveBeenCalled();
+    expect(h.checkpoints).toEqual([]);
   });
 
   it('saves a version when a revision overwrote what was already delivered', () => {

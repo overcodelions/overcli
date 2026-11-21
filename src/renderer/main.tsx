@@ -5,7 +5,8 @@ import './styles.css';
 import { App } from './App';
 import { TerminalWindow } from './components/TerminalWindow';
 import { ExplorerWindow } from './components/ExplorerWindow';
-import { popoutExplorerRoot, popoutTerminalId } from './popoutWindow';
+import { FileWindow } from './components/FileWindow';
+import { popoutExplorerRoot, popoutFilePath, popoutTerminalId } from './popoutWindow';
 import { CrashBoundary } from './components/CrashBoundary';
 import { useStore } from './store';
 
@@ -20,7 +21,7 @@ if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) {
 const container = document.getElementById('root');
 if (!container) throw new Error('root element missing');
 // A popped-out terminal or explorer is this same bundle opened with
-// `?terminal=<id>` or `?explorer=<root>`.
+// `?terminal=<id>`, `?explorer=<root>` or `?file=<path>`.
 createRoot(container).render(
   <React.StrictMode>
     <CrashBoundary>
@@ -28,6 +29,8 @@ createRoot(container).render(
         <TerminalWindow id={popoutTerminalId} />
       ) : popoutExplorerRoot ? (
         <ExplorerWindow root={popoutExplorerRoot} />
+      ) : popoutFilePath ? (
+        <FileWindow path={popoutFilePath} />
       ) : (
         <App />
       )}

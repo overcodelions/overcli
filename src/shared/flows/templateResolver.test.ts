@@ -54,9 +54,9 @@ describe('resolveTemplateForUser — build-feature template', () => {
   });
 
   // The design step asks for 'frontier', which codex now has a model for
-  // (gpt-6-astra) — before Astra shipped it fell down the ladder to the
+  // (gpt-6.2-astra) — before Astra shipped it fell down the ladder to the
   // thinking tier and landed on gpt-5.6-sol.
-  it('codex-only user: frontier→gpt-6-astra, fast→gpt-5.6-luna', () => {
+  it('codex-only user: frontier→gpt-6.2-astra, fast→gpt-5.6-luna', () => {
     const flow = loadTemplate('build-feature');
     const resolved = resolveTemplateForUser(flow, {
       healthyBackends: ['codex'],
@@ -64,7 +64,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     });
     const byStep = new Map(resolved.steps.map((s) => [s.id, s.participantId]));
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
-    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-6-astra');
+    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-6.2-astra');
     expect(byParticipant.get(byStep.get('build')!)?.model).toBe('gpt-5.6-luna');
   });
 

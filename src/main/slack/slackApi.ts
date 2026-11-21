@@ -283,7 +283,7 @@ export async function uploadFile(
   args: { channel: string; threadTs?: string; filename: string; bytes: Buffer; title?: string; as?: { name: string; iconUrl?: string } },
   fetchImpl: FetchLike = fetch,
 ): Promise<SlackResult<{ fileId: string }>> {
-  const bytes = scrubOutboundFile(args.filename, args.bytes);
+  const bytes = scrubOutboundFile(args.filename, args.bytes, { channel: args.channel, threadTs: args.threadTs, username: args.as?.name });
   const slot = await slackRead<{ upload_url: string; file_id: string }>('files.getUploadURLExternal', botToken, { filename: args.filename, length: bytes.length }, fetchImpl);
   if (!slot.ok) return slot;
   try {

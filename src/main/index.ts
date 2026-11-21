@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { Store, flushStoreSync } from './store';
 import { isAgentWrittenPath, recordWritesFromEvents } from './writtenPaths';
+import { isOpenedFile, noteOpenedFile } from './openedFiles';
 import { RunnerManager } from './runner';
 import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadClaudeSubagentHistory, loadHistory, migrateClaudeSessionCwd } from './history';
@@ -1589,7 +1590,8 @@ export function registerIpc(): void {
         error: `Could not place "${p}" — no project root for this file.`,
       };
     }
-    if (!isPathUnderRegisteredRoot(target)) {
+    // A file the person opened in overcli from Finder saves where it is.
+    if (!isPathUnderRegisteredRoot(target) && !isOpenedFile(target)) {
       return {
         ok: false,
         error: 'File is outside any registered project, workspace, or worktree.',
@@ -4181,7 +4183,7 @@ function isReadablePlanPath(target: string): boolean {
 /// reached the user. `isAgentWrittenPath` opens exactly those, by provenance:
 /// a path this session watched a tool create. Writes keep the strict rule.
 function isReadablePath(target: string): boolean {
-  return isPathUnderRegisteredRoot(target) || isReadablePlanPath(target) || isAgentWrittenPath(target);
+  return isPathUnderRegisteredRoot(target) || isReadablePlanPath(target) || isAgentWrittenPath(target) || isOpenedFile(target);
 }
 
 // `fs.realpathSync` throws if any segment is missing (e.g. a file about
@@ -4668,6 +4670,17 @@ async function clearDevHttpCache(): Promise<void> {
 // cannot move into whenReady below.
 registerPreviewScheme();
 
+// Finder's "Open With", a file dropped on the Dock icon, `open -a Overcli x`.
+// macOS can send this before the app is ready — it is how a cold launch from
+// a file arrives — so it is registered here and the files wait for a window.
+const filesToOpen: string[] = [];
+let readyForFiles = false;
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  if (readyForFiles) openFileWindow(filePath);
+  else filesToOpen.push(filePath);
+});
+
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
   handlePreviewProtocol();
@@ -4708,6 +4721,8 @@ app.whenReady().then(() => {
   // already sees a baseline and a fresh install isn't handed four changelogs.
   seedWhatsNewBaseline();
   createWindow();
+  readyForFiles = true;
+  for (const f of filesToOpen.splice(0)) openFileWindow(f);
 
   // Nudge self-updating CLIs (claude, codex) in the background, hidden, so
   // they're on the latest version next time the user runs a turn. Throttled
@@ -4840,6 +4855,41 @@ function createPopoutWindow(
     if (!win.isDestroyed()) win.webContents.setZoomFactor(Store.load().settings.uiScale);
   });
   return win;
+}
+
+/// Files opened from outside overcli, each in a window of its own, by path.
+const fileWindows = new Map<string, BrowserWindow>();
+
+/// One file in its own window: the editor and nothing else, like opening a
+/// document in any other app. The file — only it — becomes readable and
+/// savable (openedFiles.ts). Opening it again brings its window forward.
+function openFileWindow(filePath: string): void {
+  const file = noteOpenedFile(filePath);
+  if (!file) {
+    log('warn', 'main.openFile', `not a file overcli can open: ${filePath}`);
+    return;
+  }
+  const existing = fileWindows.get(file);
+  if (existing && !existing.isDestroyed()) {
+    existing.show();
+    existing.focus();
+    return;
+  }
+  const win = createPopoutWindow({ file }, { width: 1000, height: 760, minWidth: 480, minHeight: 320, title: path.basename(file) });
+  fileWindows.set(file, win);
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Discard changes', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'Close with unsaved changes?',
+      detail: `Edits to ${path.basename(file)} that have not been saved will be lost.`,
+    });
+    if (choice === 0) event.preventDefault();
+  });
+  win.on('closed', () => fileWindows.delete(file));
+  app.addRecentDocument(file);
 }
 
 /// Explorers moved into windows of their own, by root path. `tabs` starts as

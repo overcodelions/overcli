@@ -245,6 +245,19 @@ export interface OutboundScrub {
   /// Values this server holds that must never be repeated, however they look:
   /// the stored secrets and the Slack tokens, on top of the environment's.
   known(): ReadonlyArray<string | null | undefined>;
+  /// Whether this message is an ephemeral worker's (one holding a sensitive
+  /// tool, shared/org/ephemeral.ts): personal data is scrubbed out of it
+  /// too (`redactPersonalData`), whatever `enabled` says.
+  personal?(ctx: OutboundContext): boolean;
+}
+
+/// Where a message is going and who it is from, as far as its payload says.
+export interface OutboundContext {
+  channel?: string;
+  threadTs?: string;
+  /// The name it is posted under, when posted as a worker.
+  username?: string;
+  text?: string;
 }
 
 let outbound: OutboundScrub | null = null;
@@ -263,9 +276,16 @@ export function scrubOutbound(text: string): string {
 /// `text`: an avatar URL or a button's value is not prose, and a long data
 /// URL would read as a credential.
 export function scrubOutboundText<T>(value: T): T {
-  if (!outbound || !outbound.enabled()) return value;
+  if (!outbound) return value;
+  const secrets = outbound.enabled();
+  const personal = isPersonal(contextOf(value));
+  if (!secrets && !personal) return value;
+  const clean = (t: string) => {
+    const once = secrets ? scrubOutbound(t) : t;
+    return personal ? redactPersonalData(once).text : once;
+  };
   const walk = (v: unknown, key?: string): unknown => {
-    if (typeof v === 'string') return key === 'text' ? scrubOutbound(v) : v;
+    if (typeof v === 'string') return key === 'text' ? clean(v) : v;
     if (Array.isArray(v)) return v.map((x) => walk(x, key));
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k)]));
     return v;
@@ -276,9 +296,100 @@ export function scrubOutboundText<T>(value: T): T {
 /// A file about to be attached for people to read: scrubbed when it is text,
 /// as it is otherwise. Binary files (images, office documents) pass through.
 const TEXT_FILE = /\.(md|markdown|txt|csv|tsv|json|ya?ml|log|html?|xml|sql|sh|env|ini|toml|js|ts|py)$/i;
-export function scrubOutboundFile(filename: string, bytes: Buffer): Buffer {
-  if (!outbound || !outbound.enabled() || !TEXT_FILE.test(filename)) return bytes;
+export function scrubOutboundFile(filename: string, bytes: Buffer, ctx: OutboundContext = {}): Buffer {
+  if (!outbound || !TEXT_FILE.test(filename)) return bytes;
+  const secrets = outbound.enabled();
+  const personal = isPersonal(ctx);
+  if (!secrets && !personal) return bytes;
   const text = bytes.toString('utf8');
-  const clean = scrubOutbound(text);
+  const once = secrets ? scrubOutbound(text) : text;
+  const clean = personal ? redactPersonalData(once).text : once;
   return clean === text ? bytes : Buffer.from(clean, 'utf8');
+}
+
+function isPersonal(ctx: OutboundContext): boolean {
+  try {
+    return !!outbound?.personal?.(ctx);
+  } catch {
+    // Unsure whose message it is: scrub. A redacted email costs a reader
+    // little; a customer's leaked into Slack can't be taken back.
+    return true;
+  }
+}
+
+/// The context a Slack payload carries about itself.
+function contextOf(value: unknown): OutboundContext {
+  if (!value || typeof value !== 'object') return {};
+  const v = value as Record<string, unknown>;
+  const str = (x: unknown) => (typeof x === 'string' ? x : undefined);
+  return {
+    channel: str(v.channel) ?? str(v.channel_id),
+    threadTs: str(v.thread_ts) ?? str(v.ts),
+    username: str(v.username),
+    text: str(v.text),
+  };
+}
+
+// ---- personal data -----------------------------------------------------------
+
+function luhn(digits: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/// Same shape and invariant as `RULES` (the value is a suffix of the match).
+/// Order matters: a card number would otherwise read as a phone number.
+const PERSONAL_RULES: Rule[] = [
+  { kind: 'email', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, group: 0 },
+  {
+    kind: 'card-number',
+    re: /(^|[^\d])(\d(?:[ -]?\d){12,18})(?!\d)/g,
+    group: 2,
+    gate: (v) => luhn(v.replace(/[ -]/g, '')),
+  },
+  {
+    kind: 'phone',
+    // 10–15 digits with the separators people write them with. Needs a
+    // separator or a leading +, so an id or a timestamp is left alone.
+    re: /(^|[^\w+])(\+?\(?\d[\d\s().-]{8,20}\d)(?![\w])/g,
+    group: 2,
+    gate: (v) => {
+      const n = v.replace(/\D/g, '').length;
+      return n >= 10 && n <= 15 && (/^\+/.test(v) || /[\s().-]/.test(v)) && !/^\d{4}-\d{2}-\d{2}/.test(v);
+    },
+  },
+];
+
+/// Personal data (email addresses, card numbers, phone numbers) replaced
+/// with `[REDACTED:<kind>]`. For what an ephemeral worker says: it may have
+/// read a customer's details, and its message must not repeat them. Matches
+/// shapes, not meaning — a free-text answer is not caught here, which is why
+/// such a worker's conversation is also purged (org/ephemeralPurge.ts).
+export function redactPersonalData(text: string): { text: string; redactedCount: number } {
+  if (!text) return { text: text ?? '', redactedCount: 0 };
+  return applyRules(text, PERSONAL_RULES);
+}
+
+function applyRules(text: string, rules: readonly Rule[]): { text: string; redactedCount: number } {
+  let out = text;
+  let redactedCount = 0;
+  for (const rule of rules) {
+    const re = new RegExp(rule.re.source, rule.re.flags);
+    out = out.replace(re, (match, ...groups) => {
+      const captured = rule.group === 0 ? match : (groups[rule.group - 1] as string | undefined);
+      if (captured === undefined) return match;
+      if (rule.gate && !rule.gate(captured)) return match;
+      redactedCount += 1;
+      return `${match.slice(0, match.length - captured.length)}${marker(rule.kind)}`;
+    });
+  }
+  return { text: out, redactedCount };
 }

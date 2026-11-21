@@ -6,6 +6,7 @@ import { adminReply, statusReply } from './statusReply';
 import { initialsPicture } from '../../shared/flows/avatars';
 import { log } from '../diagnostics';
 import { collectKnownSecretValues, redactSecrets, setOutboundScrub } from '../secretScrub';
+import { isEphemeralMessage } from '../../shared/org/ephemeral';
 import type { FlowRuntimeImpl } from '../flows/runtime';
 import type { OrchestratorImpl } from '../flows/orchestrator';
 import type { WorkerEngine } from '../flows/workerEngine';
@@ -120,6 +121,9 @@ export function createOrgControl(
   setOutboundScrub({
     enabled: () => loadOrgPolicy().policy.redactSecrets,
     known: () => [...(engines.secrets?.values() ?? []), configuredSlackToken('bot'), configuredSlackToken('app')],
+    // An ephemeral worker's messages lose personal data too: posted under its
+    // name, signed with it, or in a thread it is talking in.
+    personal: (ctx) => isEphemeralMessage(ctx, engines.workerEngine.roster(), loadOrgPolicy().policy),
   });
   // Model ids as the server's provider (Bedrock, Vertex) names them.
   setProviderModels(() => loadOrgPolicy().policy.providerModels);
