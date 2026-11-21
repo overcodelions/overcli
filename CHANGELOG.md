@@ -4,6 +4,22 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-21
+
+### Added
+- **Ephemeral workers.** A new `sensitiveTools` org rule names tools that may return customer data. A worker holding one keeps nothing after its conversation ends (2 hours idle or 24 hours at most): housekeeping purges its session transcripts, runs and run activity, work log, batches, asks, journal and files, and writes a metadata-only audit line. Emails, card numbers and phone numbers are scrubbed from its Slack posts and text attachments, and its deliverables are never filed into a project. Nothing is purged until you pick a tool. (#1228)
+- **Setup → Data protection** replaces "Secrets in answers". It holds the secrets toggle and a picker for tools that may return customer data, and warns when a shared tool would make every worker ephemeral. An ephemeral worker shows an **Ephemeral** tag and a line naming the tools that cause it. (#1228)
+- **Open files from Finder.** Overcli is registered as an alternate editor for any file: Open With, a Dock drop or `open -a` opens the file in its own editor-only window, even on a cold launch. Access is granted to that file only, never its folder, and unsaved changes are guarded. (#1229)
+- **Gradle startup options reach `bootRun`.** A generated init script adds any `-PovercliJvmArgs` entries the build file didn't pass on, and prints a marker line that triage reads. (#1230)
+
+### Changed
+- **GPT-6.2 Sol is the codex default and GPT-6.2 Astra the frontier pick,** with GPT-6.1 Sol and GPT-6 Astra one click away for a CLI or account that predates 6.2. (#1233)
+- **Spend by day defaults to month to date** and labels the range beside the total. (#1232)
+
+### Fixed
+- **Profile triage** reads JSON log lines and the quoted and fallback forms, compares profiles as sets, looks only at the last run and prefers the startup option. Its advice now depends on whether the options reached the app. (#1231)
+- **The spend chart's axis label no longer overlaps the total.** (#1232)
+
 ## [0.26.6] - 2026-11-19
 
 ### Changed
@@ -1490,7 +1506,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.26.6...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/overcodelions/overcli/compare/v0.26.6...v0.27.0
 [0.26.6]: https://github.com/overcodelions/overcli/compare/v0.26.5...v0.26.6
 [0.26.5]: https://github.com/overcodelions/overcli/compare/v0.26.4...v0.26.5
 [0.26.4]: https://github.com/overcodelions/overcli/compare/v0.26.3...v0.26.4
