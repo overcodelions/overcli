@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { editTool, exportableArgs, fixAddresses, installTool, listTools, parseTemplates, templateFrom, uninstallTool, updateToolSettings } from './tools';
+import { editTool, exportableArgs, fixAddresses, installTool, installedToolUrl, listTools, parseTemplates, templateFrom, uninstallTool, updateToolSettings } from './tools';
 
 let home = '';
 const savedHome = process.env.HOME;
@@ -33,6 +33,16 @@ describe('tools on the server', () => {
     expect(installTool({ name: '../evil', kind: 'command', command: 'x' }).ok).toBe(false);
     expect(installTool({ name: 'ok', kind: 'http', url: 'file:///etc/passwd' }).ok).toBe(false);
     expect(installTool({ name: 'ok', kind: 'command', command: '' }).ok).toBe(false);
+  });
+
+  it('says a relay address it can\'t see behind is unknown, not gone', () => {
+    fs.writeFileSync(
+      path.join(home, '.claude.json'),
+      JSON.stringify({ mcpServers: { relayed: { type: 'http', url: 'http://127.0.0.1:41234/t/relayed' }, direct: { type: 'http', url: 'https://mcp.acme.example/mcp' } } }),
+    );
+    expect(installedToolUrl('relayed')).toBeNull();
+    expect(installedToolUrl('direct')).toBe('https://mcp.acme.example/mcp');
+    expect(installedToolUrl('absent')).toBeUndefined();
   });
 });
 

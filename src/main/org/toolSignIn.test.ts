@@ -57,6 +57,8 @@ function harness(svc: ReturnType<typeof service>, now = { t: 1_000_000 }) {
   dirs.push(dir);
   const key = randomBytes(32);
   const installed = new Map<string, { url: string; token: string }>();
+  const unknown = new Set<string>();
+  const logs: string[] = [];
   const signIn = new ToolSignIn({
     dir: () => dir,
     publicUrl: () => undefined,
@@ -65,11 +67,12 @@ function harness(svc: ReturnType<typeof service>, now = { t: 1_000_000 }) {
       installed.set(name, { url, token });
       return { ok: true };
     },
-    installedUrl: (name) => installed.get(name)?.url,
+    installedUrl: (name) => (unknown.has(name) ? null : installed.get(name)?.url),
+    log: (m) => logs.push(m),
     fetchImpl: svc.fetchImpl as never,
     now: () => now.t,
   });
-  return { signIn, installed, dir, now };
+  return { signIn, installed, unknown, logs, dir, now };
 }
 
 async function signInAs(h: ReturnType<typeof harness>, input: Record<string, string> = {}) {
@@ -189,5 +192,23 @@ describe('ToolSignIn', () => {
     h.installed.delete('acme');
     await h.signIn.tick();
     expect(h.signIn.summaries().acme).toBeUndefined();
+    expect(h.logs.some((m) => m.includes('forgot the sign-in for acme'))).toBe(true);
+  });
+
+  it('keeps, and does not renew, a sign-in whose address can’t be told yet', async () => {
+    const svc = service();
+    const h = harness(svc);
+    await signInAs(h);
+    // Restart with the tool gateway still opening: the config holds only the relay.
+    h.unknown.add('acme');
+    h.now.t += 45 * 60 * 1000;
+    await h.signIn.tick();
+    expect(h.signIn.summaries().acme).toBeDefined();
+    expect(h.installed.get('acme')!.token).toBe('access-1');
+    expect(h.logs.some((m) => m.includes('forgot'))).toBe(false);
+    // The gateway opens: the next tick renews as usual.
+    h.unknown.delete('acme');
+    await h.signIn.tick();
+    expect(h.installed.get('acme')!.token).toBe('access-2');
   });
 });

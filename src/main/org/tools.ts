@@ -62,12 +62,20 @@ export function useRemoteToolVault(v: RemoteToolVault | null): void {
   vault = v;
 }
 
+/// The tool gateway's relay address (toolGateway.ts base()), as written in
+/// the CLIs' config in place of a vaulted tool's real one.
+const RELAY_URL = /^http:\/\/127\.0\.0\.1:\d+\/t\//;
+
 /// The address a tool is installed with, the real one when it is vaulted.
-export function installedToolUrl(name: string): string | undefined {
+/// null: the config holds a relay address the vault can't answer for yet
+/// (the gateway opens after wiring, or did not open), so the real address
+/// is unknown, not gone.
+export function installedToolUrl(name: string): string | undefined | null {
   const real = vault?.real(name);
   if (real) return real.url;
   const c = readClaudeMcpServers()[name];
-  return typeof c?.url === 'string' ? c.url : undefined;
+  if (typeof c?.url !== 'string') return undefined;
+  return RELAY_URL.test(c.url) ? null : c.url;
 }
 
 export function listTools(
