@@ -4766,8 +4766,11 @@ export class RunnerManager {
 
   private nextCodexFallbackModel(model: string): string | null {
     const m = (model || '').trim().toLowerCase();
-    // GPT-6.1 Sol (Sept 2026) and Terra (Oct 2026) and may not be rolled out everywhere
-    // yet; step back to the previous Sol before leaving the line.
+    // GPT-6.2 Sol/Astra (Nov 2026), 6.1 Sol (Sept 2026) and Terra (Oct 2026)
+    // may not be rolled out everywhere yet; step back to the previous
+    // release of the same line before leaving it.
+    if (m === 'gpt-6.2-sol') return 'gpt-6.1-sol';
+    if (m === 'gpt-6.2-astra') return 'gpt-6-astra';
     if (m === 'gpt-6.1-sol') return 'gpt-5.6-sol';
     if (m === 'gpt-6.1-terra') return 'gpt-5.6-terra';
     // GPT-5.6 (sol/terra/luna) may not be enabled on every account yet;

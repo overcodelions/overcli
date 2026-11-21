@@ -1,6 +1,11 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  GRADLE_OPTIONS_MARKER,
   buildCommand,
+  ensureGradleOptionsInit,
   copiesOf,
   defaultOptionStyle,
   isSecretName,
@@ -161,6 +166,26 @@ describe('buildCommand', () => {
     expect(argv[2]).toContain('-Dprocessor.types=PROC,PROC_HIGH');
     expect(argv[2]).toContain('-Ddatabase.userid=root');
     expect(argv).toHaveLength(3);
+  });
+
+  it('hands gradle the exact list and the init script that makes sure of it', () => {
+    const argv = buildCommand(procs, resolveOptions(specs, procs, { DB_USER: 'root' }), '/data/overcli-options.init.gradle');
+    expect(argv[2]).toMatch(/^-PjvmArgs=/);
+    expect(argv[3]).toMatch(/^-PovercliJvmArgs=\[/);
+    const list = JSON.parse(argv[3].slice('-PovercliJvmArgs='.length)) as string[];
+    expect(list).toContain('-Ddatabase.userid=root');
+    expect(argv.slice(4)).toEqual(['-I', '/data/overcli-options.init.gradle']);
+  });
+
+  it('writes an init script that adds only what the build file did not pass', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-opts-'));
+    const file = ensureGradleOptionsInit(dir);
+    const script = fs.readFileSync(file, 'utf8');
+    expect(script).toContain("findProperty('overcliJvmArgs')");
+    expect(script).toContain('!have.contains(it)');
+    expect(script).toContain(`${GRADLE_OPTIONS_MARKER} \${wanted.size()}`);
+    expect(ensureGradleOptionsInit(dir)).toBe(file);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('appends them as plain arguments for everything else', () => {

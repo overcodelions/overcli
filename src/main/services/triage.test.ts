@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { portInUse, triage, type TriageContext } from './triage';
+import { lastRun, portInUse, reportedProfiles, triage, type TriageContext } from './triage';
 import type { ServiceSpec } from './types';
 
 const spec: ServiceSpec = {
@@ -59,6 +59,94 @@ describe('the profile contradiction', () => {
 
   it('says nothing when the profile asked for is still an unfilled reference', () => {
     const found = triage(ctx({ lines, env: { SPRING_PROFILES_ACTIVE: '${SPRING_PROFILES_ACTIVE}' } }));
+    expect(found.some((f) => f.id === 'profile-mismatch')).toBe(false);
+  });
+});
+
+describe('reading the profiles Spring reports', () => {
+  it('stops a JSON log line at the end of its message', () => {
+    // Read naively this was the profile `"local","stacktrace":""}`.
+    const line = '{"level":"INFO","message":"The following profiles are active: local","stacktrace":""}';
+    expect(reportedProfiles([line])?.profiles).toEqual(['local']);
+  });
+
+  it('reads the quoted form, escaped inside JSON or not', () => {
+    expect(reportedProfiles(['The following 2 profiles are active: "local", "dev"'])?.profiles).toEqual(['local', 'dev']);
+    const json = '{"message":"The following 1 profile is active: \\"local\\"","x":1}';
+    expect(reportedProfiles([json])?.profiles).toEqual(['local']);
+  });
+
+  it('reads the fallback when no profile was set', () => {
+    const line = 'INFO 14:29:25.751 Application  No active profile set, falling back to default profiles: default';
+    expect(reportedProfiles([line])?.profiles).toEqual(['default']);
+    expect(reportedProfiles(['No active profile set, falling back to 1 default profile: "default"'])?.profiles)
+      .toEqual(['default']);
+  });
+
+  it('treats the same profiles in another order as agreement', () => {
+    const found = triage(ctx({
+      lines: ['The following profiles are active: dev,local'],
+      env: { SPRING_PROFILES_ACTIVE: 'local, dev' },
+    }));
+    expect(found.some((f) => f.id === 'profile-mismatch')).toBe(false);
+  });
+});
+
+describe('only the run that failed', () => {
+  const start = (n: number) => `── start 14:2${n}:00 · feat/x · /wt/x · ./gradlew :api:bootRun ──`;
+
+  it('drops lines from runs before the last start', () => {
+    expect(lastRun(['old', start(1), 'a', start(2), 'b'])).toEqual(['b']);
+    expect(lastRun(['no', 'dividers'])).toEqual(['no', 'dividers']);
+  });
+
+  it('does not diagnose an earlier run that came up fine', () => {
+    // The earlier run said `local`; this one fell back to default. Only the
+    // second is on screen, and only it explains the failure.
+    const lines = [
+      start(1),
+      '{"message":"The following profiles are active: local","stacktrace":""}',
+      '── failed · exit 1 ──',
+      start(2),
+      'No active profile set, falling back to default profiles: default',
+    ];
+    const found = triage(ctx({ lines, options: [{ key: '-Dspring.profiles.active', value: 'local' }] }));
+    expect(found[0].id).toBe('profile-mismatch');
+    expect(found[0].title).toContain('"default"');
+    expect(found[0].title).not.toContain('stacktrace');
+  });
+});
+
+describe('a profile set as a startup option', () => {
+  const fallback = ['INFO Application  No active profile set, falling back to default profiles: default'];
+  const option = [{ key: '-Dspring.profiles.active', value: 'local' }];
+
+  it('says the options never arrived when Gradle got them as an unread -PjvmArgs', () => {
+    const found = triage(ctx({ lines: fallback, options: option }));
+    expect(found[0].id).toBe('profile-mismatch');
+    expect(found[0].title).toContain('never reached the app');
+    expect(found[0].detail).toContain('-PjvmArgs');
+    // The old advice was to add the option that was already there.
+    expect(found[0].detail).not.toContain('Add the profile as a startup option');
+  });
+
+  it('looks elsewhere once the launch confirmed the options reached bootRun', () => {
+    const lines = [
+      '>>> OVERCLI OPTIONS: 2 startup options on bootRun (0 passed by the build file, 2 added by Overcli)',
+      ...fallback,
+    ];
+    const found = triage(ctx({ lines, options: option }));
+    expect(found[0].title).toBe('It started on the "default" profile, not "local"');
+    expect(found[0].detail).toContain('overrode it');
+    expect(found[0].evidence.some((e) => e.includes('OVERCLI OPTIONS'))).toBe(true);
+  });
+
+  it('prefers the option over the environment for what was asked for', () => {
+    const found = triage(ctx({
+      lines: ['The following profiles are active: local'],
+      options: option,
+      env: { SPRING_PROFILES_ACTIVE: 'other' },
+    }));
     expect(found.some((f) => f.id === 'profile-mismatch')).toBe(false);
   });
 });

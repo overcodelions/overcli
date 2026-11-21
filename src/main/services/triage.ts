@@ -15,7 +15,9 @@
 // A model belongs after these, for the long tail, clearly marked as a guess.
 // Nothing here is that.
 
+import { parseStart } from '../../shared/logRuns';
 import type { PortHolderKind } from '../../shared/services';
+import { GRADLE_OPTIONS_MARKER, defaultOptionStyle } from './options';
 import type { ServiceFinding, ServiceSpec } from './types';
 
 export type Finding = ServiceFinding;
@@ -25,6 +27,8 @@ export interface TriageContext {
   spec: ServiceSpec;
   /// Environment actually handed to the process.
   env: Record<string, string>;
+  /// The startup options it resolved with, values filled.
+  options?: readonly { key: string; value?: string }[];
   /// How many startup options it resolved with.
   optionCount: number;
   binding?: { ref: string; path: string };
@@ -39,7 +43,11 @@ export interface TriageContext {
 }
 
 /// Everything worth saying about a failure, most useful first.
-export function triage(ctx: TriageContext): Finding[] {
+export function triage(input: TriageContext): Finding[] {
+  // Only the run that failed. A restart appends to the last run's output, so
+  // the buffer can hold an earlier run's lines — and a rule that reads them
+  // diagnoses a failure that is not on screen.
+  const ctx = { ...input, lines: lastRun(input.lines) };
   const findings: Finding[] = [
     ...missingDebugTool(ctx),
     ...profileContradiction(ctx),
@@ -81,38 +89,122 @@ function missingDebugTool(ctx: TriageContext): Finding[] {
   return [];
 }
 
+/// The lines from the last `── start` divider on. All of them when there is
+/// none — a log written before dividers, or a test.
+export function lastRun(lines: readonly string[]): readonly string[] {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (parseStart(lines[i])) return lines.slice(i + 1);
+  }
+  return lines;
+}
+
 // ── we set it, the process disagrees ────────────────────────────────────────
+
+/// The profiles Spring says it came up on, and the line that said so.
+///
+/// Three shapes: Boot before 2.4 lists them bare (`are active: local,dev`),
+/// later versions quote them (`profile is active: "local"`), and with no
+/// profile at all it falls back (`No active profile set, falling back to
+/// default profiles: default`). Any of them can sit inside a JSON log line,
+/// where the message ends at an unescaped quote and the rest of the line is
+/// the next field — read naively, `"local","stacktrace":""}` is a profile.
+export function reportedProfiles(lines: readonly string[]): { profiles: string[]; line: string } | null {
+  for (const line of lines) {
+    const match =
+      /following (?:\d+ )?profiles? (?:are|is) active:\s*(.*)$/i.exec(line) ??
+      /No active profile set, falling back to (?:\d+ )?default profiles?:\s*(.*)$/i.exec(line);
+    if (!match) continue;
+    return { profiles: parseProfileList(match[1]), line };
+  }
+  return null;
+}
+
+function parseProfileList(raw: string): string[] {
+  // Inside a JSON string the quoted form arrives escaped.
+  const text = raw.replace(/\\"/g, '"').trim();
+  if (text.startsWith('"')) {
+    // `"local", "dev"` — the quoted names at the front, nothing after.
+    const quoted = /^"[^"]*"(?:\s*,\s*"[^"]*")*/.exec(text)?.[0] ?? '';
+    return [...quoted.matchAll(/"([^"]*)"/g)].map((m) => m[1].trim()).filter(Boolean);
+  }
+  // Bare: up to where a JSON message would close.
+  const bare = text.split('"')[0];
+  return bare.split(',').map((p) => p.trim()).filter(Boolean);
+}
+
+function profileList(value: string): string[] {
+  return value.split(',').map((p) => p.trim()).filter(Boolean);
+}
+
+function sameProfiles(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((p) => b.includes(p));
+}
 
 /// Spring announces the profiles it came up on. When that is not what we asked
 /// for, everything downstream reads the wrong file — and the error it
 /// eventually produces is about a placeholder, three hundred lines later, with
 /// no hint that the profile was ever the problem.
+///
+/// What was asked for comes from a startup option first, the environment
+/// second. Which one it was decides the advice: an option that did not arrive
+/// is a launch problem, a variable that did not arrive is the Gradle daemon.
 function profileContradiction(ctx: TriageContext): Finding[] {
-  const wanted = ctx.env.SPRING_PROFILES_ACTIVE;
+  const option = ctx.options?.find((o) => o.key === '-Dspring.profiles.active' && o.value);
+  const fromOption = option?.value;
+  const fromEnv = ctx.env.SPRING_PROFILES_ACTIVE;
+  const wanted = fromOption ?? fromEnv;
   // Still a reference means we do not know what was asked for, and naming the
   // placeholder as the profile we wanted is a diagnosis nobody can act on.
   if (!wanted || wanted.includes('${')) return [];
 
-  for (const line of ctx.lines) {
-    const match = /following profiles are active:\s*(.+?)\s*$/i.exec(line);
-    if (!match) continue;
-    const actual = match[1].trim();
-    if (actual === wanted) return [];
-    return [
-      {
+  const reported = reportedProfiles(ctx.lines);
+  if (!reported) return [];
+  if (sameProfiles(reported.profiles, profileList(wanted))) return [];
+
+  const actual = reported.profiles.join(', ') || 'default';
+  const title = `It started on the "${actual}" profile, not "${wanted}"`;
+  const lead = 'Everything below follows from that — a different profile reads a different properties file. ';
+
+  if (fromOption) {
+    const gradle = (ctx.spec.optionStyle ?? defaultOptionStyle(ctx.spec)) === 'gradle-jvm-args';
+    const ensured = ctx.lines.find((l) => l.includes(GRADLE_OPTIONS_MARKER));
+    const evidence = [reported.line.trim(), `-Dspring.profiles.active=${wanted} is a startup option`];
+    if (gradle && !ensured) {
+      return [{
         id: 'profile-mismatch',
-        title: `It started on the "${actual}" profile, not "${wanted}"`,
+        title: `The startup options never reached the app — it started on "${actual}", not "${wanted}"`,
         detail:
-          'Everything below follows from that — a different profile reads a different properties file. ' +
-          'For Gradle this is usually the daemon: it reuses one started earlier, with an earlier environment, ' +
-          'so variables set for this launch never reach the forked JVM. Add the profile as a startup option ' +
-          `(-Dspring.profiles.active=${wanted}) to pass it directly.`,
-        evidence: [line.trim(), `SPRING_PROFILES_ACTIVE=${wanted} was set for this launch`],
-        action: 'edit-options',
-      },
-    ];
+          lead +
+          'Gradle gets the options as -PjvmArgs, and that only reaches bootRun when the build file reads it; ' +
+          'this one did not, so every option was dropped, not just the profile. Overcli now passes them to ' +
+          'bootRun itself — start it again.',
+        evidence,
+      }];
+    }
+    return [{
+      id: 'profile-mismatch',
+      title,
+      detail:
+        lead +
+        'The option reached the JVM' + (ensured ? ' (the launch confirmed it)' : '') + ', so something later ' +
+        'overrode it — usually spring.profiles.active set in a properties file, or a SPRING_PROFILES_ACTIVE ' +
+        'variable in the environment this service starts with.',
+      evidence: ensured ? [...evidence, ensured.trim()] : evidence,
+      action: 'edit-options',
+    }];
   }
-  return [];
+
+  return [{
+    id: 'profile-mismatch',
+    title,
+    detail:
+      lead +
+      'For Gradle this is usually the daemon: it reuses one started earlier, with an earlier environment, ' +
+      'so variables set for this launch never reach the forked JVM. Add the profile as a startup option ' +
+      `(-Dspring.profiles.active=${wanted}) to pass it directly.`,
+    evidence: [reported.line.trim(), `SPRING_PROFILES_ACTIVE=${wanted} was set for this launch`],
+    action: 'edit-options',
+  }];
 }
 
 // ── a placeholder, and the file that defines it ─────────────────────────────

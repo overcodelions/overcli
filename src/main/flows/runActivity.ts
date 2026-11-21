@@ -131,6 +131,20 @@ export class RunActivity {
     return gone;
   }
 
+  /// Drop one run's activity, on disk and in memory (the ephemeral purge).
+  async forget(runId: string): Promise<void> {
+    await this.writes.get(runId);
+    this.byRun.delete(runId);
+    this.writes.delete(runId);
+    const file = this.file(runId);
+    if (!file) return;
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // Never written, or already gone.
+    }
+  }
+
   /// Resolves once every append started so far is on disk.
   async flushed(): Promise<void> {
     await Promise.all([...this.writes.values()]);

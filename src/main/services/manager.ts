@@ -37,7 +37,7 @@ import {
   type ImportSet,
   type ImportedService,
 } from './importers';
-import { resolveOptions, substitute, type ResolvedOption } from './options';
+import { ensureGradleOptionsInit, resolveOptions, substitute, type ResolvedOption } from './options';
 import { differingNames, findSharedValues, referToShared, withMachineValue } from './consolidate';
 import type { PortClaim } from './ports';
 import { parseWorktreeList, type WorktreeChoice } from '../../shared/worktrees';
@@ -829,6 +829,7 @@ export class ServicesManager {
       lines,
       spec,
       env,
+      options,
       optionCount: options.length,
       binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
       portOwner: takenPort === undefined || owners.length === 0
@@ -1846,6 +1847,7 @@ export class ServicesManager {
       symlinkRoots: this.symlinkRoots,
       configDir: (serviceId) => ensureServiceConfigDir(this.dataDir, workspaceId, serviceId),
       gradleDebugInit: ensureGradleDebugInit(this.dataDir),
+      gradleOptionsInit: ensureGradleOptionsInit(this.dataDir),
       // Read per launch, so editing a machine value takes effect on the next
       // start rather than on the next restart of the app.
       machineValues: () => this.allMachineValues(),

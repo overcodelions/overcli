@@ -18,8 +18,14 @@ import { host } from '../main/host';
 import { buildDaemonEngines, type DaemonEngines } from './engines';
 import { configuredSlackToken, slackEnabled } from '../main/slack/slackSettings';
 import { listPeople, type SlackPerson } from '../main/slack/slackApi';
-import { fileAuditStore, listTokens, loadOrgPolicy, orgPolicyPath } from '../main/org/orgStores';
+import { fileAskStore, fileAuditStore, listTokens, loadOrgPolicy, orgPolicyPath } from '../main/org/orgStores';
 import { startHousekeeping } from '../main/org/housekeeping';
+import { purgeEphemeral } from '../main/org/ephemeralPurge';
+import type { UUID } from '../shared/types';
+import { purgeAgentSessions } from '../main/sessionPurge';
+import { forgetWorkLogRuns } from '../main/work/workLog';
+import { deleteWorkerJournalEntries, loadWorkerJournal } from '../main/flows/workerJournal';
+import { deleteWorkerFile, listWorkerFiles } from '../main/flows/workerFiles';
 import type { OrgCaller } from '../shared/org/policy';
 import { createControlPlane, listenControlPlane } from './controlPlane';
 import { createMetricsServer, type MetricsStatus } from './metricsServer';
@@ -368,6 +374,23 @@ export function startDaemon(
     stateFile: path.join(dataDir, 'org', 'housekeeping.json'),
     log: deps.out,
     zoneFromOrg,
+    purgeEphemeral: () =>
+      purgeEphemeral({
+        policy: () => loadOrgPolicy().policy,
+        workers: () => engines.workerEngine.roster(),
+        ledger: engines.ephemeralLedger,
+        purgeSessions: (ids) => purgeAgentSessions(ids),
+        forgetConversations: (id, ended) => engines.workerEngine.forgetConversations(id as UUID, ended),
+        runs: { list: () => engines.flowRuntime.listRuns(), delete: (runId) => engines.flowRuntime.deleteRun({ runId: runId as UUID, force: true }) },
+        runActivity: engines.runActivity,
+        workLog: { forget: forgetWorkLogRuns },
+        orchestrations: { list: () => engines.orchestrator.list(), delete: (id) => engines.orchestrator.delete({ id: id as UUID }) },
+        asks: fileAskStore,
+        journal: { list: loadWorkerJournal, delete: (workerId, ids) => deleteWorkerJournalEntries(workerId, { ids }) },
+        files: { list: listWorkerFiles, delete: deleteWorkerFile },
+        audit: fileAuditStore,
+        log: deps.out,
+      }),
   });
 
   let resolveDone: (code: number) => void;

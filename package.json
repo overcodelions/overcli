@@ -136,7 +136,15 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for — CLI logins and Ollama install/update — so you can watch them and answer any prompts."
+        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for — CLI logins and Ollama install/update — so you can watch them and answer any prompts.",
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Any file",
+            "CFBundleTypeRole": "Editor",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["public.data", "public.content", "public.item"]
+          }
+        ]
       }
     },
     "dmg": {

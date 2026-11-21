@@ -1512,7 +1512,9 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .meter.high > span { background: var(--need); }
 /* Spend by day: one series, so one hue and no legend; bars meet the
    baseline square and round off at the top. */
-.sd-wrap { position: relative; padding-left: 52px; margin-top: 4px; }
+/* The top axis label rides half above the plot: the margin keeps it clear
+   of the total over the chart. */
+.sd-wrap { position: relative; padding-left: 52px; margin-top: 22px; }
 .sd-plot { position: relative; height: 180px; display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line-2); }
 .sd-plot.dense { gap: 1px; }
 .sd-plot:focus-visible { outline: 2px solid var(--go); outline-offset: 6px; border-radius: 4px; }
@@ -14793,7 +14795,16 @@ export const CONSOLE_JS = String.raw`
     var m = [1, 2, 2.5, 5, 10].filter(function (x) { return x * e >= v - 1e-9; })[0];
     return m * e;
   }
-  var SPEND_PRESETS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['month', 'This month']];
+  /// Month to date first and by default, so the chart's total agrees with the
+  /// month's spend above it; the rolling windows move a day at a time, and
+  /// their total drops as old days fall out.
+  var SPEND_PRESETS = [['month', 'Month to date'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days']];
+  /// What the chart's total covers, said beside it.
+  function spendRangeLabel(r) {
+    if (r.preset === 'month') return 'month to date';
+    if (r.preset === 'custom') return null;
+    return 'last ' + (Number(r.preset) || 30) + ' days';
+  }
   /// The days a range choice covers, in the viewer's calendar.
   function spendRange(r) {
     var today = new Date(), to = ymd(today);
@@ -14806,7 +14817,7 @@ export const CONSOLE_JS = String.raw`
   /// Spend per day over a range, for the workers the spend page shows or one
   /// of them. Built at once and filled as it loads.
   function spendOverTime(all) {
-    if (!state.spendRange) state.spendRange = { preset: '30' };
+    if (!state.spendRange) state.spendRange = { preset: 'month' };
     var today = ymd(new Date());
     var cur = spendRange(state.spendRange);
     var fromIn = h('input', { type: 'date', 'aria-label': 'From', value: cur.from, max: today, style: 'width:auto;min-height:32px;padding:4px 8px;font-size:13px' });
@@ -14844,21 +14855,23 @@ export const CONSOLE_JS = String.raw`
         if (s.ok === false) { fill(body, [msg(s)]); return; }
         if (who.options.length === 1) s.workers.forEach(function (w) { who.appendChild(h('option', { value: w.id, text: w.name })); });
         who.value = state.spendWorker || '';
-        fill(body, spendDaysChart(s));
+        fill(body, spendDaysChart(s, spendRangeLabel(state.spendRange)));
       }, function (e) { if (mine === seq) fill(body, [msg({ ok: false, error: String((e && e.message) || e) })]); });
     };
     draw();
     return card('spenddays', 'Spend by day', null, h('div', { class: 'stack', style: 'gap:14px' }, controls, body));
   }
 
-  function spendDaysChart(s) {
+  function spendDaysChart(s, rangeLabel) {
     var days = s.days, n = days.length;
     var names = {};
     s.workers.forEach(function (w) { names[w.id] = w.name; });
     var peak = days.reduce(function (b, d) { return !b || d.totalUSD > b.totalUSD ? d : b; }, null);
     var spentDays = days.filter(function (d) { return d.totalUSD >= 0.005; }).length;
     var summary = h('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap;align-items:baseline' },
-      h('span', { class: 'big', style: 'font-size:20px;font-family:var(--sans);font-weight:700', text: money(s.totalUSD) }),
+      h('span', { class: 'row', style: 'gap:8px;align-items:baseline' },
+        h('span', { class: 'big', style: 'font-size:20px;font-family:var(--sans);font-weight:700', text: money(s.totalUSD) }),
+        rangeLabel ? h('span', { style: 'font-size:14px;font-weight:600', text: rangeLabel }) : null),
       h('span', { class: 'faint', text: [spendDay(s.from) + ' to ' + spendDay(s.to) + ' (' + plural(n, 'day', 'days') + ')', 'about ' + money(s.totalUSD / n) + ' a day', spentDays ? 'most on ' + spendDay(peak.date) + ', ' + money(peak.totalUSD) : null].filter(Boolean).join(' · ') }));
     if (!spentDays) return [summary, h('p', { class: 'muted', style: 'margin:10px 0 0', text: 'Nothing spent in this range.' })];
     var top = niceMax(peak.totalUSD);
@@ -14933,7 +14946,7 @@ export const CONSOLE_JS = String.raw`
         return h('button', { 'aria-pressed': isOrg === o[0] ? 'true' : 'false', text: o[1], onclick: function (e) { state.spendAll = o[0]; state.spendWorker = ''; pressSeg(e.currentTarget); reportsRedraw(); } });
       })) : null);
       var over = s.budgetUSD && s.capsUSD > s.budgetUSD;
-      var top = card('spendtop', isOrg ? 'Org spend this month' : 'My workers this month', null, h('div', { class: 'stack', style: 'gap:8px' },
+      var top = card('spendtop', isOrg ? 'Org spend, month to date' : 'My workers, month to date', null, h('div', { class: 'stack', style: 'gap:8px' },
         h('span', { class: 'big', style: 'font-size:20px;font-family:var(--sans);font-weight:700', text: money(s.spentUSD) + (s.budgetUSD ? ' of ' + money(s.budgetUSD) : '') }),
         s.budgetUSD ? bar(s.spentUSD, s.budgetUSD) : null,
         h('span', { class: 'faint', text: [s.paceUSD != null ? 'On pace for ' + money(s.paceUSD) : null, 'Worker budgets add up to ' + money(s.capsUSD)].filter(Boolean).join(' · ') }),

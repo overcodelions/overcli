@@ -147,7 +147,7 @@ export const EDITABLE_RULES = [
   'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'tuningWatch', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
   'answersAtOnce', 'codeRunsAtOnce',
-  'redactSecrets', 'providerModels', 'workerAccess',
+  'redactSecrets', 'sensitiveTools', 'providerModels', 'workerAccess',
 ] as const;
 
 export interface EditableRules {

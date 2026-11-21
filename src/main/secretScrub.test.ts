@@ -16,7 +16,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { collectKnownSecretValues, redactSecrets, scrubOutbound, scrubOutboundFile, scrubOutboundText, setOutboundScrub, shannonEntropy } from './secretScrub';
+import { collectKnownSecretValues, redactPersonalData, redactSecrets, scrubOutbound, scrubOutboundFile, scrubOutboundText, setOutboundScrub, shannonEntropy } from './secretScrub';
 
 const AKIA = 'AKIAIOSFODNN7EXAMPLE';
 const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
@@ -270,5 +270,40 @@ describe('the outbound rule', () => {
     expect(scrubOutboundFile('report.md', Buffer.from(KEY)).toString()).toBe('[REDACTED:aws-access-key-id]');
     const png = Buffer.from(KEY);
     expect(scrubOutboundFile('chart.png', png)).toBe(png);
+  });
+});
+
+describe('redactPersonalData', () => {
+  it('redacts emails, card numbers and phone numbers', () => {
+    const r = redactPersonalData('Customer jane.doe+test@acme-corp.example.com paid with 4111 1111 1111 1111, call +1 (555) 010-2345.');
+    expect(r.text).toBe('Customer [REDACTED:email] paid with [REDACTED:card-number], call [REDACTED:phone].');
+    expect(r.redactedCount).toBe(3);
+  });
+
+  it('leaves ids, timestamps, dates and non-Luhn digit runs alone', () => {
+    const text = 'run 1732112345678 at 2026-11-20 12:00, order 1234 5678 9012 3456, v0.26.6, port 8080';
+    expect(redactPersonalData(text).text).toBe(text);
+  });
+});
+
+describe('personal data in outbound messages', () => {
+  afterEach(() => setOutboundScrub(null));
+
+  it('scrubs only the messages the host says are an ephemeral worker’s, even with secret scrubbing off', () => {
+    setOutboundScrub({ enabled: () => false, known: () => [], personal: (ctx) => ctx.username === 'Logan' });
+    expect(scrubOutboundText({ username: 'Logan', text: 'mail jo@acme.example.com' }).text).toBe('mail [REDACTED:email]');
+    expect(scrubOutboundText({ username: 'Wiki', text: 'mail jo@acme.example.com' }).text).toBe('mail jo@acme.example.com');
+  });
+
+  it('scrubs attached text files by where they go', () => {
+    setOutboundScrub({ enabled: () => false, known: () => [], personal: (ctx) => ctx.threadTs === '1.1' });
+    const bytes = Buffer.from('jo@acme.example.com');
+    expect(scrubOutboundFile('a.csv', bytes, { channel: 'C1', threadTs: '1.1' }).toString()).toBe('[REDACTED:email]');
+    expect(scrubOutboundFile('a.csv', bytes, { channel: 'C1', threadTs: '2.2' }).toString()).toBe('jo@acme.example.com');
+  });
+
+  it('scrubs when it cannot tell whose message it is', () => {
+    setOutboundScrub({ enabled: () => false, known: () => [], personal: () => { throw new Error('no roster'); } });
+    expect(scrubOutboundText({ text: 'jo@acme.example.com' }).text).toBe('[REDACTED:email]');
   });
 });

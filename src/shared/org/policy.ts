@@ -96,6 +96,11 @@ export interface OrgPolicy {
   /// Tools whose keys belong to a service account rather than a person, as
   /// an admin said: no "acts as a person" warning on them.
   serviceAccounts?: string[];
+  /// Tools whose output may hold customer data (a log reader, a support
+  /// inbox), by server name. A worker that has one of them is ephemeral:
+  /// what it read and said is kept only while the conversation is open,
+  /// then purged (src/main/org/ephemeralPurge.ts). Absent: none.
+  sensitiveTools?: string[];
   /// The org's own sites (`acme.atlassian.net`, `wiki.acme.com`): a safe
   /// fetch opens them, and the pages under them, whatever the address.
   ownDomains: string[];
@@ -362,6 +367,7 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       ...(r.allowedMcpServers !== undefined ? { allowedMcpServers: strings(r.allowedMcpServers) } : {}),
       ...(r.sharedMcpServers !== undefined ? { sharedMcpServers: strings(r.sharedMcpServers) } : {}),
       ...(r.serviceAccounts !== undefined ? { serviceAccounts: strings(r.serviceAccounts) } : {}),
+      ...(r.sensitiveTools !== undefined ? { sensitiveTools: strings(r.sensitiveTools) } : {}),
       ...(() => {
         const raw = r.toolDefaults && typeof r.toolDefaults === 'object' ? (r.toolDefaults as Record<string, unknown>) : {};
         const out: ToolScopes = {};

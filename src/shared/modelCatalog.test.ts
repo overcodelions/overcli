@@ -154,19 +154,28 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
     expect(friendlyModelLabel('codex', 'gpt-6-astra')).toBe('GPT-6 Astra (Codex)');
     expect(friendlyModelLabel('codex', 'gpt-6.1-sol')).toBe('GPT-6.1 Sol (Codex)');
     expect(friendlyModelLabel('codex', 'gpt-6.1-terra')).toBe('GPT-6.1 Terra (Codex)');
+    expect(friendlyModelLabel('codex', 'gpt-6.2-sol')).toBe('GPT-6.2 Sol (Codex)');
+    expect(friendlyModelLabel('codex', 'gpt-6.2-astra')).toBe('GPT-6.2 Astra (Codex)');
   });
 
-  it('lists gpt-6.1-sol first so it is the codex default', () => {
+  it('lists gpt-6.2-sol first so it is the codex default', () => {
     // Astra is the stronger model but sits at the opt-in frontier tier, so
-    // it must not take the auto-pick slot. The previous Sol stays listed
-    // for accounts that don't have 6.1 yet.
-    expect(PREMIUM_MODELS.codex[0]).toBe('gpt-6.1-sol');
-    expect(PREMIUM_MODELS.codex[1]).toBe('gpt-5.6-sol');
+    // it must not take the auto-pick slot. The previous Sols stay listed
+    // for accounts that don't have 6.2 yet.
+    expect(PREMIUM_MODELS.codex[0]).toBe('gpt-6.2-sol');
+    expect(PREMIUM_MODELS.codex[1]).toBe('gpt-6.1-sol');
+    expect(PREMIUM_MODELS.codex[2]).toBe('gpt-5.6-sol');
+    expect(PREMIUM_MODELS.codex).toContain('gpt-6.2-astra');
     expect(PREMIUM_MODELS.codex).toContain('gpt-6-astra');
   });
 
-  it('offers gpt-6.1-sol as the upgrade for a gpt-5.6-sol pin', () => {
-    expect(newestInFamily('codex', 'gpt-5.6-sol')).toBe('gpt-6.1-sol');
+  it('offers gpt-6.2-sol as the upgrade for an older Sol pin', () => {
+    expect(newestInFamily('codex', 'gpt-5.6-sol')).toBe('gpt-6.2-sol');
+    expect(newestInFamily('codex', 'gpt-6.1-sol')).toBe('gpt-6.2-sol');
+  });
+
+  it('offers gpt-6.2-astra as the upgrade for a gpt-6-astra pin', () => {
+    expect(newestInFamily('codex', 'gpt-6-astra')).toBe('gpt-6.2-astra');
   });
 
   it('offers gpt-6.1-terra as the upgrade for a gpt-5.6-terra pin', () => {
@@ -270,7 +279,9 @@ describe('modelSpeed', () => {
     ['claude-sonnet-5', 'fast'],
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],
+    ['gpt-6.2-astra', 'frontier'],
     ['gpt-6-astra', 'frontier'],
+    ['gpt-6.2-sol', 'thinking'],
     ['gpt-6.1-sol', 'thinking'],
     ['gpt-5.6-sol', 'thinking'],
     ['gpt-6.1-terra', 'standard'],
@@ -345,9 +356,9 @@ describe('latestAtTier', () => {
     expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5-5');
     expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5-5');
     expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-2');
-    expect(latestAtTier('codex', 'thinking')).toBe('gpt-6.1-sol');
+    expect(latestAtTier('codex', 'thinking')).toBe('gpt-6.2-sol');
     expect(latestAtTier('codex', 'fast')).toBe('gpt-5.6-luna');
-    expect(latestAtTier('codex', 'frontier')).toBe('gpt-6-astra');
+    expect(latestAtTier('codex', 'frontier')).toBe('gpt-6.2-astra');
     expect(latestAtTier('gemini', 'standard')).toBe('gemini-3.7-flash');
   });
 
@@ -364,10 +375,10 @@ describe('latestAtTier', () => {
   });
 
   it('does not promote a tier onto a newer model from another tier', () => {
-    // gpt-6.1-sol sits at the thinking tier — the standard default must
+    // gpt-6.2-sol sits at the thinking tier — the standard default must
     // stay on terra rather than climb into it.
     expect(latestAtTier('codex', 'standard')).toBe('gpt-6.1-terra');
-    expect(latestAtTier('codex', 'thinking')).toBe('gpt-6.1-sol');
+    expect(latestAtTier('codex', 'thinking')).toBe('gpt-6.2-sol');
   });
 
   it('picks the newest version within the leading family', () => {

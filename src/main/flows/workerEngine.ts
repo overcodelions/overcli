@@ -375,6 +375,10 @@ export interface WorkerEngineDeps {
   /// Entries carry either the recorded output (`body`) or a path to a file
   /// the run wrote itself (`sourcePath`), which is copied instead of read.
   deliverablesFor?: (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }>;
+  /// Whether this worker is ephemeral (shared/org/ephemeral.ts): what it
+  /// makes stays in its own files, which are purged, and is never copied into
+  /// a project folder, where a checkpoint would commit it for good.
+  isEphemeral?: (w: Worker) => boolean;
   /// The recorded output of each step in a finished run that declared
   /// `hands_off`, with the colleagues it named. The only place a run's
   /// `<handoff>` blocks are read from.
@@ -669,6 +673,29 @@ export class WorkerEngine {
 
   get(id: UUID): Worker | null {
     return this.workers.get(id) ?? null;
+  }
+
+  /// Drop conversations the ephemeral purge has ended (Slack threads by key,
+  /// and the desk's), so the next message starts a fresh session rather than
+  /// resuming one whose transcript is gone.
+  forgetConversations(id: UUID, ended: { threadKeys: string[]; desk: boolean }): void {
+    const w = this.workers.get(id);
+    if (!w) return;
+    let changed = false;
+    if (w.threadSessions) {
+      const next = { ...w.threadSessions };
+      for (const key of ended.threadKeys) {
+        if (!(key in next)) continue;
+        delete next[key];
+        changed = true;
+      }
+      w.threadSessions = next;
+    }
+    if (ended.desk && w.deskSession) {
+      delete w.deskSession;
+      changed = true;
+    }
+    if (changed) this.store.save(w);
   }
 
   /// Each worker's spend since the 1st, for the org console and its tools.
@@ -3918,6 +3945,7 @@ export class WorkerEngine {
     // Otherwise flipping the toggle dumps up to MAX_RETAINED_RUNS
     // past deliverables into the folder at once on the next fold.
     if (!w.caps.fileIntoProject || at < (w.fileIntoProjectSince ?? 0)) return filed.written;
+    if (this.deps.isEphemeral?.(w)) return filed.written;
     const published = publishDeliverableToProject({
       workerId: w.id,
       projectPath: w.projectPath,

@@ -22,6 +22,8 @@ import type { ProcessService } from '../main/org/processes';
 import type { TestSystemsService } from '../main/org/testSystems';
 import path from 'node:path';
 import { RunActivity } from '../main/flows/runActivity';
+import { fileEphemeralLedger, withSessionLedger, type EphemeralLedger } from '../main/org/ephemeralPurge';
+import { isEphemeralWorker } from '../shared/org/ephemeral';
 import { workerFilesDir } from '../main/flows/workerFiles';
 import { randomUUID } from 'node:crypto';
 import { projectIdFor } from '../main/projectIds';
@@ -108,6 +110,8 @@ export interface HeadlessEngines {
   workerEngine: WorkerEngine;
   /// What each run is doing, step by step, for the console.
   runActivity: RunActivity;
+  /// Sessions of ephemeral workers, by conversation, for the purge.
+  ephemeralLedger: EphemeralLedger;
   /// The server's limit on answers at once, when it has one (pools.ts).
   answerPool: Pool | null;
   /// The emit tee, exposed so `buildDaemonEngines` can hand the scheduler the
@@ -287,8 +291,19 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
   if (options.pools) orchestrator.setCodeRunCap(options.pools.code);
 
   const answerPool = options.pools ? new Pool(options.pools.answers) : null;
+  const ephemeralLedger = fileEphemeralLedger(path.join(orgDir(), 'ephemeral-sessions.json'));
   workerEngine = new WorkerEngine({
-    parker: orchestrator,
+    // An ephemeral worker's sessions are noted as they happen, so its
+    // transcripts can be purged when the conversation ends (ephemeralPurge.ts).
+    parker: withSessionLedger(orchestrator, {
+      ledger: ephemeralLedger,
+      isEphemeral: (id) => {
+        const w = workerEngine?.get(id as UUID);
+        return !!w && isEphemeralWorker(w, loadOrgPolicy().policy);
+      },
+      log: (m) => log('warn', 'org', m),
+    }),
+    isEphemeral: (w) => isEphemeralWorker(w, loadOrgPolicy().policy),
     isGitRepo: isGitRepoOrWorkspace,
     // `readsOnlyWorker` below refuses a non-coding worker's writes here.
     readsInPlace: true,
@@ -427,6 +442,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     orchestrator,
     workerEngine,
     runActivity,
+    ephemeralLedger,
     answerPool,
     emit,
     dispose: () => {

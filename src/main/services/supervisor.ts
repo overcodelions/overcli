@@ -104,6 +104,9 @@ export interface SupervisorDeps {
   /// Gradle init script that injects JDWP into bootRun without depending on a
   /// project's private -PjvmArgs convention.
   gradleDebugInit?: string;
+  /// Gradle init script that makes sure startup options reach bootRun when
+  /// the build file does not read -PjvmArgs.
+  gradleOptionsInit?: string;
   /// Where every line also goes, past the in-memory cap — the file an agent
   /// is pointed at when asked what went wrong.
   logSink?: LogSink;
@@ -1024,7 +1027,7 @@ export class Supervisor {
       });
       return;
     }
-    const baseCommand = buildCommand({ ...spec, command: plan.command }, options);
+    const baseCommand = buildCommand({ ...spec, command: plan.command }, options, this.deps.gradleOptionsInit);
     const preferredDebugPort = spec.debugEnabled ? spec.debugPort : undefined;
     const actualDebugPort = preferredDebugPort === undefined
       ? undefined

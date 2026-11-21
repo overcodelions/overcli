@@ -65,7 +65,7 @@ describe('drafterModelFor', () => {
     // claude defaults to opus-5.5 (first entry, the newest thinking model);
     // fable-5.1 is the frontier opt-in, not the drafter default.
     expect(drafterModelFor('claude')).toBe('claude-opus-5-5');
-    expect(drafterModelFor('codex')).toBe('gpt-6.1-sol');
+    expect(drafterModelFor('codex')).toBe('gpt-6.2-sol');
     expect(drafterModelFor('gemini')).toBe('gemini-3.1-pro');
   });
 });
@@ -85,7 +85,7 @@ describe('drafterModelHints', () => {
     // GPT-5.6 Luna the cheap one — so no tier has to degrade into a
     // neighbour or into a legacy gpt-5.x id.
     expect(drafterModelHints('codex')).toEqual({
-      thinking: 'gpt-6.1-sol',
+      thinking: 'gpt-6.2-sol',
       standard: 'gpt-6.1-terra',
       fast: 'gpt-5.6-luna',
     });
@@ -114,7 +114,7 @@ describe('drafterModelHints', () => {
 describe('drafterModelHints — user pins', () => {
   it('hands the drafter the model the user pinned', () => {
     expect(drafterModelHints('codex', { codex: { standard: 'gpt-5.4' } })).toEqual({
-      thinking: 'gpt-6.1-sol',
+      thinking: 'gpt-6.2-sol',
       standard: 'gpt-5.4',
       fast: 'gpt-5.6-luna',
     });
@@ -147,7 +147,7 @@ describe('resolveProducerModel', () => {
   });
 
   it("falls back to the backend's strongest model when nothing is pinned", () => {
-    expect(resolveProducerModel('codex', undefined)).toBe('gpt-6.1-sol');
+    expect(resolveProducerModel('codex', undefined)).toBe('gpt-6.2-sol');
     expect(resolveProducerModel('claude', '   ')).toBe('claude-opus-5-5');
   });
 
@@ -196,7 +196,7 @@ describe('resolveProducerModel', () => {
   });
 
   it('maps a frontier pin to the strongest model the backend has', () => {
-    expect(resolveProducerModel('codex', 'claude-fable-5-1')).toBe('gpt-6.1-sol');
+    expect(resolveProducerModel('codex', 'claude-fable-5-1')).toBe('gpt-6.2-sol');
   });
 
   it('leaves local ollama ids alone', () => {
