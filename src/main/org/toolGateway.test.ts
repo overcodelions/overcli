@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpServerConfig } from '../mcpConfig';
-import { bindToolGateway, boundGatewayTools, closeToolGateway, openToolGateway, type GatewayCaller, type ToolGateway } from './toolGateway';
+import { bindToolGateway, boundGatewayTools, closeToolGateway, isRelayUrl, openToolGateway, type GatewayCaller, type ToolGateway } from './toolGateway';
 import { credentialRules } from './credentialGuard';
 
 /// The bearer header a bound gateway entry carries.
@@ -313,5 +313,20 @@ describe('credential guard', () => {
         expect(rules).toContain(`Edit(${pattern})`);
       }
     } finally { realpath.mockRestore(); }
+  });
+});
+
+describe('relay addresses', () => {
+  // tools.ts reads a relay address as "can't tell yet" and keeps the tool's
+  // sign-in; if this stops matching what the gateway writes, sign-ins are
+  // dropped on restart again.
+  it('recognises the address the gateway writes for a vaulted tool, and nothing else', async () => {
+    const file = configFile({});
+    const gw = await open(tmpDir(), file);
+    const entry = gw.wrap('docs', 'https://mcp.acme.example/mcp', { Authorization: 'Bearer x' });
+    expect(isRelayUrl(entry.url as string)).toBe(true);
+    expect(isRelayUrl(`${gw.base()}some%20tool`)).toBe(true);
+    expect(isRelayUrl('https://mcp.acme.example/t/docs')).toBe(false);
+    expect(isRelayUrl('http://127.0.0.1:3000/mcp')).toBe(false);
   });
 });

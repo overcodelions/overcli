@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readClaudeMcpServers, removeMcpServer, writeMcpServer, type McpServerConfig } from '../mcpConfig';
+import { isRelayUrl } from './toolGateway';
 import { holdsAddressCredential, isSecretFlagValue, isSecretName } from '../../shared/machineValues';
 
 export const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -62,10 +63,6 @@ export function useRemoteToolVault(v: RemoteToolVault | null): void {
   vault = v;
 }
 
-/// The tool gateway's relay address (toolGateway.ts base()), as written in
-/// the CLIs' config in place of a vaulted tool's real one.
-const RELAY_URL = /^http:\/\/127\.0\.0\.1:\d+\/t\//;
-
 /// The address a tool is installed with, the real one when it is vaulted.
 /// null: the config holds a relay address the vault can't answer for yet
 /// (the gateway opens after wiring, or did not open), so the real address
@@ -75,7 +72,7 @@ export function installedToolUrl(name: string): string | undefined | null {
   if (real) return real.url;
   const c = readClaudeMcpServers()[name];
   if (typeof c?.url !== 'string') return undefined;
-  return RELAY_URL.test(c.url) ? null : c.url;
+  return isRelayUrl(c.url) ? null : c.url;
 }
 
 export function listTools(

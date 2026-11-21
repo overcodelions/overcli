@@ -43,6 +43,17 @@ const UNKNOWN_REFUSAL = 'Refused: this call came on a key for a run this server 
 /// How many runs' keys are remembered as handed out; the oldest go first.
 const MAX_ISSUED = 10_000;
 
+/// Where the gateway listens, and the path it relays tools under.
+const RELAY_HOST = '127.0.0.1';
+const RELAY_PATH = '/t/';
+const RELAY_URL = new RegExp(`^http://${RELAY_HOST.replace(/\./g, '\\.')}:\\d+${RELAY_PATH}`);
+
+/// Whether an address is a gateway's relay (on any port): what the CLIs'
+/// config holds in place of a vaulted tool's real address.
+export function isRelayUrl(url: string): boolean {
+  return RELAY_URL.test(url);
+}
+
 export interface VaultedTool {
   url: string;
   headers: Record<string, string>;
@@ -304,7 +315,7 @@ export class ToolGateway {
     const server = http.createServer((req, res) => void this.handle(req, res));
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
+      server.listen(0, RELAY_HOST, () => {
         server.off('error', reject);
         resolve();
       });
@@ -321,7 +332,7 @@ export class ToolGateway {
   }
 
   base(): string {
-    return `http://127.0.0.1:${this.port}/t/`;
+    return `http://${RELAY_HOST}:${this.port}${RELAY_PATH}`;
   }
 
   owns(url: string): boolean {

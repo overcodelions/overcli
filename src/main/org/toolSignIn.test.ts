@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ToolSignIn } from './toolSignIn';
+import { installedToolUrl, useRemoteToolVault } from './tools';
 
 const MCP = 'https://mcp.acme.example/mcp';
 const AS = 'https://auth.acme.example';
@@ -52,7 +53,7 @@ function service(opts: { registers?: boolean; prm?: boolean; refresh?: 'ok' | 'i
   return { fetchImpl, calls };
 }
 
-function harness(svc: ReturnType<typeof service>, now = { t: 1_000_000 }) {
+function harness(svc: ReturnType<typeof service>, now = { t: 1_000_000 }, installedUrl?: (name: string) => string | undefined | null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-signin-'));
   dirs.push(dir);
   const key = randomBytes(32);
@@ -67,7 +68,7 @@ function harness(svc: ReturnType<typeof service>, now = { t: 1_000_000 }) {
       installed.set(name, { url, token });
       return { ok: true };
     },
-    installedUrl: (name) => (unknown.has(name) ? null : installed.get(name)?.url),
+    installedUrl: installedUrl ?? ((name) => (unknown.has(name) ? null : installed.get(name)?.url)),
     log: (m) => logs.push(m),
     fetchImpl: svc.fetchImpl as never,
     now: () => now.t,
@@ -210,5 +211,51 @@ describe('ToolSignIn', () => {
     h.unknown.delete('acme');
     await h.signIn.tick();
     expect(h.installed.get('acme')!.token).toBe('access-2');
+  });
+});
+
+describe('a restart with the tool gateway on', () => {
+  const savedHome = process.env.HOME;
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    useRemoteToolVault(null);
+  });
+
+  // The real wiring: installedToolUrl reads ~/.claude.json until the gateway
+  // opens and sets its vault, and the first tick runs before that.
+  it('keeps the sign-in until the gateway opens, then renews it', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-signin-home-'));
+    dirs.push(home);
+    process.env.HOME = home;
+    const config = (url: string) => fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { acme: { type: 'http', url } } }));
+    config(MCP);
+    const h = harness(service(), undefined, installedToolUrl);
+    await signInAs(h);
+    expect(h.signIn.summaries().acme).toBeDefined();
+
+    // Restart: the config holds the relay, and the vault isn't set yet.
+    config('http://127.0.0.1:41234/t/acme');
+    h.now.t += 45 * 60 * 1000;
+    await h.signIn.tick();
+    expect(h.signIn.summaries().acme).toBeDefined();
+    expect(h.installed.get('acme')!.token).toBe('access-1');
+
+    // The gateway opens.
+    useRemoteToolVault({ wrap: () => ({}), forget: () => {}, real: (name) => (name === 'acme' ? { url: MCP, headerNames: ['Authorization'] } : undefined) });
+    await h.signIn.tick();
+    expect(h.installed.get('acme')!.token).toBe('access-2');
+    expect(h.logs.some((m) => m.includes('forgot'))).toBe(false);
+  });
+
+  it('still forgets a tool removed while the gateway was opening', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-signin-home-'));
+    dirs.push(home);
+    process.env.HOME = home;
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { acme: { type: 'http', url: MCP } } }));
+    const h = harness(service(), undefined, installedToolUrl);
+    await signInAs(h);
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: {} }));
+    await h.signIn.tick();
+    expect(h.signIn.summaries().acme).toBeUndefined();
   });
 });
