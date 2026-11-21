@@ -53,8 +53,9 @@ export interface ToolSignInDeps {
   sealKey(): Promise<Buffer>;
   /// Install (or rewrite) the tool with this bearer token.
   install(name: string, url: string, token: string): Result;
-  /// The URL a tool is installed with now, if it is installed at all.
-  installedUrl(name: string): string | undefined;
+  /// Where the tool is installed now; undefined when it isn't, null when
+  /// that can't be told yet (behind a gateway that hasn't opened).
+  installedUrl(name: string): string | undefined | null;
   fetchImpl?: FetchLike;
   now?(): number;
   log?(message: string): void;
@@ -592,11 +593,22 @@ export class ToolSignIn {
   async tick(): Promise<void> {
     if (!fs.existsSync(this.file())) return;
     const doc = await this.load();
-    const gone = doc.signIns.filter((s) => !sameUrl(this.deps.installedUrl(s.name), s.url)).map((s) => s.name);
-    if (gone.length) await this.mutate((d) => (d.signIns = d.signIns.filter((s) => !gone.includes(s.name))));
+    const where = new Map(doc.signIns.map((s) => [s.name, this.deps.installedUrl(s.name)] as const));
+    // Unknown (the gateway is still opening): neither forget nor renew, since
+    // renewing now would write the token where workers can read it. The next
+    // tick looks again.
+    const unknown = (name: string) => where.get(name) === null;
+    const gone = doc.signIns.filter((s) => !unknown(s.name) && !sameUrl(where.get(s.name) ?? undefined, s.url)).map((s) => s.name);
+    if (gone.length) {
+      await this.mutate((d) => (d.signIns = d.signIns.filter((s) => !gone.includes(s.name))));
+      for (const name of gone) {
+        const at = where.get(name);
+        this.deps.log?.(`tool sign-in: forgot the sign-in for ${name}: ${at ? `it is now installed at ${at}` : 'it is no longer installed'}.`);
+      }
+    }
     const now = this.now();
     for (const s of doc.signIns) {
-      if (gone.includes(s.name) || s.endedAt) continue;
+      if (gone.includes(s.name) || unknown(s.name) || s.endedAt) continue;
       if (!s.refreshToken) {
         if (s.expiresAt && s.expiresAt <= now) {
           await this.mutate((d) => {
