@@ -46,7 +46,8 @@ const MAX_ISSUED = 10_000;
 /// Where the gateway listens, and the path it relays tools under.
 const RELAY_HOST = '127.0.0.1';
 const RELAY_PATH = '/t/';
-const RELAY_URL = new RegExp(`^http://${RELAY_HOST.replace(/\./g, '\\.')}:\\d+${RELAY_PATH}`);
+// RELAY_HOST and RELAY_PATH as a pattern; toolGateway.test.ts checks they agree.
+const RELAY_URL = /^http:\/\/127\.0\.0\.1:\d+\/t\//;
 
 /// Whether an address is a gateway's relay (on any port): what the CLIs'
 /// config holds in place of a vaulted tool's real address.
