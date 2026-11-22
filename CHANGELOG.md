@@ -4,6 +4,11 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-11-21
+
+### Fixed
+- **Remote-tool sign-ins survive a server restart with the tool gateway on.** The first renewal check ran before the gateway was open and took its relay address for a reinstalled tool, so it forgot the sign-in. Now a sign-in whose address can't be checked yet is left alone and picked up a minute later, and each forgotten sign-in is logged with the reason. Sign-ins already lost on 0.26.5 or 0.27.0 need one more sign-in after upgrading. (#1237)
+
 ## [0.27.0] - 2026-11-21
 
 ### Added
@@ -1506,7 +1511,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/overcodelions/overcli/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/overcodelions/overcli/compare/v0.26.6...v0.27.0
 [0.26.6]: https://github.com/overcodelions/overcli/compare/v0.26.5...v0.26.6
 [0.26.5]: https://github.com/overcodelions/overcli/compare/v0.26.4...v0.26.5
