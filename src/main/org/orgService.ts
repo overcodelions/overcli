@@ -225,7 +225,8 @@ export interface WorkerSummary {
   last30: { jobs: number; failed: number; prior: number; lastRun?: { at: number; outcome: 'done' | 'failed' | 'stopped' } };
   waiting: number;
   /// Set when it holds a tool the org marked as returning customer data
-  /// (Setup → Data protection): it keeps nothing past a conversation. The
+  /// (Setup → Data protection): it keeps no content past a conversation,
+  /// though the record of what it did stays in the decision log. The
   /// tools that make it so.
   ephemeral?: { tools: string[] };
   youManage: boolean;
@@ -1698,7 +1699,10 @@ export class OrgService {
     if (!note) return { ok: false, error: 'Write the note first.' };
     if (note.length > WORKER_NOTE_MAX) return { ok: false, error: `A note is at most ${WORKER_NOTE_MAX} characters.` };
     const res = this.deps.workers.remember(found.worker.id, `From ${caller.name}: ${note}`);
-    if (res.ok) this.record(caller, `Left ${found.worker.name} a note: "${note.slice(0, 120)}".`);
+    if (res.ok) {
+      const q = this.quoted(found.worker.id, note.slice(0, 120));
+      this.record(caller, `Left ${found.worker.name} a note${q ? `: ${q}` : ''}.`);
+    }
     return res;
   }
 
@@ -1709,7 +1713,10 @@ export class OrgService {
     if (!this.deps.workers.forgetNote) return { ok: false, error: 'Notes are not available on this server.' };
     const note = this.deps.workers.journalFor(found.worker.id).find((e) => e.id === entryId)?.note;
     const res = this.deps.workers.forgetNote(found.worker.id, entryId);
-    if (res.ok) this.record(caller, `Removed a note from ${found.worker.name}${note ? `: "${note.slice(0, 120)}"` : ''}.`);
+    if (res.ok) {
+      const q = note ? this.quoted(found.worker.id, note.slice(0, 120)) : null;
+      this.record(caller, `Removed a note from ${found.worker.name}${q ? `: ${q}` : ''}.`);
+    }
     return res;
   }
 
@@ -2099,9 +2106,8 @@ export class OrgService {
     if (!found.ok) return found;
     const steer = this.deps.runs.steerRun({ runId, text: `${caller.name} answered your question:\n${answer}` });
     if (!steer.ok) return steer;
-    const title = flowRunTitle(found.run);
     const res = this.deps.runs.resumeRun({ runId });
-    if (res.ok) this.record(caller, `Answered ${found.run.workerName ?? 'a worker'}'s question on "${title}".`);
+    if (res.ok) this.record(caller, `Answered ${found.run.workerName ?? 'a worker'}'s question on ${this.runRef(found.run)}.`);
     return res;
   }
 
@@ -2700,7 +2706,7 @@ export class OrgService {
     if (!this.relander) return { ok: false, error: 'Runs can’t be pushed from this server.' };
     const result = await this.relander(runId);
     if (result === null) return { ok: false, error: 'Its checkout is gone, so there is nothing left to push.' };
-    this.record(caller, `Pushed "${flowRunTitle(r)}" again.`);
+    this.record(caller, `Pushed ${this.runRef(r)} again.`);
     return { ok: true, result };
   }
 
@@ -3009,7 +3015,7 @@ export class OrgService {
     if (!isAdmin(policy, caller) && !canManage(policy, this.deps.workers.roster(), run.workerId, caller)) return { ok: false, error: 'Only its manager or an admin can stop it.' };
     if (run.state.kind === 'done' || run.state.kind === 'aborted') return { ok: false, error: 'It has already ended.' };
     const res = this.deps.stopRun(runId);
-    if (res.ok) this.record(caller, `Stopped ${this.deps.workers.get(run.workerId)?.name ?? 'a worker'}'s run "${flowRunTitle(run)}".`);
+    if (res.ok) this.record(caller, `Stopped ${this.deps.workers.get(run.workerId)?.name ?? 'a worker'}'s run ${this.runRef(run)}.`);
     return res;
   }
 
@@ -3807,7 +3813,7 @@ export class OrgService {
     // Said about work that was handed off: the worker hears it, as with a run's rating.
     const batch = why && d.askId ? this.allAsks().find((a) => a.id === d.askId)?.orchestrationId : undefined;
     if (why && batch && this.deps.note) this.deps.note(d.workerId, batch, `${caller.name} found "${d.title}" ${useful ? 'useful' : 'not useful'}: ${why}`.slice(0, 900));
-    this.record(caller, `Rated ${d.workerName}'s "${d.title}" ${useful ? 'useful' : 'not useful'}.`);
+    this.record(caller, `Rated ${d.workerName}'s ${this.quoted(d.workerId, d.title) ?? 'deliverable'} ${useful ? 'useful' : 'not useful'}.`);
     return { ok: true };
   }
 
@@ -4655,6 +4661,20 @@ export class OrgService {
 
 
   // ---- AUDIT ------------------------------------------------------------
+
+  /// Text quoted into the decision log, `"text"`, or null for an ephemeral
+  /// worker's (shared/org/ephemeral.ts). The log outlives the purge, so for
+  /// such a worker it keeps the fact and leaves out what may be customer data.
+  private quoted(workerId: string | undefined, text: string): string | null {
+    const w = workerId ? this.deps.workers.get(workerId as UUID) : null;
+    return w && isEphemeralWorker(w, this.policy()) ? null : `"${text}"`;
+  }
+
+  /// A run as the decision log names it: its title, or for an ephemeral
+  /// worker's its id, which the run's action record carries too.
+  private runRef(run: FlowRun): string {
+    return this.quoted(run.workerId, flowRunTitle(run)) ?? `run ${run.id}`;
+  }
 
   private record(caller: OrgCaller, what: string): void {
     this.changes++;
@@ -5555,7 +5575,7 @@ export class OrgService {
     if (!run?.workerId || run.state.kind !== 'paused' || run.state.reason !== 'interrupted') return { ok: false, error: 'No interrupted run with that id.' };
     if (!canManage(this.policy(), this.deps.workers.roster(), run.workerId, caller)) return { ok: false, error: 'Only its manager or an admin can do that.' };
     const res = this.deps.runs.resumeRun({ runId });
-    if (res.ok) this.record(caller, `Carried on ${run.workerName ?? 'a worker'}'s interrupted run "${flowRunTitle(run)}".`);
+    if (res.ok) this.record(caller, `Carried on ${run.workerName ?? 'a worker'}'s interrupted run ${this.runRef(run)}.`);
     return res;
   }
 

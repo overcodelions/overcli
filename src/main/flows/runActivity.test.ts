@@ -27,6 +27,8 @@ describe('run activity', () => {
     a.observe(stream([assistant('Looking', [['Read', { file_path: '/srv/acme/notes.md' }]])]));
     await a.flushed();
     expect(a.list('r1').length).toBeGreaterThan(0);
+    // The tool's own name rides along, for the purge's action record.
+    expect(a.list('r1').find((i) => i.kind === 'tool')?.tool).toBe('Read');
     expect(fs.readdirSync(dir).length).toBeGreaterThan(0);
     await a.forget('r1');
     expect(a.list('r1')).toEqual([]);
