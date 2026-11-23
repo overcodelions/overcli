@@ -391,7 +391,11 @@ Whether this server is the right size, and how much it may do at once.
 - **Work is waiting:** answers waited for a place more than 5% of the busy time, or code runs more than 20% of it, while the machine had room. Raise the limits a little at a time.
 - **Needs a bigger box:** the machine itself was nearly full (CPU over 85%, or memory over 90%) in more than a tenth of the busy hours. Raising the limits would only slow everything down.
 - **Could use less:** all week nothing came within a third of the limits, and the machine stayed under 50% CPU and 60% memory. About half the machine would do.
-- **Learning:** under two days recorded yet.
+- **Learning:** under two days recorded yet, or under two days since the machine was resized or judging started afresh.
+
+**After a resize.** CPU and memory are measured as a share of what the machine has, so a week on the old size says nothing about the new one. The server notes the machine's size (CPUs and memory, the container's limits where it has them) every hour. When it changes, only the hours since count: the page says "Resized: learning how the new size does", and what the old size's verdict was, until it has a couple of days on the new one. A bigger or smaller machine both work this way.
+
+**Judge from now on** does the same by hand, for a change the size doesn't show (or a resize from before sizes were noted). Only what happens after it counts; the chart keeps every day. The decision log records who pressed it and when.
 
 Below it, each of the last seven days' busiest moment, against the limits then. Readiness shows the same verdict, and asks for attention when the server needs more or work is waiting. The record is kept a fortnight in `org/capacity.json`.
 

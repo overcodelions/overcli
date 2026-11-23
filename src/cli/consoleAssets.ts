@@ -16792,10 +16792,23 @@ export const CONSOLE_JS = String.raw`
             cell(d.answers, d.answersCap), cell(d.code, d.codeCap), h('span', { class: 'n cap-cpu faint', text: Math.round(d.cpu * 100) + '%' })];
         }).reduce(function (x, y) { return x.concat(y); }, [])))
       : h('p', { class: 'faint', text: 'Nothing recorded yet. It notes how busy the server is once a minute.' });
+    // What the verdict is judged on: the week, or only since a resize or a start-over.
+    var judgedOn = a.since
+      ? 'Judged on busy hours since ' + new Date(a.since.at).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + (a.since.why === 'resized' ? ', when the machine was resized.' : ', when it was set to start afresh.')
+      : 'Judged on the last week of busy hours.';
+    // For a change the machine's size doesn't show (or one from before sizes were noted).
+    var startOver = h('button', { class: 'btn small quiet', type: 'button', text: 'Judge from now on', title: 'Ignore what came before: after a resize it can’t see, or any change that makes last week no guide.' });
+    startOver.onclick = function () {
+      if (!window.confirm('Judge the server’s size only on what happens from now on? Until it has a couple of days to go on, it will say it is learning. The chart keeps every day.')) return;
+      var restore = busy(startOver, 'Starting afresh…');
+      api('POST', '/api/admin/capacity/start-over', {}).then(function (x) { restore(); if (x.ok === false) { alert(x.error); return; } render(); });
+    };
     return h('section', { class: 'panel pad stack' },
       h('div', { class: 'row', style: 'gap:10px;align-items:center;flex-wrap:wrap' }, h('span', { class: 'badge ' + tone[0], text: tone[1] }), h('h2', { class: 'section-title', style: 'margin:0', text: a.title })),
       h('p', { class: 'hint', style: 'font-size:13px', text: a.detail }),
-      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Each day’s busiest moment, against the limits then. Judged on the last week of busy hours.' }),
+      h('div', { class: 'row', style: 'gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap' },
+        h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Each day’s busiest moment, against the limits then. ' + judgedOn }),
+        startOver),
       grid);
   }
 
