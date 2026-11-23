@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowRun } from '../flows/schema';
-import { answerOptions, projectMonthEnd, trustReadiness, workerState } from './insights';
+import { answerOptions, movedOnFrom, projectMonthEnd, stalledRuns, trustReadiness, workerState } from './insights';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date(2026, 9, 20, 12).getTime();
@@ -59,6 +59,20 @@ describe('workerState', () => {
     expect(workerState({ id: 'w', enabled: false }, [])).toBe('paused');
     expect(workerState({ id: 'w', enabled: true }, [run({ kind: 'paused', nextStepId: 's', reason: 'failure' })])).toBe('stuck');
     expect(workerState({ id: 'w', enabled: true }, [run({ kind: 'done', success: true })])).toBe('idle');
+  });
+
+  it('is stuck on a stalled run only until a later run finishes well', () => {
+    const at = (createdAt: number, state: FlowRun['state']) => ({ workerId: 'w', createdAt, state }) as FlowRun;
+    const failure = { kind: 'paused', nextStepId: 's', reason: 'failure' } as FlowRun['state'];
+    const stalled = at(10, failure);
+    const me = { id: 'w', enabled: true };
+    expect(workerState(me, [stalled, at(20, { kind: 'done', success: false } as FlowRun['state'])])).toBe('stuck');
+    expect(workerState(me, [stalled, at(5, { kind: 'done', success: true } as FlowRun['state'])])).toBe('stuck');
+    expect(workerState(me, [stalled, at(20, { kind: 'done', success: true } as FlowRun['state'])])).toBe('idle');
+    // A newer stall after the good run: stuck again.
+    expect(workerState(me, [stalled, at(20, { kind: 'done', success: true } as FlowRun['state']), at(30, failure)])).toBe('stuck');
+    expect(movedOnFrom(stalled, [stalled, at(20, { kind: 'done', success: true } as FlowRun['state'])])).toBe(true);
+    expect(stalledRuns([stalled, at(50, failure), at(30, { kind: 'running', currentStepId: 's' })]).map((r) => r.createdAt)).toEqual([50, 10]);
   });
 });
 
