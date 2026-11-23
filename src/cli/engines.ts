@@ -93,7 +93,7 @@ import { useRemoteToolVault } from '../main/org/tools';
 import { readClaudeMcpServers, restoreClaudeStdioEnv, sealClaudeStdioEnv, useClaudeEnvVault, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
 import { Pool, configurePoolLimits, limitNow, poolLimits } from '../main/flows/pools';
-import { CapacityRecorder, machineLoad, type CapacityHour } from '../main/org/capacity';
+import { CapacityRecorder, machineLoad, type CapacityStore } from '../main/org/capacity';
 import { serverShapedFlow } from '../main/org/serverFlow';
 import { ticketFlowId, ticketFlowYaml, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
 import { parseFlowYaml } from '../shared/flows/yaml';
@@ -517,7 +517,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       code: { ...orchestrator.codeRunLoad(), waiting: orchestrator.codeRunsWaiting() },
       ...load(),
     }),
-    store: jsonOrgStore<{ hours: CapacityHour[] }>('capacity.json', () => ({ hours: [] })),
+    store: jsonOrgStore<CapacityStore>('capacity.json', () => ({ hours: [] })),
   });
   log('info', 'org.pools', `answers at once: ${pools.answers() ?? 'no limit'}; code runs at once: ${pools.code() ?? 'no limit'}`);
   // A limit raised on Setup → Work at once lets waiting work in within

@@ -129,6 +129,8 @@ export interface ControlPlaneDeps {
   metricsText?: () => string;
   /// Setup → Capacity: the last fortnight by the hour, and what it says. Absent: not on this server.
   capacity?: () => CapacityReport;
+  /// "Judge from now on" on Setup → Capacity. Returns the report after.
+  capacityStartOver?: (caller: OrgCaller) => CapacityReport;
   log: (line: string) => void;
   /// Injected for tests; production reads the token file.
   authenticate?: (token: string | undefined) => OrgCaller | null;
@@ -1077,7 +1079,12 @@ function testSystemRoutes(systems: TestSystemsService): Array<{ method: string; 
 }
 
 /// Setup → Readiness's Metrics card: on or off, and whether anything scrapes it.
-function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlaneDeps['metricsText'], capacity?: ControlPlaneDeps['capacity']): Array<{ method: string; path: RegExp; handle: Handler }> {
+function metricsRoutes(
+  metrics?: ControlPlaneDeps['metrics'],
+  text?: ControlPlaneDeps['metricsText'],
+  capacity?: ControlPlaneDeps['capacity'],
+  startOver?: ControlPlaneDeps['capacityStartOver'],
+): Array<{ method: string; path: RegExp; handle: Handler }> {
   const admin = (c: OrgCaller) => isAdmin(loadOrgPolicy().policy, c);
   return [
     {
@@ -1091,6 +1098,12 @@ function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlan
       path: /^\/api\/admin\/capacity$/,
       handle: (c) =>
         !admin(c) ? { ok: false, error: 'Only admins can see the server’s capacity.' } : capacity ? { ok: true, ...capacity() } : { ok: false, error: 'This server doesn’t record how busy it is.' },
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/capacity\/start-over$/,
+      handle: (c) =>
+        !admin(c) ? { ok: false, error: 'Only admins can change how the server’s size is judged.' } : startOver ? { ok: true, ...startOver(c) } : { ok: false, error: 'This server doesn’t record how busy it is.' },
     },
     {
       method: 'GET',
@@ -1920,7 +1933,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...searchRoutes(deps.org, deps.processes),
     ...migrateRoutes(deps.org, deps.processes, deps.access),
     ...slackRoutes(deps.slackConversations),
-    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText, deps.capacity), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),
+    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText, deps.capacity, deps.capacityStartOver), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),
   ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),

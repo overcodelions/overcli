@@ -294,6 +294,12 @@ export function startDaemon(
       metrics: () => metricsStatus,
       metricsText: () => metrics.render(),
       capacity: () => engines.capacity.report(),
+      // Logged: who told it to ignore the week before, and when.
+      capacityStartOver: (c) => {
+        engines.capacity.startOver();
+        fileAuditStore.append({ at: Date.now(), by: c.name, ...(c.slackUserId ? { slackUserId: c.slackUserId } : {}), what: 'Set Capacity to judge the server’s size only from now on.' });
+        return engines.capacity.report();
+      },
       testModelIds: (models) => {
         const bin = resolveBackendPath('claude', Store.load().settings.backendPaths.claude);
         return testModelIds(models, { bin, env: buildBackendEnv(process.env, bin), provider: modelProvider() });

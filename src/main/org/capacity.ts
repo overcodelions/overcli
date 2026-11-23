@@ -3,6 +3,11 @@
 // folded into one record per hour and kept a fortnight. From the last week of
 // that, Setup → Capacity and Readiness say whether it needs more, could do
 // with less, or is about right.
+//
+// Samples are shares of what the machine has, so a week from before a resize
+// says nothing about the size it is now. Each hour notes the machine's size;
+// when it changes, only the hours since count. An admin can also start over
+// by hand ("Judge from now on"), for a change the size doesn't show.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +19,8 @@ export interface CapacitySample {
   /// The box: CPU busy and memory used, as shares of what it has (0 to 1).
   cpu: number;
   mem: number;
+  /// What the machine has: CPUs and memory, the container's limits when it has them.
+  size?: { cpus: number; memBytes: number };
 }
 
 /// One hour, folded. `n` samples; the `...N` fields count samples where it held.
@@ -31,6 +38,9 @@ export interface CapacityHour {
   cpuPeak: number;
   cpuSum: number;
   memPeak: number;
+  /// The machine's size that hour. Absent on hours from before it was noted.
+  cpus?: number;
+  memBytes?: number;
 }
 
 export type CapacityVerdict = 'learning' | 'more' | 'raise' | 'right' | 'less';
@@ -41,6 +51,15 @@ export interface CapacityAssessment {
   detail: string;
   /// The week's busiest: what peaked, against the limit then.
   peak: { answers: number; answersCap: number | null; code: number; codeCap: number | null; cpu: number; mem: number } | null;
+  /// Judged only from here: the machine was resized, or an admin started
+  /// over. `before`: what the hours before it said, when they said anything.
+  since?: { at: number; why: 'resized' | 'reset'; before?: { verdict: CapacityVerdict; title: string } };
+}
+
+/// What the recorder keeps: the hours, and when an admin last started over.
+export interface CapacityStore {
+  hours: CapacityHour[];
+  since?: number;
 }
 
 export interface CapacityReport {
@@ -88,13 +107,64 @@ export function foldSample(hours: CapacityHour[], s: CapacitySample, now: number
   cur.cpuPeak = Math.max(cur.cpuPeak, s.cpu);
   cur.cpuSum += s.cpu;
   cur.memPeak = Math.max(cur.memPeak, s.mem);
+  if (s.size) {
+    cur.cpus = s.size.cpus;
+    cur.memBytes = s.size.memBytes;
+  }
   return kept;
+}
+
+/// The first hour on the size the machine has now, when it changed size in
+/// what's kept. Hours from before sizes were noted are no evidence of a change.
+export function lastResize(hours: readonly CapacityHour[]): number | null {
+  const sized = hours.filter((h) => h.cpus !== undefined && h.memBytes !== undefined);
+  for (let i = sized.length - 1; i > 0; i--) if (!sameSize(sized[i], sized[i - 1])) return sized[i].at;
+  return null;
+}
+
+function sameSize(a: CapacityHour, b: CapacityHour): boolean {
+  return Math.abs(a.cpus! - b.cpus!) < 0.05 && Math.abs(a.memBytes! - b.memBytes!) <= 0.05 * Math.max(a.memBytes!, b.memBytes!);
+}
+
+function agoText(ms: number): string {
+  const hours = Math.round(ms / HOUR);
+  if (hours < 1) return 'under an hour ago';
+  if (hours < 48) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+/// The verdict, from the last week, or only from a resize or a start-over
+/// inside it (`since`, an admin's). The later of the two wins.
+export function assessCapacity(all: CapacityHour[], now: number, opts: { since?: number } = {}): CapacityAssessment {
+  const resized = lastResize(all);
+  const start =
+    opts.since !== undefined && (resized === null || opts.since >= resized)
+      ? { at: opts.since, why: 'reset' as const, from: Math.ceil(opts.since / HOUR) * HOUR }
+      : resized !== null
+        ? // The hour it changed in mixes both sizes: start after it.
+          { at: resized, why: 'resized' as const, from: resized + HOUR }
+        : null;
+  // A start before the week leaves the whole week on the size it is now.
+  if (!start || start.at <= now - WEEK) return judge(all, now);
+  // Before: up to the change. The hour a resize happened in counts for neither size.
+  const prior = judge(all.filter((h) => h.at < start.at), start.at);
+  const since = { at: start.at, why: start.why, ...(prior.verdict !== 'learning' ? { before: { verdict: prior.verdict, title: prior.title } } : {}) };
+  const a = judge(all.filter((h) => h.at >= start.from), now);
+  if (a.verdict !== 'learning') return { ...a, since };
+  const what = start.why === 'resized' ? 'The machine was resized' : 'Judging started afresh';
+  return {
+    verdict: 'learning',
+    title: start.why === 'resized' ? 'Resized: learning how the new size does' : 'Starting afresh: learning how busy it gets',
+    detail: `${what} ${agoText(now - start.at)}, so only what has happened since counts. After a couple of days it says whether this size is right.${since.before ? ` Before that it said: ${since.before.title}.` : ''}`,
+    peak: null,
+    since,
+  };
 }
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const of = (n: number, cap: number | null) => (cap === null ? `${n} (no limit)` : `${n} of ${cap}`);
 
-export function assessCapacity(all: CapacityHour[], now: number): CapacityAssessment {
+function judge(all: CapacityHour[], now: number): CapacityAssessment {
   const hours = all.filter((h) => h.at > now - WEEK && h.n > 0);
   const samples = hours.reduce((a, h) => a + h.n, 0);
   const days = new Set(hours.map((h) => Math.floor(h.at / DAY))).size;
@@ -159,16 +229,30 @@ export function capacityHealth(a: CapacityAssessment): HealthItem {
 
 export class CapacityRecorder {
   private hours: CapacityHour[];
+  private since: number | undefined;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly deps: {
       sample: () => CapacitySample;
-      store: { load(): { hours: CapacityHour[] }; save(value: { hours: CapacityHour[] }): void };
+      store: { load(): CapacityStore; save(value: CapacityStore): void };
       now?: () => number;
     },
   ) {
-    this.hours = Array.isArray(deps.store.load().hours) ? deps.store.load().hours : [];
+    const stored = deps.store.load();
+    this.hours = Array.isArray(stored.hours) ? stored.hours : [];
+    this.since = typeof stored.since === 'number' ? stored.since : undefined;
+  }
+
+  private save(): void {
+    this.deps.store.save({ hours: this.hours, ...(this.since !== undefined ? { since: this.since } : {}) });
+  }
+
+  /// Judge only what happens from now on: "Judge from now on" on Setup →
+  /// Capacity. The hours stay, for the chart.
+  startOver(): void {
+    this.since = this.now();
+    this.save();
   }
 
   private now(): number {
@@ -177,7 +261,7 @@ export class CapacityRecorder {
 
   tick(): void {
     this.hours = foldSample(this.hours, this.deps.sample(), this.now());
-    this.deps.store.save({ hours: this.hours });
+    this.save();
   }
 
   start(everyMs = 60_000): void {
@@ -198,11 +282,11 @@ export class CapacityRecorder {
   }
 
   report(): CapacityReport {
-    return { hours: this.hours, assessment: assessCapacity(this.hours, this.now()) };
+    return { hours: this.hours, assessment: assessCapacity(this.hours, this.now(), { since: this.since }) };
   }
 
   health(): HealthItem {
-    return capacityHealth(assessCapacity(this.hours, this.now()));
+    return capacityHealth(assessCapacity(this.hours, this.now(), { since: this.since }));
   }
 }
 
@@ -210,7 +294,7 @@ export class CapacityRecorder {
 /// those limits (what the container may use), since the OS's own figures are
 /// the whole host's; elsewhere, the OS's. CPU is the share busy since the
 /// last reading.
-export function machineLoad(read: (file: string) => string | null = readQuiet): () => { cpu: number; mem: number } {
+export function machineLoad(read: (file: string) => string | null = readQuiet): () => { cpu: number; mem: number; size: { cpus: number; memBytes: number } } {
   let last: { usageUs: number; at: number } | null = null;
   const cpus = (): number => {
     const max = read('/sys/fs/cgroup/cpu.max')?.trim().split(/\s+/);
@@ -229,6 +313,7 @@ export function machineLoad(read: (file: string) => string | null = readQuiet): 
       cpu = os.loadavg()[0] / os.availableParallelism();
     }
     let mem: number;
+    let memBytes = os.totalmem();
     const current = Number(read('/sys/fs/cgroup/memory.current')?.trim());
     const limit = read('/sys/fs/cgroup/memory.max')?.trim();
     if (Number.isFinite(current) && limit && limit !== 'max' && Number(limit) > 0) {
@@ -237,13 +322,14 @@ export function machineLoad(read: (file: string) => string | null = readQuiet): 
       // out the inactive part of it, as `docker stats` does.
       const inactive = Number(/^inactive_file\s+(\d+)/m.exec(read('/sys/fs/cgroup/memory.stat') ?? '')?.[1]);
       mem = Math.max(0, current - (Number.isFinite(inactive) ? inactive : 0)) / Number(limit);
+      memBytes = Number(limit);
     }
     else {
       // Free memory leaves out the cache the kernel gives back on demand; what's available counts it.
       const available = Number(/MemAvailable:\s+(\d+) kB/.exec(read('/proc/meminfo') ?? '')?.[1]) * 1024;
       mem = 1 - (Number.isFinite(available) && available > 0 ? available : os.freemem()) / os.totalmem();
     }
-    return { cpu: clamp(cpu), mem: clamp(mem) };
+    return { cpu: clamp(cpu), mem: clamp(mem), size: { cpus: cpus(), memBytes } };
   };
 }
 
