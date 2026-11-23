@@ -193,6 +193,22 @@ export const SHORTCUTS: ShortcutDef[] = [
     run: () => void useTerminalStore.getState().toggle(resolveHereRoot()),
   },
   {
+    id: 'conversation.nextTab',
+    keys: [{ key: 'Tab', mod: true }],
+    label: 'Next conversation tab',
+    group: 'Conversation',
+    skipInInput: false,
+    run: () => useStore.getState().cycleConversationTab(1),
+  },
+  {
+    id: 'conversation.prevTab',
+    keys: [{ key: 'Tab', mod: true, shift: true }],
+    label: 'Previous conversation tab',
+    group: 'Conversation',
+    skipInInput: false,
+    run: () => useStore.getState().cycleConversationTab(-1),
+  },
+  {
     id: 'conversation.new',
     keys: [{ key: 'n', mod: true }],
     label: 'New conversation in the current project or workspace',

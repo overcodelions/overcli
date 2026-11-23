@@ -58,6 +58,10 @@ export function ChatView({
   const error = runner?.errorMessage;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const followingRef = useRef(true);
+  // For the "new output below" pill: scrolled up by hand, and whether the
+  // transcript has grown since.
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  const [newBelow, setNewBelow] = useState(false);
   // Timestamp of the last tail-content change. atBottomStateChange flipping
   // to false within ~250ms of a content change is virtuoso reporting that
   // the new content has pushed past the viewport bottom — that's not the
@@ -142,7 +146,10 @@ export function ChatView({
   const tailId = tailEvent?.id ?? '';
   useEffect(() => {
     lastTailChangeAtRef.current = Date.now();
-    if (!followingRef.current) return;
+    if (!followingRef.current) {
+      if (userScrolledUpRef.current) setNewBelow(true);
+      return;
+    }
     const id = requestAnimationFrame(() => {
       if (!followingRef.current) return;
       virtuosoRef.current?.scrollToIndex({
@@ -182,7 +189,10 @@ export function ChatView({
 
   const handleAtBottomChange = (atBottom: boolean) => {
     if (atBottom) {
-      followingRef.current = true;
+      // Virtuoso's "at bottom" is generous (atBottomThreshold), so it only
+      // resumes following when no deliberate scroll-up is in force; the
+      // scroller's own listener below resumes it at the real bottom.
+      if (!userScrolledUpRef.current) followingRef.current = true;
       return;
     }
     // Within the post-content-change window, a "no longer at bottom"
@@ -190,6 +200,79 @@ export function ChatView({
     // Ignore so the rAF effect can catch up.
     if (Date.now() - lastTailChangeAtRef.current < 250) return;
     followingRef.current = false;
+  };
+
+  // Scrolling up while a turn streams has to stick. The grace window above
+  // can't tell a user's scroll from content growth — and a fast stream
+  // changes the tail every few ms, so it swallowed every scroll-up and the
+  // next token snapped the view back down. So read the user's intent from
+  // the input itself: a wheel or trackpad going up, a key that moves up, or
+  // a drag on the scrollbar stops following at once; getting back to the
+  // real bottom (not virtuoso's generous threshold) starts it again.
+  const userScrolledUpRef = useRef(false);
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!scroller) return;
+    let userGestureAt = 0;
+    const stopFollowing = () => {
+      userScrolledUpRef.current = true;
+      followingRef.current = false;
+      setAwayFromBottom(true);
+    };
+    const onWheel = (e: WheelEvent) => {
+      userGestureAt = Date.now();
+      if (e.deltaY < 0) stopFollowing();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home') stopFollowing();
+      userGestureAt = Date.now();
+    };
+    // A press on the scroller itself (not its content) is the scrollbar.
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target === scroller) userGestureAt = Date.now();
+    };
+    const onTouch = () => {
+      userGestureAt = Date.now();
+    };
+    const onScroll = () => {
+      const fromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (fromBottom < 24) {
+        userScrolledUpRef.current = false;
+        followingRef.current = true;
+        setAwayFromBottom(false);
+        setNewBelow(false);
+      } else if (Date.now() - userGestureAt < 200) {
+        // Moved away from the bottom by the user's hand (scrollbar drag,
+        // touch, a key) rather than by content growing.
+        stopFollowing();
+      }
+    };
+    scroller.addEventListener('wheel', onWheel, { passive: true });
+    scroller.addEventListener('keydown', onKey);
+    scroller.addEventListener('pointerdown', onPointerDown);
+    scroller.addEventListener('touchmove', onTouch, { passive: true });
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener('wheel', onWheel);
+      scroller.removeEventListener('keydown', onKey);
+      scroller.removeEventListener('pointerdown', onPointerDown);
+      scroller.removeEventListener('touchmove', onTouch);
+      scroller.removeEventListener('scroll', onScroll);
+    };
+  }, [scroller]);
+  // A new conversation starts at the bottom, following.
+  useEffect(() => {
+    userScrolledUpRef.current = false;
+    followingRef.current = true;
+    setAwayFromBottom(false);
+    setNewBelow(false);
+  }, [conversationId]);
+  const jumpToLatest = () => {
+    userScrolledUpRef.current = false;
+    followingRef.current = true;
+    setAwayFromBottom(false);
+    setNewBelow(false);
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
   };
 
   // Empty / loading states render outside virtuoso — virtuoso with zero
@@ -227,7 +310,7 @@ export function ChatView({
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
+    <div className="relative flex-1 min-h-0 flex flex-col">
       <Virtuoso
         // Re-key on conversationId so virtuoso resets its scroll state
         // (and re-applies initialTopMostItemIndex) when you switch convs,
@@ -238,7 +321,10 @@ export function ChatView({
         // 'auto' = follow the tail when the user is near bottom; pause
         // when they've scrolled up. Smooth scrolling makes streaming feel
         // jittery on long turns, so we use instant.
-        followOutput="auto"
+        // Ours, not virtuoso's: its own check re-pins anyone within the
+        // bottom threshold, which yanked a reader back on every new row.
+        followOutput={() => (followingRef.current ? 'auto' : false)}
+        scrollerRef={(el) => setScroller(el instanceof HTMLElement ? el : null)}
         atBottomStateChange={handleAtBottomChange}
         // Wider threshold so a single tall code block streaming in
         // doesn't pop the user out of follow mode. The post-content
@@ -371,6 +457,22 @@ export function ChatView({
           ),
         }}
       />
+      {/* Scrolled up by hand: say where the rest is, louder once there's
+          output you haven't seen. */}
+      {awayFromBottom && (
+        <button
+          onClick={jumpToLatest}
+          className={
+            'absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border px-3 py-1 text-[11px] shadow-lg transition-colors ' +
+            (newBelow
+              ? 'border-accent/60 bg-accent text-white hover:brightness-110'
+              : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink')
+          }
+          title="Jump to the latest and keep following"
+        >
+          ↓ {newBelow ? (isRunning ? 'New output below' : 'New messages below') : 'Jump to latest'}
+        </button>
+      )}
     </div>
   );
 }

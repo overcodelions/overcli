@@ -44,6 +44,9 @@ export interface ResizableDividerProps {
   /// tab, which re-renders a roster and a transcript full of rendered markdown
   /// forty times a second for a number only one `style.width` consumes.
   panel?: RefObject<HTMLElement | null>;
+  /// Width a double-click resets to. Defaults to the sidebar's (left) or
+  /// the editor's (right) standard width.
+  resetWidth?: number;
 }
 
 /// 4px-wide drag handle. Invisible at rest; the 8px-wide hover target
@@ -56,6 +59,7 @@ export function ResizableDivider({
   maxWidth,
   side,
   panel,
+  resetWidth,
 }: ResizableDividerProps) {
   // Props in a ref so the window listeners registered on pointerdown stay
   // valid across parent re-renders — parents typically pass inline
@@ -147,7 +151,7 @@ export function ResizableDivider({
       onPointerDown={startDrag}
       onDoubleClick={() => {
         const p = propsRef.current;
-        const reset = p.side === 'left' ? 260 : 540;
+        const reset = resetWidth ?? (p.side === 'left' ? 260 : 540);
         p.onChange(reset);
         p.onCommit?.(reset);
       }}

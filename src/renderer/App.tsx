@@ -11,6 +11,7 @@ import { useFileScope } from './fileScope';
 import { installNavHistory, readLocation, useNavHistory } from './navHistory';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
+import { ConversationTabStrip } from './components/ConversationTabs';
 import { StatsPage } from './components/StatsPage';
 import { LocalPane } from './components/LocalPane';
 import { ServicesPane } from './components/ServicesPane';
@@ -683,7 +684,10 @@ export function App() {
                 <ExplorerPane />
               )
             ) : detailMode === 'flows' ? (
-              <FlowsLibraryPane />
+              <>
+                <ConversationTabStrip />
+                <FlowsLibraryPane />
+              </>
             ) : detailMode === 'orchestrator' ? (
               <OrchestratorPane />
             ) : detailMode === 'workers' ? (
@@ -693,9 +697,15 @@ export function App() {
             ) : detailMode === 'services' ? (
               <ServicesPane />
             ) : selectedConversationId ? (
-              <ConversationPane />
+              <>
+                <ConversationTabStrip />
+                <ConversationPane />
+              </>
             ) : (
-              <WelcomePane />
+              <>
+                <ConversationTabStrip />
+                <WelcomePane />
+              </>
             )}
           </div>
           <TerminalDrawer />

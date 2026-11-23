@@ -2,6 +2,7 @@ import { CSSProperties, ReactNode, useCallback, useEffect, useMemo, useRef, useS
 import { useShallow } from 'zustand/react/shallow';
 import { useTerminalStore } from '../terminalStore';
 import { useStore } from '../store';
+import { isPopoutWindow } from '../popoutWindow';
 import {
   getRunner,
   useRunnerCodexFlags,
@@ -564,6 +565,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 
         <MoreMenu
           onReset={() => setConfirmingReset(true)}
+          onPopOut={
+            isPopoutWindow ? undefined : () => void useStore.getState().popOutConversation(conversationId)
+          }
           // Claude-only: the other backends have no slash commands and
           // would take "/compact" as a literal prompt.
           onCompact={
@@ -2100,9 +2104,12 @@ function MoreMenu({
   onCompact,
   onArchive,
   onRevealInFinder,
+  onPopOut,
   worktreeAvailable,
 }: {
   onReset: () => void;
+  /// Undefined in a conversation's own window, which can't open another.
+  onPopOut?: () => void;
   /// Undefined for backends without slash commands.
   onCompact?: () => void;
   onArchive: () => void;
@@ -2148,6 +2155,15 @@ function MoreMenu({
               onClick={() => {
                 setOpen(false);
                 onRevealInFinder();
+              }}
+            />
+          )}
+          {onPopOut && (
+            <MenuRow
+              label="Open in new window"
+              onClick={() => {
+                setOpen(false);
+                onPopOut();
               }}
             />
           )}
