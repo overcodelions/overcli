@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { CapacityRecorder, assessCapacity, capacityHealth, foldSample, machineLoad, type CapacityHour, type CapacitySample } from './capacity';
+import os from 'node:os';
+import { CapacityRecorder, assessCapacity, capacityHealth, foldSample, lastResize, machineLoad, type CapacityHour, type CapacitySample, type CapacityStore } from './capacity';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const T0 = Date.UTC(2026, 10, 2, 9, 0);
 
-function sample(over: { answers?: number; answersWaiting?: number; code?: number; codeWaiting?: number; cpu?: number; mem?: number } = {}): CapacitySample {
+function sample(over: { answers?: number; answersWaiting?: number; code?: number; codeWaiting?: number; cpu?: number; mem?: number; size?: CapacitySample['size'] } = {}): CapacitySample {
   return {
     answers: { inUse: over.answers ?? 0, waiting: over.answersWaiting ?? 0, cap: 32 },
     code: { running: over.code ?? 0, waiting: over.codeWaiting ?? 0, cap: 8 },
     cpu: over.cpu ?? 0.3,
     mem: over.mem ?? 0.4,
+    ...(over.size ? { size: over.size } : {}),
   };
 }
+
+const SMALL = { cpus: 2, memBytes: 4 * 2 ** 30 };
+const BIG = { cpus: 4, memBytes: 8 * 2 ** 30 };
 
 /// `days` working days of 8 busy hours, a sample a minute, each made by `make`.
 function week(days: number, make: (day: number, hour: number, minute: number) => CapacitySample): { hours: CapacityHour[]; now: number } {
@@ -79,6 +84,72 @@ describe('judging the size', () => {
   });
 });
 
+describe('after a resize', () => {
+  // Three days on a full small box (a bigger box, it says), then the bigger one.
+  const fullThenBig = (days: number) =>
+    week(days, (d, hr) => (d < 3 ? sample({ code: 8, cpu: hr < 3 ? 0.95 : 0.5, size: SMALL }) : sample({ code: 2, cpu: 0.3, size: BIG })));
+
+  it('notes the size each hour, and finds the first hour on the new one', () => {
+    const { hours } = fullThenBig(4);
+    expect(hours[0]).toMatchObject({ cpus: 2, memBytes: SMALL.memBytes });
+    expect(lastResize(hours)).toBe(T0 + 3 * DAY);
+  });
+
+  it('judges only the hours since, and says what it said before', () => {
+    const { hours, now } = fullThenBig(5);
+    const a = assessCapacity(hours, now);
+    expect(a.verdict).toBe('right');
+    expect(a.since).toMatchObject({ at: T0 + 3 * DAY, why: 'resized', before: { verdict: 'more' } });
+    // The same week with no sizes noted still reads as one machine.
+    const unsized = hours.map(({ cpus: _c, memBytes: _m, ...h }) => h);
+    expect(assessCapacity(unsized, now).verdict).toBe('more');
+  });
+
+  it('learns again straight after, rather than repeating the old size’s verdict', () => {
+    const { hours, now } = fullThenBig(4);
+    const a = assessCapacity(hours, now);
+    expect(a.verdict).toBe('learning');
+    expect(a.title).toMatch(/Resized/);
+    expect(a.detail).toMatch(/Before that it said: Needs a bigger box/);
+    expect(capacityHealth(a).ok).toBeNull();
+  });
+
+  it('works the other way: a quiet big box shrunk is judged on the small one', () => {
+    const { hours, now } = week(6, (d) => (d < 3 ? sample({ answers: 2, code: 1, cpu: 0.2, mem: 0.3, size: BIG }) : sample({ answers: 20, code: 5, cpu: 0.6, mem: 0.5, size: SMALL })));
+    expect(assessCapacity(hours, now)).toMatchObject({ verdict: 'right', since: { why: 'resized', before: { verdict: 'less' } } });
+  });
+
+  it('takes hours from before sizes were noted as no change, and a resize over a week ago as the whole week', () => {
+    const { hours } = week(4, (d) => sample(d < 2 ? {} : { size: BIG }));
+    expect(lastResize(hours)).toBeNull();
+    const { hours: h2 } = week(2, () => sample({ size: SMALL }));
+    const later = h2.concat(week(1, () => sample({ size: BIG })).hours.map((h) => ({ ...h, at: h.at + 3 * DAY })));
+    expect(assessCapacity(later, T0 + 12 * DAY).since).toBeUndefined();
+  });
+});
+
+describe('judging from now on', () => {
+  it('starts over when an admin asks, keeps it across a restart, and a later resize wins', () => {
+    const full = week(4, (_d, hr) => sample({ code: 8, cpu: hr < 3 ? 0.95 : 0.5 }));
+    let saved: CapacityStore = { hours: full.hours };
+    const now = full.now;
+    const rec = new CapacityRecorder({ sample: () => sample(), store: { load: () => saved, save: (v) => (saved = v) }, now: () => now });
+    expect(rec.report().assessment.verdict).toBe('more');
+    rec.startOver();
+    expect(saved.since).toBe(now);
+    const a = new CapacityRecorder({ sample: () => sample(), store: { load: () => saved, save: () => {} }, now: () => now }).report().assessment;
+    expect(a).toMatchObject({ verdict: 'learning', since: { at: now, why: 'reset', before: { verdict: 'more' } } });
+    expect(a.title).toMatch(/afresh/);
+    // A resize after the start-over is the newer reason.
+    const resizedAfter = fullThenBigAt(now);
+    expect(assessCapacity(resizedAfter.hours, resizedAfter.now, { since: now - DAY }).since?.why).toBe('resized');
+  });
+});
+
+function fullThenBigAt(_now: number) {
+  return week(4, (d, hr) => (d < 3 ? sample({ code: 8, cpu: hr < 3 ? 0.95 : 0.5, size: SMALL }) : sample({ code: 2, size: BIG })));
+}
+
 describe('the recorder', () => {
   it('samples into its store and reads it back', () => {
     let saved: { hours: CapacityHour[] } = { hours: [] };
@@ -97,6 +168,12 @@ describe('reading the machine', () => {
   it('uses the container\'s memory limit when it has one', () => {
     const files: Record<string, string> = { '/sys/fs/cgroup/memory.current': '1073741824\n', '/sys/fs/cgroup/memory.max': '4294967296\n' };
     expect(machineLoad((f) => files[f] ?? null)().mem).toBeCloseTo(0.25);
+  });
+
+  it('says how big the machine is: the container’s limits, or the OS’s', () => {
+    const files: Record<string, string> = { '/sys/fs/cgroup/cpu.max': '200000 100000\n', '/sys/fs/cgroup/memory.current': '1\n', '/sys/fs/cgroup/memory.max': '4294967296\n' };
+    expect(machineLoad((f) => files[f] ?? null)().size).toEqual({ cpus: 2, memBytes: 4294967296 });
+    expect(machineLoad(() => null)().size).toEqual({ cpus: os.availableParallelism(), memBytes: os.totalmem() });
   });
 
   it('leaves out the file cache the kernel can take back', () => {
