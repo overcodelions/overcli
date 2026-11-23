@@ -16,9 +16,15 @@ export interface RunActivityItem {
   at: number;
   kind: 'tool' | 'said' | 'error' | 'denied';
   text: string;
+  /// The tool's own name, for a call or a refusal: what the ephemeral
+  /// purge's action record counts (org/ephemeralPurge.ts). Absent on items
+  /// written before it was kept.
+  tool?: string;
 }
 
-const MAX_PER_RUN = 150;
+/// The most items kept per run, oldest dropped first.
+export const RUN_ACTIVITY_MAX = 150;
+const MAX_PER_RUN = RUN_ACTIVITY_MAX;
 const MAX_RUNS = 200;
 
 const clip = (s: string, n: number) => {
@@ -164,11 +170,11 @@ export class RunActivity {
       const at = ev.timestamp || Date.now();
       if (k.type === 'assistant' && !k.info.isPartial) {
         if (k.info.text.trim()) this.push(runId, { at, kind: 'said', text: clip(k.info.text, 400) });
-        for (const t of k.info.toolUses) this.push(runId, { at, kind: 'tool', text: describeTool(t.name, t.inputJSON) });
+        for (const t of k.info.toolUses) this.push(runId, { at, kind: 'tool', text: describeTool(t.name, t.inputJSON), tool: t.name });
       } else if (k.type === 'toolResult') {
         for (const r of k.results) if (r.isError && !SHELL_REFUSAL.test(r.content)) this.push(runId, { at, kind: 'error', text: clip(r.content, 200) });
       } else if (k.type === 'permissionRequest' && k.info.decided === 'deny') {
-        this.push(runId, { at, kind: 'denied', text: refusedText(k.info.toolName, k.info.toolInput) });
+        this.push(runId, { at, kind: 'denied', text: refusedText(k.info.toolName, k.info.toolInput), tool: k.info.toolName });
       }
     }
   }

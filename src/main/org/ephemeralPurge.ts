@@ -6,8 +6,11 @@
 // said for EPHEMERAL_IDLE_MS, or EPHEMERAL_MAX_MS after it began, this
 // removes it — the agent's session transcripts, its runs and what they
 // logged, its batches, the asks it answered, its journal and its files.
-// One line goes in the decision log saying what was purged and when, with
-// counts and no content: the record that it happened.
+// The content goes; the record of what the worker did stays. Before each run
+// is removed, the decision log gets its action record (`actionRecord`): when,
+// how it ended, its cost, and each tool it called with a count, never what a
+// tool was given or returned. Then one line says what was purged, with counts.
+// Both are kept like the rest of the log, for as long as Setup → Records says.
 //
 // Run from housekeeping every few minutes, and once at start, so a server
 // that was down when a conversation ended still purges it.
@@ -23,6 +26,7 @@ import { conversationEnded, isEphemeralWorker, EPHEMERAL_IDLE_MS, type Ephemeral
 import { flowRunActivityAt, type FlowRun } from '../../shared/flows/schema';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { AskStore, AuditStore } from './orgStores';
+import { RUN_ACTIVITY_MAX } from '../flows/runActivity';
 
 // ---- the ledger -------------------------------------------------------------
 
@@ -105,7 +109,7 @@ export interface EphemeralPurgeDeps {
     /// Forced: an ephemeral run's worktree holds nothing anyone reviews later.
     delete(runId: string): { ok: boolean };
   };
-  runActivity?: { forget(runId: string): unknown };
+  runActivity?: { forget(runId: string): unknown; list?(runId: string): ReadonlyArray<{ kind: string; tool?: string }> };
   workLog: { forget(runIds: string[]): number };
   orchestrations: { list(): Orchestration[]; delete(id: string): unknown };
   asks?: AskStore;
@@ -176,8 +180,11 @@ export function purgeEphemeral(deps: EphemeralPurgeDeps): Map<string, PurgeCount
     const goneRuns: string[] = [];
     for (const r of runs) {
       sessionIds.push(...Object.values(r.sessionIdsByParticipant ?? {}));
+      // Read before the run goes: the record of what it did outlives it.
+      const activity = deps.runActivity?.list?.(r.id) ?? [];
       if (deps.runs.delete(r.id).ok) {
         goneRuns.push(r.id);
+        deps.audit.append({ at: now, by: 'overcli', what: actionRecord(w.name, r, activity) });
         void deps.runActivity?.forget(r.id);
       }
     }
@@ -218,10 +225,51 @@ export function purgeEphemeral(deps: EphemeralPurgeDeps): Map<string, PurgeCount
     if (!total) continue;
     out.set(w.id, counts);
     const what = describe(counts);
-    deps.audit.append({ at: now, by: 'overcli', what: `Purged ${w.name}'s ended conversations (sensitive tools): ${what}.` });
+    const kept = counts.runs ? ` Kept ${counts.runs === 1 ? '1 action record' : `${counts.runs} action records`}.` : '';
+    deps.audit.append({ at: now, by: 'overcli', what: `Purged ${w.name}'s ended conversations (sensitive tools): ${what}.${kept}` });
     deps.log(`org: purged ${w.name}'s ended conversations: ${what}.`);
   }
   return out;
+}
+
+/// What a run did, without anything it read or said: written to the decision
+/// log as the run is purged, so the record of an ephemeral worker's actions
+/// outlives its content. Tool names and counts only, never their inputs or
+/// results. The run id ties it to the decisions people made about the run
+/// (approvals, answers, a stop), which name an ephemeral worker's runs by id.
+export function actionRecord(workerName: string, r: FlowRun, activity: ReadonlyArray<{ kind: string; tool?: string }>): string {
+  const started = r.attempts.reduce((min, a) => Math.min(min, a.startedAt ?? min), r.createdAt ?? 0);
+  const ended = flowRunActivityAt(r);
+  const steps = new Set(r.attempts.map((a) => a.stepId)).size;
+  const cost = r.costUSD ?? r.attempts.reduce((sum, a) => sum + (a.costUSD ?? 0), 0);
+  const used = tally(activity.filter((i) => i.kind === 'tool'));
+  const refused = tally(activity.filter((i) => i.kind === 'denied'));
+  const stamp = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+  return (
+    `${workerName}'s run ${r.id} ${r.state.kind === 'aborted' ? 'was stopped' : 'ended'} ` +
+    `(${stamp(started)} to ${stamp(ended)} UTC, ${steps} ${steps === 1 ? 'step' : 'steps'}, $${cost.toFixed(2)}). ` +
+    `Tools used: ${used || 'none recorded'}.` +
+    (refused ? ` Refused: ${refused}.` : '') +
+    (activity.length >= RUN_ACTIVITY_MAX ? ' Only its latest activity was kept, so counts may be low.' : '')
+  );
+}
+
+/// `mcp__acme_logs__search` as `acme_logs.search`; built-in tools as named.
+function toolLabel(name: string): string {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name);
+  return m ? `${m[1]}.${m[2]}` : name;
+}
+
+function tally(items: ReadonlyArray<{ tool?: string }>): string {
+  const counts = new Map<string, number>();
+  let unnamed = 0;
+  for (const i of items) {
+    if (!i.tool) unnamed++;
+    else counts.set(toolLabel(i.tool), (counts.get(toolLabel(i.tool)) ?? 0) + 1);
+  }
+  const named = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t, n]) => `${t} ×${n}`);
+  if (unnamed) named.push(`${unnamed} unnamed ${unnamed === 1 ? 'call' : 'calls'}`);
+  return named.join(', ');
 }
 
 function describe(c: PurgeCounts): string {

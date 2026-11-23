@@ -1,8 +1,8 @@
 // Ephemeral workers: ones that hold a tool whose output may carry customer
 // data (`OrgPolicy.sensitiveTools`). What such a worker reads and says lives
 // only as long as the conversation it was said in; after that the purge
-// (src/main/org/ephemeralPurge.ts) removes it, leaving a metadata-only line
-// in the decision log.
+// (src/main/org/ephemeralPurge.ts) removes it. What it DID stays: each run's
+// action record (tools and counts, no content) goes in the decision log first.
 //
 // Decided per WORKER rather than per run on purpose. A run's tool calls are
 // not all seen — read-only calls are approved without a request — so a

@@ -45,7 +45,10 @@ function run(id: string, workerId: string, endedAt: number, sessions: string[], 
   } as unknown as FlowRun;
 }
 
-function harness(workers: EphemeralWorker[], opts: { runs?: FlowRun[]; batches?: Orchestration[]; asks?: AskRecord[] } = {}) {
+function harness(
+  workers: EphemeralWorker[],
+  opts: { runs?: FlowRun[]; batches?: Orchestration[]; asks?: AskRecord[]; activity?: Record<string, Array<{ kind: string; tool?: string; text: string }>> } = {},
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-eph-'));
   const ledger = fileEphemeralLedger(path.join(dir, 'ledger.json'));
   let runs = opts.runs ?? [];
@@ -71,7 +74,7 @@ function harness(workers: EphemeralWorker[], opts: { runs?: FlowRun[]; batches?:
     purgeSessions: (ids) => (purged.push(...ids), { purged: ids.length }),
     forgetConversations: (id, ended) => forgotten.push({ id, ...ended }),
     runs: { list: () => runs, delete: (id) => ((runs = runs.filter((r) => r.id !== id)), { ok: true }) },
-    runActivity: { forget: (id) => activityForgot.push(id) },
+    runActivity: { forget: (id) => activityForgot.push(id), list: (id) => opts.activity?.[id] ?? [] },
     workLog: { forget: (ids) => (workLogForgot.push(...ids), ids.length) },
     orchestrations: { list: () => batches, delete: (id) => (batches = batches.filter((b) => b.id !== id)) },
     asks: { list: () => asks, save: (a) => (asks = a) },
@@ -171,8 +174,33 @@ describe('purgeEphemeral', () => {
   it('writes one audit line with counts and no content', () => {
     const h = harness([cw], { runs: [run('r-old', 'w1', NOW - 3 * HOUR, [SID(7)])] });
     purgeEphemeral(h.deps);
-    expect(h.audit).toHaveLength(1);
-    expect(h.audit[0].what).toBe("Purged Logan's ended conversations (sensitive tools): 1 transcript, 1 run, 1 journal entry, 1 file.");
+    expect(h.audit).toHaveLength(2);
+    expect(h.audit[0].what).toMatch(/^Logan's run \S+ ended \(/);
+    expect(h.audit[1].what).toBe("Purged Logan's ended conversations (sensitive tools): 1 transcript, 1 run, 1 journal entry, 1 file. Kept 1 action record.");
+  });
+
+  it('keeps a record of what each purged run did: tools and counts, nothing it read or said', () => {
+    const h = harness([cw], {
+      runs: [run('r-old', 'w1', NOW - 3 * HOUR, [])],
+      activity: {
+        'r-old': [
+          { kind: 'said', text: 'Customer jo@acme.example.com asked about order 991' },
+          { kind: 'tool', tool: 'mcp__logs__search', text: 'logs: search (jo@acme.example.com)' },
+          { kind: 'tool', tool: 'mcp__logs__search', text: 'logs: search (order 991)' },
+          { kind: 'tool', tool: 'Read', text: 'Read customers/jo.md' },
+          { kind: 'tool', text: 'an older item, written before names were kept' },
+          { kind: 'error', text: 'Order 991 not found' },
+          { kind: 'denied', tool: 'Bash', text: 'Refused: curl https://acme.example.com/export' },
+        ],
+      },
+    });
+    purgeEphemeral(h.deps);
+    expect(h.runs()).toEqual([]);
+    const record = h.audit.find((e) => e.what.includes('r-old'))!.what;
+    expect(record).toMatch(/^Logan's run r-old ended \(\d{4}-\d\d-\d\d \d\d:\d\d to \d{4}-\d\d-\d\d \d\d:\d\d UTC, 1 step, \$0\.00\)\./);
+    expect(record).toContain('Tools used: logs.search ×2, Read ×1, 1 unnamed call.');
+    expect(record).toContain('Refused: Bash ×1.');
+    expect(record).not.toMatch(/jo@|991|customers|curl|acme\.example/);
   });
 
   it('leaves workers without a sensitive tool alone', () => {

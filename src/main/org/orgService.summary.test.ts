@@ -67,8 +67,11 @@ function harness(opts: { shared?: string[]; sensitive?: string[] } = {}) {
     ...(opts.sensitive ? { sensitiveTools: opts.sensitive } : {}),
   };
   const calls = { snapshots: 0, tools: 0, repos: 0, workspaces: 0, people: 0, listRuns: 0, batches: 0 };
+  const audit: Array<{ what: string }> = [];
   const deps = {
+    audit: { append: (e: { what: string }) => audit.push(e), recent: () => audit },
     workers: {
+      remember: () => ({ ok: true }),
       roster: () => roster,
       get: (id: string) => roster.find((w) => w.id === id) ?? null,
       journalFor: () => [],
@@ -116,7 +119,7 @@ function harness(opts: { shared?: string[]; sensitive?: string[] } = {}) {
     },
     planning: (id: string) => (id === 'dee' ? { since: 0, task: 'shift' as const } : null),
   } as unknown as OrgServiceDeps;
-  return { svc: new OrgService(deps), roster, calls };
+  return { svc: new OrgService(deps), roster, calls, audit };
 }
 
 describe('a worker that keeps nothing past a conversation', () => {
@@ -125,6 +128,13 @@ describe('a worker that keeps nothing past a conversation', () => {
     const byId = new Map(h.svc.listWorkers(admin).map((w) => [w.id, w]));
     expect(byId.get('ana')?.ephemeral).toEqual({ tools: ['acme-jira'] });
     expect(byId.get('cy')?.ephemeral).toBeUndefined();
+  });
+
+  it('leaves what may be customer data out of the decision log, and keeps the fact', () => {
+    const h = harness({ sensitive: ['acme-jira'] });
+    expect(h.svc.addWorkerNote(admin, 'ana', 'Customer jo@acme.example.com is on the old plan').ok).toBe(true);
+    expect(h.svc.addWorkerNote(admin, 'cy', 'Use the new template').ok).toBe(true);
+    expect(h.audit.map((e) => e.what)).toEqual(['Left Ana a note.', 'Left Cy a note: "Use the new template".']);
   });
 
   it('is every worker when a shared tool is marked, and none when nothing is', () => {

@@ -7280,7 +7280,7 @@ export const CONSOLE_JS = String.raw`
           w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
           h('div', { class: 'wk-id-main' },
             h('div', { class: 'wk-name-row' }, h('h1', { class: 'page-title', text: w.name }), workerHeadBadge(w), trustMeter(w.trust),
-              w.ephemeral ? h('span', { class: 'teamtag', style: 'color:var(--need);border-color:var(--need)', title: 'Ephemeral: it holds ' + w.ephemeral.tools.join(', ') + ', which may return customer data. It keeps nothing past a conversation. Set on Setup → Data protection.', text: 'Ephemeral' }) : null,
+              w.ephemeral ? h('span', { class: 'teamtag', style: 'color:var(--need);border-color:var(--need)', title: 'Ephemeral: it holds ' + w.ephemeral.tools.join(', ') + ', which may return customer data. It keeps no content past a conversation; the record of what it did stays in the decision log. Set on Setup → Data protection.', text: 'Ephemeral' }) : null,
               teamNames.map(function (t) { return h('span', { class: 'teamtag', title: 'On the ' + t + ' team' }, icon('team', 12), t); }), w.coding ? codingTag() : null),
             w.tagline ? h('p', { class: 'wk-tagline', text: w.tagline }) : null,
             // How it starts, who it answers to and who can ask, in a line.
@@ -7288,7 +7288,7 @@ export const CONSOLE_JS = String.raw`
               w.manager ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Managed by' }), whoChip(w.manager), w.managerInherited ? h('span', { class: 'faint', text: '(through its boss)' }) : null) : h('span', { class: 'wk-meta-i faint', text: 'No manager yet' }),
               h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Runs' }), h('span', { text: w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'When asked' })),
               h('button', { class: 'linkish wk-meta-i', style: 'color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } }),
-              w.ephemeral ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Ephemeral' }), h('span', { text: 'keeps nothing past a conversation, because it holds ' + w.ephemeral.tools.join(', ') })) : null),
+              w.ephemeral ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Ephemeral' }), h('span', { text: 'keeps no content past a conversation, because it holds ' + w.ephemeral.tools.join(', ') })) : null),
             monthLine(w)),
           h('div', { class: 'wk-stats-row', role: 'group', 'aria-label': 'At a glance' },
             stat(String(l30.jobs), 'jobs, 30 days', null, l30.failed ? l30.failed + ' failed' : null),
@@ -13355,10 +13355,10 @@ export const CONSOLE_JS = String.raw`
             h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Passwords, AWS keys, tokens and every secret stored on Setup → Secrets become [REDACTED]. Known formats (AWS access keys, GitHub, Slack and Stripe tokens, private keys, bearer tokens, password= lines) and the exact values this server holds are caught. Anything encoded or split across lines can still get through, so keep secrets out of the work itself too. Run logs on this server are not changed.' })),
           h('div', { class: 'stack', style: 'gap:8px;padding-top:18px;border-top:1px solid var(--line)' },
             dpHead('Tools that may return customer data'),
-            h('p', { class: 'hint', style: 'font-size:13px;margin:0', text: 'A log reader, a support inbox, a CRM. A worker that has one of these, on its own, through its role or shared with everyone, is ephemeral: it keeps nothing past its conversation.' }),
+            h('p', { class: 'hint', style: 'font-size:13px;margin:0', text: 'A log reader, a support inbox, a CRM. A worker that has one of these, on its own, through its role or shared with everyone, is ephemeral: it keeps no content past its conversation, though the record of what it did stays.' }),
             sensitive.node,
             sharedWarn,
-            h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Once its conversation has been quiet for 2 hours, or 24 hours after it began, its transcripts, runs, work log, journal, files and answered asks are deleted, leaving one line in the decision log. Emails, card numbers and phone numbers are taken out of what it posts, even with redaction above off, and it never files what it makes into a project.' }))),
+            h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Once its conversation has been quiet for 2 hours, or 24 hours after it began, its transcripts, runs, work log, journal, files and answered asks are deleted. Before each run goes, the decision log gets a record of what it did: when, how it ended, its cost, and each tool it called with a count, never what a tool was given or returned. Those records are kept like the rest of the log (Setup → Records). Emails, card numbers and phone numbers are taken out of what it posts, even with redaction above off, and it never files what it makes into a project.' }))),
         function () { var s = sensitive.value(); return { redactSecrets: redact.checked, sensitiveTools: s.length ? s : null }; });
 
       // Model ids as the server's provider (Bedrock, Vertex) names them: a
