@@ -1355,6 +1355,11 @@ export interface AppSettings {
   /// app's content region to zero.
   sidebarWidth: number;
   editorPaneWidth: number;
+  /// The share (0–1) of the chat room the conversation beside the selected
+  /// one takes. A share, not px, so opening the file editor narrows both
+  /// chats in proportion and closing it gives back the same split. Unset is
+  /// an even split.
+  splitPaneRatio?: number;
   /// Width of the file-tree column inside the standalone explorer view.
   explorerTreeWidth: number;
   /// Width of the service list beside its detail pane.
@@ -1503,6 +1508,20 @@ export type PersistedFileTabs = Record<string, PersistedScopeTabs>;
 /// into and back out of its own window.
 export type PersistedScopeTabs = { paths: string[]; activePath?: string | null };
 
+/// The conversations open as tabs above the chat, in strip order, and the
+/// one shown beside the selected conversation when the view is split. See
+/// the renderer's conversationTabs.ts.
+export type PersistedConversationTabs = { ids: UUID[]; splitId?: UUID };
+
+/// One change a popped-out conversation window made, sent through main to
+/// the main window, which applies and saves it. Field by field so a change
+/// only the main window made (a retitle) isn't undone — see the renderer's
+/// conversationSync.ts.
+export type ConversationChange =
+  | { kind: 'patch'; id: UUID; patch: Partial<Conversation> }
+  /// A conversation the window created (a fork, say), with where it lives.
+  | { kind: 'add'; owner: { kind: 'project' | 'workspace'; id: UUID }; conversation: Conversation };
+
 /// What the "What's new" panel renders, assembled in src/main/whatsNew.ts
 /// from the CHANGELOG.md that ships in the app bundle.
 export interface WhatsNewReport {
@@ -1531,6 +1550,7 @@ export interface IPCInvokeMap {
     lastInit?: SystemInitInfo;
     view?: PersistedView;
     fileTabs?: PersistedFileTabs;
+    conversationTabs?: PersistedConversationTabs;
   };
   'store:saveProjects': (projects: Project[]) => void;
   'store:saveWorkspaces': (workspaces: Workspace[]) => void;
@@ -1550,6 +1570,7 @@ export interface IPCInvokeMap {
   'store:saveSelection': (id: UUID | null) => void;
   'store:saveView': (view: PersistedView) => void;
   'store:saveFileTabs': (tabs: PersistedFileTabs) => void;
+  'store:saveConversationTabs': (tabs: PersistedConversationTabs) => void;
   /// Send a canned notification to a webhook URL and report whether it
   /// landed. Takes the values as arguments rather than reading the saved
   /// setting so Settings can test what is currently TYPED, before Save —
@@ -2459,6 +2480,16 @@ export interface IPCInvokeMap {
   'explorer:popOut': (args: { root: string; tabs?: PersistedScopeTabs }) => { ok: true } | { ok: false; error: string };
   /// Close an explorer's own window; its tabs come back via `explorerPoppedOut`.
   'explorer:popIn': (args: { root: string }) => void;
+  /// Move a conversation into its own overcli window, or focus it if it's
+  /// already out. The main window keeps saving it; see conversationSync.ts.
+  'conversation:popOut': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Close a conversation's own window, putting it back in the main window.
+  'conversation:popIn': (args: { id: UUID }) => void;
+  /// Conversations in windows of their own, so a reloaded main window knows.
+  'conversation:poppedOutList': () => UUID[];
+  /// From a conversation window: what it changed, for the main window to
+  /// apply and save.
+  'conversation:syncFromWindow': (args: { changes: ConversationChange[] }) => void;
   /// The tabs an explorer window was popped out with, for it to open.
   'explorer:initialTabs': (args: { root: string }) => PersistedScopeTabs | null;
   /// The explorer window's current tabs, kept by main so closing the window
@@ -4273,6 +4304,12 @@ export type MainToRendererEvent =
   /// An explorer moved into its own window (`out`) or back. Coming back, it
   /// carries the tabs that were open in the window.
   | { type: 'explorerPoppedOut'; root: string; out: boolean; tabs?: PersistedScopeTabs }
+  /// A conversation moved into its own window (`out`) or back.
+  | { type: 'conversationPoppedOut'; id: UUID; out: boolean }
+  /// To the main window: changes a conversation window made, to apply and save.
+  | { type: 'conversationChangesFromWindow'; changes: ConversationChange[] }
+  /// To a conversation window: its conversation as the main window last saved it.
+  | { type: 'conversationSynced'; conversation: Conversation }
   | {
       /// Live text from an in-flight document rewrite. The rewrite runs on
       /// the hidden one-shot transport, which has no conversation to stream

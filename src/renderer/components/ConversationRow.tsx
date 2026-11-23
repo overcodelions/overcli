@@ -16,6 +16,7 @@ import { useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { backendColor } from '../theme';
 import { isAgentConversation } from './sidebarItems';
 import { SidebarMarker } from './SidebarMarker';
+import { ConversationContextMenu } from './ConversationTabs';
 
 export function ConversationRow({
   conv,
@@ -44,6 +45,7 @@ export function ConversationRow({
   const resetConversationName = useStore((s) => s.resetConversationName);
   const autoNaming = useStore((s) => s.settings.autoNameConversations !== false);
   const [renameValue, setRenameValue] = useState<string | null>(null);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
 
   // Enter or blur commits, Escape backs out. A typed name is yours and
   // sticks; clearing the field hands naming back to the conversation (the
@@ -102,7 +104,13 @@ export function ConversationRow({
       ) : (
         <>
           <button
-            onClick={onClick}
+            // ⌥-click opens it beside the conversation on screen, the way an
+            // editor opens a file to the side.
+            onClick={(e) => (e.altKey ? useStore.getState().openConversationToSide(conv.id) : onClick())}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenuAt({ x: e.clientX, y: e.clientY });
+            }}
             onDoubleClick={() => setRenameValue(conv.name)}
             className="flex items-center gap-1.5 flex-1 min-w-0 text-left px-2 py-1"
           >
@@ -151,6 +159,7 @@ export function ConversationRow({
           </button>
         </>
       )}
+      {menuAt && <ConversationContextMenu id={conv.id} at={menuAt} onClose={() => setMenuAt(null)} />}
     </div>
   );
 }
