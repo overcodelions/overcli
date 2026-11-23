@@ -270,6 +270,9 @@ import {
   MainToRendererEvent,
   SlackStatus,
   PersistedScopeTabs,
+  ConversationChange,
+  Conversation,
+  UUID,
   MenuCommand,
   ProjectPreviewCommand,
   ProjectPreviewHintsResult,
@@ -381,6 +384,11 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // A conversation window saves through the main window; with that gone
+    // its changes would have nowhere to land, so it goes too.
+    for (const { win } of conversationWindows.values()) {
+      if (!win.isDestroyed()) win.close();
+    }
   });
 
   // A dead or hung renderer leaves a blank window and nothing anywhere else:
@@ -459,6 +467,66 @@ function emitToRenderer(event: MainToRendererEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('main:event', event);
   }
+  forwardToConversationWindow(event);
+}
+
+/// Conversations moved into windows of their own, by conversation id, with
+/// the last copy of the conversation each was sent (see `syncConversationWindows`).
+const conversationWindows = new Map<UUID, { win: BrowserWindow; lastSent: string }>();
+
+/// A conversation window hears its own conversation's events — the stream,
+/// running state, errors — and nothing else. The main window still hears
+/// them too: it is the one that records and saves what they change.
+function forwardToConversationWindow(event: MainToRendererEvent): void {
+  if (conversationWindows.size === 0) return;
+  if (event.type === 'uiScaleChanged') {
+    for (const { win } of conversationWindows.values()) {
+      if (!win.isDestroyed()) win.webContents.send('main:event', event);
+    }
+    return;
+  }
+  const id = (event as { conversationId?: unknown }).conversationId;
+  if (typeof id !== 'string') return;
+  const entry = conversationWindows.get(id);
+  if (entry && !entry.win.isDestroyed()) entry.win.webContents.send('main:event', event);
+}
+
+function findStoredConversation(id: UUID): Conversation | undefined {
+  const s = Store.load();
+  for (const p of s.projects) {
+    const c = p.conversations.find((x) => x.id === id);
+    if (c) return c;
+  }
+  for (const w of s.workspaces) {
+    const c = (w.conversations ?? []).find((x) => x.id === id);
+    if (c) return c;
+  }
+  return undefined;
+}
+
+/// After the main window saves, hand each conversation window its
+/// conversation as saved, when it changed. This is how a retitle, a branch
+/// capture or anything else the main window did reaches the other window.
+function syncConversationWindows(): void {
+  for (const [id, entry] of conversationWindows) {
+    if (entry.win.isDestroyed()) continue;
+    const conversation = findStoredConversation(id);
+    if (!conversation) continue;
+    const json = JSON.stringify(conversation);
+    if (json === entry.lastSent) continue;
+    entry.lastSent = json;
+    entry.win.webContents.send('main:event', { type: 'conversationSynced', conversation } satisfies MainToRendererEvent);
+  }
+}
+
+/// True when an IPC call came from a conversation window. Those never write
+/// the store directly — two renderers saving their own copy of the whole
+/// tree would undo each other — so a stray save from one is dropped.
+function fromConversationWindow(sender: Electron.WebContents): boolean {
+  for (const { win } of conversationWindows.values()) {
+    if (!win.isDestroyed() && win.webContents === sender) return true;
+  }
+  return false;
 }
 
 /// The services manager, built on first use. Its events are translated here
@@ -949,9 +1017,22 @@ export function registerIpc(): void {
     await Store.pruneFileTabs();
     return state;
   });
-  ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
-  ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
-  ipcMain.handle('store:patchConversation', (_e, { id, patch }) => Store.patchConversation(id, patch));
+  ipcMain.handle('store:saveProjects', (e, projects) => {
+    if (fromConversationWindow(e.sender)) return;
+    Store.saveProjects(projects);
+    syncConversationWindows();
+  });
+  ipcMain.handle('store:saveWorkspaces', (e, workspaces) => {
+    if (fromConversationWindow(e.sender)) return;
+    Store.saveWorkspaces(workspaces);
+    syncConversationWindows();
+  });
+  ipcMain.handle('store:patchConversation', (e, { id, patch }) => {
+    if (fromConversationWindow(e.sender)) return true;
+    const ok = Store.patchConversation(id, patch);
+    if (ok && conversationWindows.has(id)) syncConversationWindows();
+    return ok;
+  });
   ipcMain.handle('conversation:suggestTitle', (_e, args) => suggestConversationTitle(drafterDeps(), args));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
@@ -974,6 +1055,10 @@ export function registerIpc(): void {
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
   ipcMain.handle('store:saveFileTabs', (_e, tabs) => Store.saveFileTabs(tabs));
+  ipcMain.handle('store:saveConversationTabs', (e, tabs) => {
+    if (fromConversationWindow(e.sender)) return;
+    Store.saveConversationTabs(tabs);
+  });
   ipcMain.handle('notify:testWebhook', async (_e, input) => {
     const raw = input?.url ?? configuredWebhookUrl() ?? '';
     const checked = validateWebhookUrl(raw);
@@ -2631,6 +2716,20 @@ export function registerIpc(): void {
     if (entry) entry.tabs = tabs;
   });
   ipcMain.handle('explorer:list', () => [...explorerWindows.keys()]);
+  ipcMain.handle('conversation:popOut', (_e, { id }: { id: UUID }) => popOutConversation(id));
+  ipcMain.handle('conversation:popIn', (_e, { id }: { id: UUID }) => {
+    const entry = conversationWindows.get(id);
+    if (entry && !entry.win.isDestroyed()) entry.win.close();
+  });
+  ipcMain.handle('conversation:poppedOutList', () => [...conversationWindows.keys()]);
+  ipcMain.handle('conversation:syncFromWindow', (_e, { changes }: { changes: ConversationChange[] }) => {
+    if (!changes?.length) return;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      log('warn', 'conversation.sync', `no main window to save ${changes.length} change(s) from a conversation window`);
+      return;
+    }
+    mainWindow.webContents.send('main:event', { type: 'conversationChangesFromWindow', changes } satisfies MainToRendererEvent);
+  });
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
@@ -4855,6 +4954,32 @@ function createPopoutWindow(
     if (!win.isDestroyed()) win.webContents.setZoomFactor(Store.load().settings.uiScale);
   });
   return win;
+}
+
+/// A conversation in its own overcli window — two chats side by side on two
+/// screens, or one kept in view while you work in another. The main window
+/// keeps the conversation's place and saves it; this window streams it and
+/// can send. One window per conversation; asking again brings it forward.
+function popOutConversation(id: UUID): { ok: true } | { ok: false; error: string } {
+  const existing = conversationWindows.get(id);
+  if (existing && !existing.win.isDestroyed()) {
+    existing.win.show();
+    existing.win.focus();
+    return { ok: true };
+  }
+  const conversation = findStoredConversation(id);
+  if (!conversation) return { ok: false, error: 'Only a saved conversation can have a window of its own.' };
+  const win = createPopoutWindow(
+    { conversation: id },
+    { width: 900, height: 900, minWidth: 480, minHeight: 400, title: conversation.name || 'Conversation' },
+  );
+  conversationWindows.set(id, { win, lastSent: JSON.stringify(conversation) });
+  win.on('closed', () => {
+    conversationWindows.delete(id);
+    emitToRenderer({ type: 'conversationPoppedOut', id, out: false });
+  });
+  emitToRenderer({ type: 'conversationPoppedOut', id, out: true });
+  return { ok: true };
 }
 
 /// Files opened from outside overcli, each in a window of its own, by path.

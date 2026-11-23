@@ -18,6 +18,7 @@ import {
   FlowRegistry,
   Conversation,
   SystemInitInfo,
+  PersistedConversationTabs,
   PersistedFileTabs,
   PersistedView,
   UUID,
@@ -47,6 +48,8 @@ interface StoreState {
   /// so returning to a conversation reopens the files you had there. See
   /// the renderer's uiSlice + fileScope.ts.
   fileTabs?: PersistedFileTabs;
+  /// Conversations open as tabs, and the one split beside the selection.
+  conversationTabs?: PersistedConversationTabs;
   lastInit?: SystemInitInfo;
   /// Epoch-ms of the last time we triggered each backend CLI's self-updater
   /// on startup. Keyed by Backend. Used to throttle the headless prime to
@@ -265,6 +268,25 @@ export function sanitizeFileTabs(raw: unknown): PersistedFileTabs | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+/// Matches the renderer's MAX_CONVERSATION_TABS.
+const MAX_CONVERSATION_TABS = 12;
+
+export function sanitizeConversationTabs(raw: unknown): PersistedConversationTabs | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { ids, splitId } = raw as { ids?: unknown; splitId?: unknown };
+  const clean: UUID[] = [];
+  if (Array.isArray(ids)) {
+    for (const id of ids) {
+      if (typeof id !== 'string' || !id || clean.includes(id)) continue;
+      clean.push(id);
+      if (clean.length >= MAX_CONVERSATION_TABS) break;
+    }
+  }
+  const split = typeof splitId === 'string' && splitId ? splitId : undefined;
+  if (!clean.length && !split) return undefined;
+  return split ? { ids: clean, splitId: split } : { ids: clean };
+}
+
 function conversationIds(s: StoreState): Set<string> {
   const ids = new Set<string>();
   for (const p of s.projects) for (const c of p.conversations ?? []) ids.add(c.id);
@@ -288,6 +310,7 @@ export function loadState(): StoreState {
     merged.projects = sanitizeProjects(merged.projects);
     merged.workspaces = sanitizeWorkspaces(merged.workspaces);
     merged.fileTabs = sanitizeFileTabs(merged.fileTabs);
+    merged.conversationTabs = sanitizeConversationTabs(merged.conversationTabs);
     const regs: FlowRegistry[] = merged.settings.flowRegistries ?? [];
     if (!regs.some((r) => r.id === 'official')) {
       merged.settings.flowRegistries = [
@@ -456,6 +479,11 @@ export const Store = {
   saveView(view: PersistedView): void {
     const s = current();
     s.view = view;
+    save();
+  },
+  saveConversationTabs(tabs: PersistedConversationTabs): void {
+    const s = current();
+    s.conversationTabs = sanitizeConversationTabs(tabs);
     save();
   },
   saveFileTabs(tabs: PersistedFileTabs): void {
