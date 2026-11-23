@@ -4,6 +4,23 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-11-23
+
+### Added
+- **Conversation tabs.** Open conversations sit in a tab strip above the chat, marked working, waiting on you or finished. Drag to reorder, Ctrl+Tab to cycle, middle-click to close, right-click for more; a long strip fades at the edges, scrolls and lists the rest under "N more". Tabs come back after a restart, and deleted conversations drop out. Flow runs open as tabs too; a worker's runs stay on its desk. (#1242, #1245)
+- **Split view.** ⌥-click or **Open to the side** shows a second conversation beside the selected one. Drag to resize; double-click resets it to even. The split keeps its proportions when the file editor opens and closes. (#1243)
+- **Pop-out windows.** A conversation can open in its own window that streams and sends; the main window shows a placeholder meanwhile. Deletes and settings changes made in a pop-out aren't saved, and flow-run conversations can't be popped out. (#1244)
+- **A "new output" pill** jumps back to the latest when you've scrolled up, and lights up when more arrives. (#1247)
+- **Setup → Capacity → Judge from now on** (admins only) starts the verdict afresh. It is recorded in the decision log, and a later resize takes over from it. (#1250)
+
+### Changed
+- **Ephemeral workers keep a record of what they did.** The purge still deletes content, but first writes an action record per run to the decision log: run id, start and end time, outcome, step count, cost and how many times each tool was called or refused, never a tool's inputs or results. Decision-log lines about these workers name the run instead of quoting answers, notes or ratings. Setup → Records still decides how long the log is kept. Runs purged by 0.27.0 and 0.27.1 can't be recovered; only orgs that ticked a tool under Data protection are affected. (#1240)
+- **Capacity is judged only since the machine was last resized.** The size (CPUs and memory, or the container's limits) is noted hourly, Setup → Capacity says what the verdict is based on, and it says it is still learning until it has a couple of days on the new size. (#1250)
+
+### Fixed
+- **Scrolling up while a reply streams now stays put.** (#1246)
+- **A worker is no longer shown as stuck once a later run succeeds.** The stuck badge opens the run that stopped, a worker that has moved on shows "N runs need a look", and stalled runs count as failed in the month and 30-day figures. (#1249)
+
 ## [0.27.1] - 2026-11-21
 
 ### Fixed
@@ -1511,7 +1528,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.2...HEAD
+[0.27.2]: https://github.com/overcodelions/overcli/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/overcodelions/overcli/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/overcodelions/overcli/compare/v0.26.6...v0.27.0
 [0.26.6]: https://github.com/overcodelions/overcli/compare/v0.26.5...v0.26.6
