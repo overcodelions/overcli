@@ -17,15 +17,21 @@ import { isEverydayProject } from '@shared/everydayProjects';
 import { RunningIndicator } from './RunningIndicator';
 import { ManualCommand } from './ManualCommand';
 import { useConversation } from '../hooks';
-import { Backend } from '@shared/types';
+import type { Backend, UUID } from '@shared/types';
 import { backendName } from '../theme';
 
 const EDITOR_MIN = 320;
 // Chat must keep at least this many px; editor caps at (container - CHAT_MIN).
 const CHAT_MIN = 360;
 
+/// The conversation area: the selected conversation, optionally a second
+/// one beside it (the split), and the file editor or explorer on the right.
+/// The editor belongs to the selected conversation, so it sits past both.
 export function ConversationPane() {
   const convId = useStore((s) => s.selectedConversationId);
+  const splitId = useStore((s) => s.splitConversationId);
+  const poppedOut = useStore((s) => s.poppedOutConversationIds);
+  const splitConv = useConversation(splitId);
   const openFilePath = useStore((s) => s.openFilePath);
   // The file editor sits next to the conversation when the subagent
   // drawer is closed. When the drawer is open, the editor moves to
@@ -41,6 +47,103 @@ export function ConversationPane() {
   const explorerRootPath = useStore((s) => s.explorerRootPath);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setContainerWidth(entry.contentRect.width);
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+  const showSplit = !!splitId && !!splitConv && splitId !== convId;
+  // Each chat column keeps its minimum; the editor gets what's left.
+  const editorMax = Math.max(EDITOR_MIN + 40, containerWidth - CHAT_MIN * (showSplit ? 2 : 1));
+  const [width, setWidth] = useState(
+    () => clamp(settings.editorPaneWidth ?? 540, EDITOR_MIN, editorMax),
+  );
+  useEffect(() => {
+    setWidth((w) => clamp(settings.editorPaneWidth ?? w, EDITOR_MIN, editorMax));
+  }, [settings.editorPaneWidth, editorMax]);
+
+  const splitPanel = useRef<HTMLDivElement>(null);
+  const explorerOpen = !!explorerRootPath;
+  const editorVisible = explorerOpen || (!!openFilePath && !subagentDrawerOpen);
+  // The side conversation takes what's left after the main chat's minimum
+  // and the editor, if it's open.
+  const splitRoom = containerWidth - (editorVisible ? width : 0);
+  const splitMax = Math.max(CHAT_MIN, splitRoom - CHAT_MIN);
+  const [splitRatio, setSplitRatio] = useState(() => settings.splitPaneRatio ?? 0.5);
+  useEffect(() => {
+    setSplitRatio(settings.splitPaneRatio ?? 0.5);
+  }, [settings.splitPaneRatio]);
+  const toRatio = (px: number) => (splitRoom > 0 ? Math.min(1, Math.max(0, px / splitRoom)) : 0.5);
+
+  const sideWidth = clamp(splitRatio * splitRoom, CHAT_MIN, splitMax);
+
+  if (!convId) return null;
+  return (
+    <div ref={containerRef} className="flex flex-1 min-h-0">
+      {poppedOut.includes(convId) ? (
+        <PoppedOutPlaceholder conversationId={convId} />
+      ) : (
+        <ConversationColumn conversationId={convId} />
+      )}
+      {showSplit && splitId && (
+        <ResizableDivider
+          panel={splitPanel}
+          width={sideWidth}
+          onChange={(w) => setSplitRatio(toRatio(w))}
+          onCommit={(w) => void saveSettings({ ...settings, splitPaneRatio: toRatio(w) })}
+          resetWidth={splitRoom / 2}
+          minWidth={CHAT_MIN}
+          maxWidth={splitMax}
+          side="right"
+        />
+      )}
+      {showSplit && splitId && (
+        <div
+          ref={splitPanel}
+          // Always an explicit width, so a drag (which writes style.width
+          // straight onto this panel) moves it from the first frame.
+          style={{ width: sideWidth }}
+          className="flex flex-col flex-shrink-0 min-w-0 min-h-0 border-l border-card-strong"
+        >
+          <SplitBar conversationId={splitId} />
+          {poppedOut.includes(splitId) ? (
+            <PoppedOutPlaceholder conversationId={splitId} />
+          ) : (
+            <ConversationColumn conversationId={splitId} />
+          )}
+        </div>
+      )}
+      {editorVisible && (
+        <>
+          <ResizableDivider
+            width={width}
+            onChange={setWidth}
+            onCommit={(w) => void saveSettings({ ...settings, editorPaneWidth: w })}
+            minWidth={EDITOR_MIN}
+            maxWidth={editorMax}
+            side="right"
+          />
+          <div
+            style={{ width }}
+            className="flex-shrink-0 h-full border-l border-card overflow-hidden"
+          >
+            {explorerOpen ? <ExplorerPane /> : <FileEditorPane />}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/// One conversation's chat column: header, transcript, changes and composer.
+/// The selected conversation, the one beside it, and a conversation window
+/// each render one.
+export function ConversationColumn({ conversationId: convId }: { conversationId: UUID }) {
   const ollamaServerStatus = useStore((s) => s.ollamaServerStatus);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const backendHealth = useStore((s) => s.backendHealth);
@@ -124,27 +227,6 @@ export function ConversationPane() {
     if (!convId) return;
     void refreshGitStatus(convId);
   }, [convId, editCount, completedAt, refreshGitStatus]);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerWidth, setContainerWidth] = useState(() => window.innerWidth);
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setContainerWidth(entry.contentRect.width);
-    });
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, []);
-  const editorMax = Math.max(EDITOR_MIN + 40, containerWidth - CHAT_MIN);
-  const [width, setWidth] = useState(
-    () => clamp(settings.editorPaneWidth ?? 540, EDITOR_MIN, editorMax),
-  );
-  useEffect(() => {
-    setWidth((w) => clamp(settings.editorPaneWidth ?? w, EDITOR_MIN, editorMax));
-  }, [settings.editorPaneWidth, editorMax]);
-
-  if (!convId) return null;
-  const explorerOpen = !!explorerRootPath;
-  const editorVisible = explorerOpen || (!!openFilePath && !subagentDrawerOpen);
   const convBackend = conv?.primaryBackend;
   const isOllamaConv = convBackend === 'ollama';
   // Sends start the server on their own, so a stopped server needs no
@@ -155,8 +237,7 @@ export function ConversationPane() {
     convBackend !== 'ollama' &&
     backendHealth[convBackend]?.kind === 'unauthenticated';
   return (
-    <div ref={containerRef} className="flex flex-1 min-h-0">
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0">
         <ConversationHeader conversationId={convId} />
         {showOllamaWarning && (
           <OllamaServerDownBanner
@@ -200,24 +281,67 @@ export function ConversationPane() {
           <StatsFooter conversationId={convId} />
         </div>
       </div>
-      {editorVisible && (
-        <>
-          <ResizableDivider
-            width={width}
-            onChange={setWidth}
-            onCommit={(w) => void saveSettings({ ...settings, editorPaneWidth: w })}
-            minWidth={EDITOR_MIN}
-            maxWidth={editorMax}
-            side="right"
-          />
-          <div
-            style={{ width }}
-            className="flex-shrink-0 h-full border-l border-card overflow-hidden"
-          >
-            {explorerOpen ? <ExplorerPane /> : <FileEditorPane />}
-          </div>
-        </>
-      )}
+  );
+}
+
+/// Above the conversation shown beside the selected one: what it is, and
+/// the ways out — swap it to the main side, give it a window, or close it.
+function SplitBar({ conversationId }: { conversationId: UUID }) {
+  const swapSplit = useStore((s) => s.swapSplit);
+  const closeSplit = useStore((s) => s.closeSplit);
+  const popOut = useStore((s) => s.popOutConversation);
+  return (
+    <div className="flex h-7 flex-shrink-0 items-center gap-1 border-b border-card bg-surface-muted px-2 text-[11px] text-ink-faint">
+      <span className="flex-1 truncate">Beside</span>
+      <button
+        onClick={swapSplit}
+        title="Make this the main conversation"
+        className="rounded px-1.5 py-0.5 hover:bg-card-strong hover:text-ink"
+      >
+        ⇄ Swap
+      </button>
+      <button
+        onClick={() => void popOut(conversationId)}
+        title="Open in a window of its own"
+        className="rounded px-1.5 py-0.5 hover:bg-card-strong hover:text-ink"
+      >
+        ↗ Window
+      </button>
+      <button
+        onClick={closeSplit}
+        aria-label="Close the side view"
+        title="Close the side view (the tab stays open)"
+        className="flex h-5 w-5 items-center justify-center rounded hover:bg-card-strong hover:text-ink"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+/// Where a conversation would be when it's out in a window of its own: one
+/// composer per conversation, so this side shows where it went instead.
+function PoppedOutPlaceholder({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  const popOut = useStore((s) => s.popOutConversation);
+  const popIn = useStore((s) => s.popInConversation);
+  return (
+    <div className="flex flex-1 min-w-0 flex-col items-center justify-center gap-3 p-6 text-center">
+      <div className="text-sm text-ink">{conv?.name ?? 'This conversation'} is open in its own window.</div>
+      <div className="flex gap-2 text-xs">
+        <button
+          onClick={() => void popOut(conversationId)}
+          className="rounded border border-card-strong px-2.5 py-1 text-ink-muted hover:bg-card-strong hover:text-ink"
+        >
+          Show its window
+        </button>
+        <button
+          onClick={() => popIn(conversationId)}
+          className="rounded border border-card-strong px-2.5 py-1 text-ink-muted hover:bg-card-strong hover:text-ink"
+        >
+          Put it back here
+        </button>
+      </div>
     </div>
   );
 }

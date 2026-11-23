@@ -24,6 +24,7 @@ import {
   MarketplaceSkill,
   McpCatalogItem,
   PersistedFileTabs,
+  PersistedConversationTabs,
   Project,
   SkillTarget,
   StreamEvent,
@@ -89,7 +90,9 @@ import {
   foldContextUsage,
 } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
-import { isPopoutWindow } from './popoutWindow';
+import { isPopoutWindow, popoutConversationId } from './popoutWindow';
+import { closeTab, cycleTab, moveTab, openTab, parseTabKey, pruneTabs, runTabKey } from './conversationTabs';
+import { applyConversationChanges, diffConversations, indexConversations } from './conversationSync';
 import {
   conversationTranscriptLevel,
   defaultTranscriptLevel,
@@ -235,6 +238,15 @@ interface StoreState {
 
   // Session UI state
   selectedConversationId: UUID | null;
+  /// Conversations open as tabs above the chat, in strip order. Opening a
+  /// conversation from anywhere adds it; see conversationTabs.ts.
+  conversationTabs: UUID[];
+  /// The conversation shown beside the selected one, or null when the view
+  /// isn't split. Never the selected conversation itself.
+  splitConversationId: UUID | null;
+  /// Conversations currently in windows of their own. The main window shows
+  /// a placeholder for these rather than a second live composer.
+  poppedOutConversationIds: UUID[];
   focusedProjectId: UUID | null;
   focusedWorkspaceId: UUID | null;
   detailMode: DetailMode;
@@ -330,6 +342,21 @@ interface StoreState {
   // Actions
   init(): Promise<void>;
   selectConversation(id: UUID | null): void;
+  /// Tab actions take a tab key: a conversation id, or `run:<id>` for a
+  /// flow run (see conversationTabs.ts).
+  activateTab(key: string): void;
+  closeConversationTab(key: string): void;
+  closeOtherConversationTabs(key: string): void;
+  moveConversationTab(key: string, before: string | null): void;
+  cycleConversationTab(step: 1 | -1): void;
+  /// Show `id` beside the selected conversation. Opening the selected one
+  /// itself is a no-op.
+  openConversationToSide(id: UUID): void;
+  closeSplit(): void;
+  /// Swap the two sides: the conversation beside becomes the selected one.
+  swapSplit(): void;
+  popOutConversation(id: UUID): Promise<void>;
+  popInConversation(id: UUID): void;
   startNewConversation(projectId: UUID): void;
   startNewConversationInWorkspace(workspaceId: UUID): void;
   setDetailMode(mode: DetailMode): void;
@@ -1302,6 +1329,9 @@ export const useStore = create<StoreState>((set, get) => ({
   colosseums: [],
   settings: { ...DEFAULT_SETTINGS },
   selectedConversationId: null,
+  conversationTabs: [],
+  splitConversationId: null,
+  poppedOutConversationIds: [],
   focusedProjectId: null,
   focusedWorkspaceId: null,
   ...uiSliceInitialState,
@@ -1369,7 +1399,14 @@ export const useStore = create<StoreState>((set, get) => ({
       // `tabs` for whichever scope this view resolves to, right after the
       // fields above land.
       fileTabsByScope: hydrateFileTabs(state.fileTabs),
+      ...restoreConversationTabs(state),
     });
+    // A reloaded main window may have conversations already out in windows
+    // of their own; it must show their placeholders, not a second composer.
+    void window.overcli
+      .invoke('conversation:poppedOutList')
+      .then((ids) => set({ poppedOutConversationIds: ids }))
+      .catch(() => {});
 
     // The restored conversation's transcript is the one thing the user is
     // actually looking at, so it goes out before every other startup chore.
@@ -1530,6 +1567,11 @@ export const useStore = create<StoreState>((set, get) => ({
       !!touched && Date.now() - (touched.lastActiveAt ?? 0) > 60 * 60 * 1000;
     set((s) => ({
       selectedConversationId: id,
+      conversationTabs: id ? openTab(s.conversationTabs, id, currentTabKey()) : s.conversationTabs,
+      // Picking the conversation that was beside the selected one swaps the
+      // two sides rather than showing the same chat twice.
+      splitConversationId:
+        id && id === s.splitConversationId ? s.selectedConversationId : s.splitConversationId,
       detailMode: id ? 'conversation' : s.detailMode,
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
@@ -1555,7 +1597,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (bumpActive && id) {
       mutateConversation(set, get, id, (c) => ({ ...c, lastActiveAt: Date.now() }));
     }
-    window.overcli.invoke('store:saveSelection', id);
+    persistSelection(id);
     if (bumpProject || bumpActive) {
       void saveConversationState(get);
     }
@@ -1564,6 +1606,98 @@ export const useStore = create<StoreState>((set, get) => ({
       const completedAt = getRunner(id)?.completedAt;
       if (completedAt) scheduleClearCompletion(id, completedAt);
     }
+  },
+
+  activateTab(key) {
+    const tab = parseTabKey(key);
+    if (tab.kind === 'conversation') {
+      get().selectConversation(tab.id);
+      return;
+    }
+    useFlowsStore.getState().setActiveRun(tab.id);
+    get().setDetailMode('flows');
+  },
+
+  closeConversationTab(key) {
+    const s = get();
+    const active = currentTabKey();
+    const next = closeTab(s.conversationTabs, key, active);
+    set({
+      conversationTabs: next.tabs,
+      splitConversationId: s.splitConversationId === key ? null : s.splitConversationId,
+    });
+    if (next.selected === active) return;
+    if (next.selected) {
+      get().activateTab(next.selected);
+      return;
+    }
+    // The last tab closed: back to the empty view of whatever it was.
+    if (parseTabKey(key).kind === 'run') {
+      useFlowsStore.getState().setActiveRun(null);
+    } else {
+      set({ selectedConversationId: null });
+      persistSelection(null);
+    }
+  },
+
+  closeOtherConversationTabs(key) {
+    set({
+      conversationTabs: get().conversationTabs.filter((t) => t === key),
+      splitConversationId: null,
+    });
+    if (currentTabKey() !== key) get().activateTab(key);
+  },
+
+  moveConversationTab(id, before) {
+    set((s) => ({ conversationTabs: moveTab(s.conversationTabs, id, before) }));
+  },
+
+  cycleConversationTab(step) {
+    const active = currentTabKey();
+    const next = cycleTab(get().conversationTabs, active, step);
+    if (next && next !== active) get().activateTab(next);
+  },
+
+  openConversationToSide(id) {
+    const s = get();
+    if (!s.selectedConversationId) {
+      get().selectConversation(id);
+      return;
+    }
+    if (id === s.selectedConversationId) return;
+    set((st) => ({
+      splitConversationId: id,
+      conversationTabs: openTab(st.conversationTabs, id, st.selectedConversationId),
+    }));
+    void get().loadHistoryIfNeeded(id);
+  },
+
+  closeSplit() {
+    set({ splitConversationId: null });
+  },
+
+  swapSplit() {
+    const side = get().splitConversationId;
+    if (side) get().selectConversation(side);
+  },
+
+  async popOutConversation(id) {
+    const res = await window.overcli.invoke('conversation:popOut', { id });
+    if (!res.ok) {
+      useRunnersStore.getState().patchRunner(id, { errorMessage: res.error });
+      return;
+    }
+    // Its own window now: no point keeping it beside the selection too.
+    set((s) => ({
+      splitConversationId: s.splitConversationId === id ? null : s.splitConversationId,
+      poppedOutConversationIds: s.poppedOutConversationIds.includes(id)
+        ? s.poppedOutConversationIds
+        : [...s.poppedOutConversationIds, id],
+    }));
+  },
+
+  popInConversation(id) {
+    void window.overcli.invoke('conversation:popIn', { id });
   },
 
   startNewConversation(projectId) {
@@ -1580,7 +1714,7 @@ export const useStore = create<StoreState>((set, get) => ({
       explorerRootPath: null,
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
-    window.overcli.invoke('store:saveSelection', null);
+    persistSelection(null);
   },
 
   startNewConversationInWorkspace(workspaceId) {
@@ -1592,7 +1726,7 @@ export const useStore = create<StoreState>((set, get) => ({
       explorerRootPath: null,
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
-    window.overcli.invoke('store:saveSelection', null);
+    persistSelection(null);
   },
 
   // setDetailMode, openSheet, openFile/setOpenFileMode/closeFile,
@@ -1631,7 +1765,7 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedProjectId: null,
       focusedWorkspaceId: null,
     });
-    window.overcli.invoke('store:saveSelection', null);
+    persistSelection(null);
   },
 
   closeExplorer() {
@@ -1694,21 +1828,27 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async saveProjects() {
+    if (popoutConversationId) return syncFromConversationWindow(get);
     await coalescedSave('projects', () =>
       window.overcli.invoke('store:saveProjects', get().projects),
     );
   },
   async saveWorkspaces() {
+    if (popoutConversationId) return syncFromConversationWindow(get);
     await coalescedSave('workspaces', () =>
       window.overcli.invoke('store:saveWorkspaces', get().workspaces),
     );
   },
   async saveColosseums() {
+    if (isPopoutWindow) return;
     await window.overcli.invoke('store:saveColosseums', get().colosseums);
   },
   async saveSettings(next) {
     const prev = get().settings;
     set({ settings: next });
+    // A popped-out window holds a copy of the settings, not the app's; the
+    // main window's next save would write its own copy straight back.
+    if (isPopoutWindow) return;
     await window.overcli.invoke('store:saveSettings', next);
     // Only re-probe when something that can change a backend's health
     // actually moved. Health probing executes every installed CLI, and this
@@ -4368,6 +4508,34 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   ingestMainEvent(event) {
+    if (event.type === 'conversationPoppedOut') {
+      set((s) => ({
+        poppedOutConversationIds: event.out
+          ? s.poppedOutConversationIds.includes(event.id)
+            ? s.poppedOutConversationIds
+            : [...s.poppedOutConversationIds, event.id]
+          : s.poppedOutConversationIds.filter((id) => id !== event.id),
+      }));
+      return;
+    }
+    if (event.type === 'conversationChangesFromWindow') {
+      // Main window only: a conversation window's edits, to apply and save.
+      if (isPopoutWindow) return;
+      const s = get();
+      const out = applyConversationChanges(s.projects, s.workspaces, event.changes);
+      if (!out.changed) return;
+      set({ projects: out.projects, workspaces: out.workspaces });
+      void saveConversationState(get);
+      return;
+    }
+    if (event.type === 'conversationSynced') {
+      // Conversation window only: its conversation as the main window saved
+      // it. That copy wins, and becomes what the next diff is taken against.
+      if (event.conversation.id !== popoutConversationId) return;
+      mutateConversation(set, get, event.conversation.id, () => event.conversation);
+      noteSyncedConversation(event.conversation);
+      return;
+    }
     if (event.type === 'uiScaleChanged') {
       // Main already saved it; only the in-memory copy needs to follow.
       set((s) => ({ settings: { ...s.settings, uiScale: event.uiScale } }));
@@ -4548,7 +4716,10 @@ export const useStore = create<StoreState>((set, get) => ({
       if (justCompleted && get().selectedConversationId === event.conversationId) {
         scheduleClearCompletion(event.conversationId, completedAt as number);
       }
-      if (justCompleted) {
+      // The main window does the bookkeeping for a finished turn (it hears
+      // the same events); a conversation window doing it too would notify,
+      // retitle and record the branch twice.
+      if (justCompleted && !isPopoutWindow) {
         // Bump lastActiveAt so the sidebar's "Active" 10-min window
         // restarts at finish time, not at the original prompt — long
         // runs were dropping off the list the instant they finished.
@@ -4677,6 +4848,10 @@ export const useStore = create<StoreState>((set, get) => ({
         });
       });
     } else if (event.type === 'flowRunDeleted') {
+      const runKey = runTabKey(event.runId);
+      if (get().conversationTabs.includes(runKey)) {
+        set((s) => ({ conversationTabs: s.conversationTabs.filter((t) => t !== runKey) }));
+      }
       void import('./flowsStore').then(({ useFlowsStore }) => {
         useFlowsStore.getState().removeRun(event.runId);
       });
@@ -4955,6 +5130,117 @@ export function serializeFileTabs(s: StoreState): PersistedFileTabs {
     }
   }
   return out;
+}
+
+// Persist the conversation tab strip and the split. Same reasoning as the
+// file tabs below; only the main window owns them.
+if (typeof window !== 'undefined' && !isPopoutWindow) {
+  useStore.subscribe((s, prev) => {
+    if (s.conversationTabs === prev.conversationTabs && s.splitConversationId === prev.splitConversationId) {
+      return;
+    }
+    void coalescedSave('conversationTabs', () => {
+      const { conversationTabs, splitConversationId } = useStore.getState();
+      return window.overcli.invoke('store:saveConversationTabs', {
+        ids: conversationTabs,
+        ...(splitConversationId ? { splitId: splitConversationId } : {}),
+      });
+    });
+  });
+}
+
+// Close the tab (and the side view) of a conversation that's gone — removed,
+// an agent torn down, its project dropped. One subscription instead of a line
+// in each of those paths, so a new way to delete can't leave a dead tab.
+if (typeof window !== 'undefined' && !isPopoutWindow) {
+  useStore.subscribe((s, prev) => {
+    if (s.projects === prev.projects && s.workspaces === prev.workspaces) return;
+    if (s.conversationTabs.length === 0 && !s.splitConversationId) return;
+    const known = new Set<UUID>();
+    for (const p of s.projects) for (const c of p.conversations) known.add(c.id);
+    for (const w of s.workspaces) for (const c of w.conversations ?? []) known.add(c.id);
+    // Run tabs leave on `flowRunDeleted`; runs load separately from this tree.
+    const tabs = s.conversationTabs.filter((id) => parseTabKey(id).kind === 'run' || known.has(id));
+    const split = s.splitConversationId && known.has(s.splitConversationId) ? s.splitConversationId : null;
+    if (tabs.length !== s.conversationTabs.length || split !== s.splitConversationId) {
+      useStore.setState({ conversationTabs: tabs, splitConversationId: split });
+    }
+  });
+}
+
+/// The tab on screen: the open flow run while in Flows, else the selected
+/// conversation.
+export function currentTabKey(): string | null {
+  const s = useStore.getState();
+  const runId = useFlowsStore.getState().activeRunId;
+  if (s.detailMode === 'flows' && runId) return runTabKey(runId);
+  return s.selectedConversationId;
+}
+
+// Opening a flow run from anywhere — the sidebar, the palette, a launch —
+// puts it in the tab strip beside the tab you were on. A worker's runs live
+// on its desk, not in Flows, so they stay out.
+if (typeof window !== 'undefined' && !isPopoutWindow) {
+  useFlowsStore.subscribe((f, prev) => {
+    const id = f.activeRunId;
+    if (!id || id === prev.activeRunId) return;
+    if (f.runs[id]?.workerId) return;
+    const s = useStore.getState();
+    const after = s.detailMode === 'flows' && prev.activeRunId ? runTabKey(prev.activeRunId) : s.selectedConversationId;
+    const tabs = openTab(s.conversationTabs, runTabKey(id), after);
+    if (tabs !== s.conversationTabs) useStore.setState({ conversationTabs: tabs });
+  });
+}
+
+/// Restore the tab strip and split from disk, dropping conversations that
+/// are gone. The restored selection is always a tab, and never also the
+/// conversation beside it.
+function restoreConversationTabs(state: {
+  projects: Project[];
+  workspaces: Workspace[];
+  selectedConversationId?: UUID;
+  conversationTabs?: PersistedConversationTabs;
+}): Pick<StoreState, 'conversationTabs' | 'splitConversationId'> {
+  const known = indexConversations(state.projects, state.workspaces);
+  // Runs aren't loaded yet at this point; a run tab that has since been
+  // deleted shows nothing and goes when closed.
+  const exists = (id: UUID) => parseTabKey(id).kind === 'run' || known.has(id);
+  let tabs = pruneTabs(state.conversationTabs?.ids ?? [], exists);
+  const selected = state.selectedConversationId;
+  if (selected && exists(selected)) tabs = openTab(tabs, selected, null);
+  const split = state.conversationTabs?.splitId;
+  return {
+    conversationTabs: tabs,
+    splitConversationId: split && split !== selected && exists(split) ? split : null,
+  };
+}
+
+function persistSelection(id: UUID | null): void {
+  if (isPopoutWindow) return;
+  void window.overcli.invoke('store:saveSelection', id);
+}
+
+/// What a conversation window last agreed with main, per conversation. Its
+/// saves send only what changed since (see conversationSync.ts).
+let syncBaseline = new Map<UUID, Conversation>();
+
+/// Take the tree as it stands as agreed with main — on a conversation
+/// window's boot, and after each sync.
+export function setConversationSyncBaseline(projects: Project[], workspaces: Workspace[]): void {
+  syncBaseline = new Map([...indexConversations(projects, workspaces)].map(([id, v]) => [id, v.conversation]));
+}
+
+function noteSyncedConversation(conversation: Conversation): void {
+  // The object now in the store, so the next diff sees it as unchanged.
+  const live = findConversation(useStore.getState(), conversation.id);
+  if (live) syncBaseline.set(conversation.id, live);
+}
+
+async function syncFromConversationWindow(get: () => StoreState): Promise<void> {
+  const { projects, workspaces } = get();
+  const changes = diffConversations(syncBaseline, projects, workspaces);
+  setConversationSyncBaseline(projects, workspaces);
+  if (changes.length) await window.overcli.invoke('conversation:syncFromWindow', { changes });
 }
 
 // Persist open tabs whenever they change. A subscription rather than a call
