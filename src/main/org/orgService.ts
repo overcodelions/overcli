@@ -50,6 +50,7 @@ import {
   type OrgPolicy,
   type OrgRole, inAudience, isEmptyAudience, type Audience } from '../../shared/org/policy';
 import { isEphemeralWorker, sensitiveToolsHeld } from '../../shared/org/ephemeral';
+import { movedOnFrom, stalledRuns } from '../../shared/org/insights';
 import { buildThreads, nowLine, summarize, type WorkThread } from './workThreads';
 import { LANDED_ARTIFACT, pullRequestsIn, pullRequestsOpened, type LandedPullRequest } from './landBranches';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
@@ -223,6 +224,10 @@ export interface WorkerSummary {
   /// The last 30 days of its runs that ended: how many, how many failed, the
   /// 30 days before for a trend, and how its newest one went.
   last30: { jobs: number; failed: number; prior: number; lastRun?: { at: number; outcome: 'done' | 'failed' | 'stopped' } };
+  /// Runs paused on a failed step, waiting for someone to resume or stop
+  /// them. `newest` is the one the badge opens. `movedOn`: a later run
+  /// finished well, so the worker is not stuck, but the run needs a look.
+  stalled?: { count: number; newest: { runId: UUID; at: number }; movedOn: boolean };
   waiting: number;
   /// Set when it holds a tool the org marked as returning customer data
   /// (Setup → Data protection): it keeps no content past a conversation,
@@ -1621,6 +1626,7 @@ export class OrgService {
           spentThisMonthUSD: spent.get(w.id) ?? 0,
           month: this.monthOf(runsBy.get(w.id) ?? [], prsBy.get(w.id) ?? []),
           last30: this.last30Of(runsBy.get(w.id) ?? []),
+          ...this.stalledOf(runsBy.get(w.id) ?? []),
           waiting: waiting.get(w.id) ?? 0,
           ...(isEphemeralWorker(w, policy) ? { ephemeral: { tools: sensitiveToolsHeld(w, policy) } } : {}),
           youManage: canManage(policy, roster, w.id, caller),
@@ -5640,6 +5646,14 @@ export class OrgService {
   }
 
   /// A worker's month so far, from its runs: started, failed, PRs opened.
+  /// Its stalled runs (`WorkerSummary.stalled`), when it has any.
+  private stalledOf(runs: FlowRun[]): Pick<WorkerSummary, 'stalled'> {
+    const stalled = stalledRuns(runs);
+    if (!stalled.length) return {};
+    const newest = stalled[0];
+    return { stalled: { count: stalled.length, newest: { runId: newest.id, at: OrgService.runEndedAt(newest) }, movedOn: movedOnFrom(newest, runs) } };
+  }
+
   private monthOf(runs: FlowRun[], prs: ReadonlyArray<{ at: number; opened: number }>): WorkerSummary['month'] {
     const start = new Date(this.now());
     start.setDate(1);
@@ -5648,7 +5662,8 @@ export class OrgService {
     const ended = mine.filter((r) => r.state.kind === 'done' || r.state.kind === 'aborted');
     return {
       runs: mine.length,
-      failed: ended.filter((r) => OrgService.runOutcome(r) === 'failed').length,
+      // A run paused on a failed step has not ended, but it failed.
+      failed: ended.filter((r) => OrgService.runOutcome(r) === 'failed').length + stalledRuns(mine).length,
       pullRequests: prs.reduce((n, p) => n + (p.at >= start.getTime() ? p.opened : 0), 0),
     };
   }
@@ -5660,10 +5675,13 @@ export class OrgService {
     const DAY = 86_400_000;
     const ended = runs.filter((r) => r.state.kind === 'done' || r.state.kind === 'aborted');
     const recent = ended.filter((r) => now - r.createdAt <= 30 * DAY);
+    // A run paused on a failed step has not ended, but it failed: counted,
+    // or the rate says 100% beside a worker that is stuck.
+    const stalled = stalledRuns(runs).filter((r) => now - r.createdAt <= 30 * DAY).length;
     const newest = ended.reduce<FlowRun | undefined>((a, r) => (!a || r.createdAt > a.createdAt ? r : a), undefined);
     return {
-      jobs: recent.length,
-      failed: recent.filter((r) => OrgService.runOutcome(r) === 'failed').length,
+      jobs: recent.length + stalled,
+      failed: recent.filter((r) => OrgService.runOutcome(r) === 'failed').length + stalled,
       prior: ended.filter((r) => now - r.createdAt > 30 * DAY && now - r.createdAt <= 60 * DAY).length,
       ...(newest ? { lastRun: { at: OrgService.runEndedAt(newest), outcome: OrgService.runOutcome(newest) } } : {}),
     };

@@ -36,7 +36,7 @@ const batch = (id: string, origin: Record<string, unknown>, statuses: string[]) 
   items: statuses.map((status, i) => ({ status, candidate: { id: `${id}-${i}`, title: `Item ${i}` } })),
 });
 
-function harness(opts: { shared?: string[]; sensitive?: string[] } = {}) {
+function harness(opts: { shared?: string[]; sensitive?: string[]; runs?: FlowRun[] } = {}) {
   const roster: Worker[] = [
     worker('ana', {
       manager: { name: PAT, slackUserId: PAT },
@@ -55,6 +55,7 @@ function harness(opts: { shared?: string[]; sensitive?: string[] } = {}) {
     run('r3', 'cy', { kind: 'paused', reason: 'failure', nextStepId: 'a' }),
     run('r4', 'bo', { kind: 'paused', reason: 'externalAction', nextStepId: 'a' }),
     run('r5', undefined, { kind: 'paused', reason: 'needsInput', nextStepId: 'a' }),
+    ...(opts.runs ?? []),
   ];
   const batches = [
     batch('b1', { kind: 'worker', workerId: 'cy', workerName: 'Cy', task: 'shift' }, ['proposed', 'queued']),
@@ -140,6 +141,31 @@ describe('a worker that keeps nothing past a conversation', () => {
   it('is every worker when a shared tool is marked, and none when nothing is', () => {
     expect(harness({ sensitive: ['acme-drive'] }).svc.listWorkers(admin).every((w) => w.ephemeral)).toBe(true);
     expect(harness().svc.listWorkers(admin).some((w) => w.ephemeral)).toBe(false);
+  });
+});
+
+describe('a run stopped on a failed step', () => {
+  it('makes the worker stuck, and names the run the badge opens', () => {
+    const cy = harness().svc.listWorkers(admin).find((w) => w.id === 'cy')!;
+    expect(cy.state).toBe('stuck');
+    expect(cy.stalled).toMatchObject({ count: 1, newest: { runId: 'r3' }, movedOn: false });
+  });
+
+  it('only needs a look once a later run finished well, and counts as failed either way', () => {
+    const now = Date.now();
+    const recent = (id: string, ago: number, state: Record<string, unknown>) => ({ ...run(id, 'cy', state), createdAt: now - ago }) as FlowRun;
+    const h = harness({
+      runs: [recent('r6', 30 * 60_000, { kind: 'paused', reason: 'failure', nextStepId: 'a' }), recent('r7', 10 * 60_000, { kind: 'done', success: true })],
+    });
+    const cy = h.svc.listWorkers(admin).find((w) => w.id === 'cy')!;
+    expect(cy.state).not.toBe('stuck');
+    expect(cy.stalled).toMatchObject({ count: 2, newest: { runId: 'r6' }, movedOn: true });
+    expect(cy.last30).toMatchObject({ jobs: 2, failed: 1 });
+    expect(cy.month.failed).toBe(1);
+  });
+
+  it('is not there for a worker with nothing stalled', () => {
+    expect(harness().svc.listWorkers(admin).find((w) => w.id === 'dee')!.stalled).toBeUndefined();
   });
 });
 

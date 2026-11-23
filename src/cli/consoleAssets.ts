@@ -5007,7 +5007,7 @@ export const CONSOLE_JS = String.raw`
     if (missing.length) return { cls: 'bad', text: 'Can’t reach ' + missing.join(', ') + (w.waiting ? ' · ' + w.waiting + ' waiting on you' : '') };
     if (w.waiting) return { cls: 'waiting', text: 'Waiting on you: ' + plural(w.waiting, 'thing', 'things') };
     if (w.state === 'working') return { cls: 'working', text: 'Working' };
-    if (w.state === 'stuck') return { cls: 'stuck', text: 'Stuck: its last run failed' };
+    if (w.state === 'stuck') return { cls: 'stuck', text: 'Stuck: a run stopped on a failed step' + (w.stalled ? ' ' + ago(w.stalled.newest.at) : '') };
     return { cls: '', text: 'Idle · ' + (w.nextRunAt ? 'next run ' + when(w.nextRunAt) : 'works when asked') };
   }
 
@@ -5026,8 +5026,24 @@ export const CONSOLE_JS = String.raw`
   /// idle and its newest run failed, that, in red.
   function workerHeadBadge(w) {
     var lr = w.last30 && w.last30.lastRun;
-    if (w.enabled && !w.waiting && w.state === 'idle' && workerStatus(w).cls !== 'bad' && lr && lr.outcome === 'failed') return h('span', { class: 'badge bad', title: 'Its last run failed ' + ago(lr.at), text: 'Last run failed' });
-    return workerBadge(w);
+    var st = w.stalled;
+    var openStalled = function () { openRun(st.newest.runId); };
+    // Stuck: the badge opens the run that stopped, one click from resuming
+    // or stopping it.
+    if (st && w.state === 'stuck') {
+      return h('button', { type: 'button', style: 'padding:0;border:0;background:none;cursor:pointer;font:inherit', title: 'A run stopped on a failed step ' + ago(st.newest.at) + '. Open it to resume or stop it.', 'aria-label': 'Stuck: open the run that stopped', onclick: openStalled }, workerBadge(w));
+    }
+    var base = w.enabled && !w.waiting && w.state === 'idle' && workerStatus(w).cls !== 'bad' && lr && lr.outcome === 'failed'
+      ? h('span', { class: 'badge bad', title: 'Its last run failed ' + ago(lr.at), text: 'Last run failed' })
+      : workerBadge(w);
+    if (!st || !st.movedOn) return base;
+    // Later runs went fine, so it isn't stuck, but the stalled run still
+    // waits for someone to resume or stop it.
+    var many = st.count > 1;
+    var look = h('button', { type: 'button', class: 'badge waiting', style: 'cursor:pointer;border:0;font:inherit',
+      title: (many ? st.count + ' runs' : 'A run') + ' stopped on a failed step (the latest ' + ago(st.newest.at) + ') and ' + (many ? 'are' : 'is') + ' waiting for someone to resume or stop ' + (many ? 'them' : 'it') + '. Later runs went fine.',
+      onclick: openStalled }, many ? st.count + ' runs need a look' : '1 run needs a look');
+    return h('span', { class: 'row', style: 'gap:6px;display:inline-flex;align-items:center' }, base, look);
   }
 
   /// A worker's state as a badge: the class says how loudly, the text what.

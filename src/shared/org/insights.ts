@@ -79,15 +79,37 @@ export function projectMonthEnd(spent: number, now: Date): number {
 
 export type WorkerState = 'working' | 'waiting' | 'paused' | 'stuck' | 'idle';
 
+/// Runs paused on a failed step (retries used up), waiting for someone to
+/// resume or stop them. Nothing else ends them. Newest first.
+export function stalledRuns(runs: readonly FlowRun[]): FlowRun[] {
+  return runs
+    .filter((r) => r.state.kind === 'paused' && r.state.reason === 'failure')
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/// Whether a run started after this stalled one has finished well: the
+/// worker has moved on, so the stalled run needs a look but the worker
+/// is not stuck.
+export function movedOnFrom(stalled: FlowRun, runs: readonly FlowRun[]): boolean {
+  return runs.some(
+    (r) => r.workerId === stalled.workerId && r.createdAt > stalled.createdAt && r.state.kind === 'done' && r.state.success,
+  );
+}
+
 /// What a worker is doing now, from its runs. Waiting on a person outranks
 /// working: it is the one state somebody can do something about.
+///
+/// Stuck is a stalled run that is still the latest word: once a later run
+/// finishes well, the worker isn't stuck, however long the old run waits.
+/// It still needs a look, which the summary says (`WorkerSummary.stalled`).
 export function workerState(worker: Pick<Worker, 'id' | 'enabled'>, runs: readonly FlowRun[]): WorkerState {
   if (!worker.enabled) return 'paused';
   const mine = runs.filter((r) => r.workerId === worker.id);
   if (mine.some((r) => r.state.kind === 'paused' && (r.state.reason === 'needsInput' || r.state.reason === 'externalAction'))) {
     return 'waiting';
   }
-  if (mine.some((r) => r.state.kind === 'paused' && r.state.reason === 'failure')) return 'stuck';
+  const stalled = stalledRuns(mine);
+  if (stalled.length && !movedOnFrom(stalled[0], mine)) return 'stuck';
   if (mine.some((r) => r.state.kind === 'running')) return 'working';
   return 'idle';
 }
