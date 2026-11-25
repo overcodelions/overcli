@@ -4,6 +4,13 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.27.4] - 2026-11-25
+
+### Fixed
+- **Pull request wakes say where each pull request merges and who opened it.** A worker woken for a changed pull request is told its target branch (the repo's default branch when the host gives none) and its author, so a worker scoped to one branch or to certain authors acts instead of skipping it. (#1265)
+- **An imported worker never takes a name already in use.** A name a worker here has, or had before a rename, gets a free one, and the worker's job and tagline follow. The editor says so, and the name a hire settles on is the one that lands. (#1265)
+- **A long Slack question no longer hides its thread.** The console's Slack pane shows the question in at most three lines, with the full text on hover. (#1265)
+
 ## [0.27.3] - 2026-11-24
 
 ### Added
@@ -1540,7 +1547,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.3...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.4...HEAD
+[0.27.4]: https://github.com/overcodelions/overcli/compare/v0.27.3...v0.27.4
 [0.27.3]: https://github.com/overcodelions/overcli/compare/v0.27.2...v0.27.3
 [0.27.2]: https://github.com/overcodelions/overcli/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/overcodelions/overcli/compare/v0.27.0...v0.27.1
