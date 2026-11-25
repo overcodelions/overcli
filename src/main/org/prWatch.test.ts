@@ -339,7 +339,12 @@ describe('the hosts', () => {
 
 describe('wakeText', () => {
   it('names each pull request, its link and what changed', () => {
-    expect(wakeText([{ repo: 'acme-web', pr: pr(), what: ['its build failed'] }])).toContain('(https://bitbucket.org/acme/acme-web/pull-requests/42), branch feature/ACME-9-sort: its build failed');
+    expect(wakeText([{ repo: 'acme-web', pr: pr(), what: ['its build failed'] }])).toContain('(https://bitbucket.org/acme/acme-web/pull-requests/42), branch feature/ACME-9-sort, opened by Dana Reviewer / dana: its build failed');
+  });
+
+  it('says which branch it merges into: its target, else the default branch it was gathered with', () => {
+    expect(wakeText([{ repo: 'acme-web', pr: pr({ target: 'release/2.0' }), what: ['its build failed'], into: 'master' }])).toContain('branch feature/ACME-9-sort into release/2.0, opened by Dana Reviewer / dana:');
+    expect(wakeText([{ repo: 'acme-web', pr: pr(), what: ['its build failed'], into: 'master' }])).toContain('branch feature/ACME-9-sort into master, opened by');
   });
 });
 

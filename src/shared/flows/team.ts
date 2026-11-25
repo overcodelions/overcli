@@ -1506,6 +1506,22 @@ export function renameIfTaken<T extends { name: string; jobDescription: string; 
   const name =
     SPARE_NAMES.find((n) => !used.has(n.toLowerCase())) ??
     Array.from({ length: 100 }, (_, i) => `${draft.name} ${i + 2}`).find((n) => !used.has(n.toLowerCase()))!;
+  return renameAs(draft, name);
+}
+
+/// Every name a worker here answers to: its own, and the ones it had before
+/// a rename, which people may still ask for it by.
+export function takenWorkerNames(workers: ReadonlyArray<{ name: string; formerNames?: string[] }>): string[] {
+  return workers.flatMap((w) => [w.name, ...(w.formerNames ?? [])]);
+}
+
+/// The draft under another name, its own words following: where its job or
+/// tagline names itself, they name the new one.
+export function renameAs<T extends { name: string; jobDescription: string; tagline?: string; errandStarters?: string[] }>(
+  draft: T,
+  name: string,
+): T {
+  if (name === draft.name) return draft;
   const escaped = draft.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const swap = (text: string) => text.replace(new RegExp(`\\b${escaped}\\b`, 'g'), name);
   return {
