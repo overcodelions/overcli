@@ -47,6 +47,7 @@ import path from 'node:path';
 import { TriggerService, triggerFiles } from '../org/triggers';
 import { callTool } from '../org/mcpDirect';
 import { readClaudeMcpServers } from '../mcpConfig';
+import { serverToolConfig } from '../org/toolGateway';
 import { fileDigestState, orgDir } from '../org/orgStores';
 import { digestDue } from '../org/orgService';
 import { Store } from '../store';
@@ -480,7 +481,11 @@ export function createOrgControl(
         ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched, ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.orchestrationId ? { orchestrationId: r.orchestrationId } : {}) } : r)) }
         : started;
     },
-    toolConfig: (name) => readClaudeMcpServers()[name] ?? null,
+    // With the tool gateway on, on the server's own key: the shared one may not call.
+    toolConfig: (name) => {
+      const config = readClaudeMcpServers()[name];
+      return config ? serverToolConfig(config) : null;
+    },
     callTool,
     slack: {
       post: async (channel, text, threadTs, as) => {

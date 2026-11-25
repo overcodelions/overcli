@@ -26,7 +26,7 @@ import { personInput, stagesInput } from '../main/org/processInput';
 import { parseOrgBundle } from '../main/org/orgBundle';
 import { exportOrgBundle, importOrgBundle } from '../main/org/orgMigrate';
 import { processFromYaml, processToYaml, type ProcessYamlNames } from '../shared/org/processYaml';
-import { teamFromYaml, teamToYaml } from '../shared/org/teamYaml';
+import { teamFromYaml } from '../shared/org/teamYaml';
 import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
 import { imageFromDataUrl, type ProcessDraftResult, type ProcessImageInput } from '../main/org/processDraft';
 import type { ModelIdResult } from '../main/backends/modelIdTest';
@@ -1245,6 +1245,9 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
           skip: Array.isArray(b.skip) ? b.skip.map(String) : [],
         }),
     },
+    // Before the routes that take what follows /api/workers/ for an id.
+    { method: 'GET', path: /^\/api\/workers\/retired$/, handle: (c) => org.retiredWorkers(c) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/bring-back$/, handle: (c, _b, [id]) => org.bringBack(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/run$/, handle: (c, _b, [id]) => org.runNow(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/stop-changing-code$/, handle: (c, _b, [id]) => org.stopWorkOnRepo(c, decodeURIComponent(id)) },
     {
@@ -1432,12 +1435,19 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     {
       method: 'GET',
       path: /^\/api\/teams\/([^/]+)\/yaml$/,
-      handle: (c, _b, [id]) => {
-        const res = org.teamPage(c, decodeURIComponent(id));
-        if (!res.ok) return res;
-        if (!res.team.canChange) return { ok: false, error: 'Only someone who can change this team can export it.' };
-        return { ok: true, name: res.team.name, yaml: teamToYaml(res.team) };
-      },
+      handle: (c, _b, [id]) => org.exportTeam(c, decodeURIComponent(id)),
+    },
+    // Making an imported team: its members that aren't here, from the
+    // worker files it carries. Ones already here are used as they are.
+    {
+      method: 'POST',
+      path: /^\/api\/teams\/bring-members$/,
+      handle: (c, b) =>
+        org.bringTeamMembers(
+          c,
+          typeof b.yaml === 'string' ? b.yaml : '',
+          (Array.isArray(b.names) ? b.names : []).filter((n): n is string => typeof n === 'string'),
+        ),
     },
     { method: 'GET', path: /^\/api\/spend$/, handle: (c, _b, _p, url) => org.spendView(c, { all: url.searchParams.get('all') === '1' }) },
     {
@@ -2139,7 +2149,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
-              const parsed = await readBody(req, path === '/api/org/import' ? MAX_ORG_IMPORT_BYTES : path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/teams/brief' ? MAX_TEAM_BRIEF_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
+              const parsed = await readBody(req, path === '/api/org/import' ? MAX_ORG_IMPORT_BYTES : path.startsWith('/api/publish') || path === '/api/teams/from-yaml' || path === '/api/teams/bring-members' ? MAX_PUBLISH_BYTES : path === '/api/teams/brief' ? MAX_TEAM_BRIEF_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
               body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
             } catch {
               return send(res, 400, { ok: false, error: 'Send a JSON object.' });

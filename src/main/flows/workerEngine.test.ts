@@ -94,6 +94,7 @@ function makeHarness(
     activeRuns?: WorkerEngineDeps['activeRuns'];
     pieceFlow?: WorkerEngineDeps['pieceFlow'];
     away?: WorkersAway;
+    retired?: Array<{ worker: Worker; retiredAt: number }>;
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -168,6 +169,11 @@ function makeHarness(
       loadAll: () => opts.seed ?? [],
       save: (w) => saved.push(structuredClone(w)),
       remove: () => {},
+      retired: () => opts.retired ?? [],
+      unretire: (id) => {
+        const i = opts.retired?.findIndex((r) => r.worker.id === id) ?? -1;
+        if (i >= 0) opts.retired!.splice(i, 1);
+      },
     },
     journal: {
       append: (entry) => {
@@ -4097,5 +4103,20 @@ describe('answering several Slack conversations at once', () => {
     await Promise.all([a, b]);
     expect(h.parked.map((p) => p.prompt).filter((t) => /ACME-[12]/.test(t))).toHaveLength(2);
     expect(pool.inUse).toBe(0);
+  });
+});
+
+describe('bringing back a worker that was let go', () => {
+  it('puts it back as it was, paused, under the same id', () => {
+    const retired = [{ worker: seedWorker({ id: 'nadia', name: 'Nadia', trust: 'trusted', reportsTo: 'gone-boss', shiftCount: 9 }), retiredAt: 5 }];
+    const h = makeHarness({ seed: [seedWorker()], retired });
+    expect(h.engine.retired().map((r) => r.worker.id)).toEqual(['nadia']);
+    const res = h.engine.bringBack('nadia');
+    if (!res.ok) throw new Error(res.error);
+    expect(res.worker).toMatchObject({ id: 'nadia', name: 'Nadia', trust: 'trusted', enabled: false, shiftCount: 9 });
+    expect(res.worker.reportsTo).toBeUndefined();
+    expect(h.engine.get('nadia')).toMatchObject({ enabled: false });
+    expect(retired).toEqual([]);
+    expect(h.engine.bringBack('nadia')).toMatchObject({ ok: false });
   });
 });

@@ -41,6 +41,14 @@ import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templ
 import { host } from '../host';
 import { readClaudeInit } from '../flows/mcpProbe';
 import { readClaudeMcpServers } from '../mcpConfig';
+import { serverToolConfig } from './toolGateway';
+
+/// A tool's config for a call the server makes itself, on the gateway's
+/// server key when the tool is behind it (toolGateway.ts).
+function serverConfig(name: string) {
+  const config = readClaudeMcpServers()[name];
+  return config ? serverToolConfig(config) : undefined;
+}
 import { mcpServerKey } from '../../shared/flows/toolScope';
 import { checkLogin, checkLoginByCall, type LoginResult } from './toolLogin';
 import { callTool, listServerTools } from './mcpDirect';
@@ -334,6 +342,8 @@ export function createOrgService(
       save: (w) => workerEngine.save(w),
       setEnabled: (id, enabled) => workerEngine.setEnabled(id, enabled),
       remove: (id) => workerEngine.remove(id),
+      retired: () => workerEngine.retired(),
+      bringBack: (id) => workerEngine.bringBack(id),
       runErrand: (id, text, attachments, conversation, untrusted, mayLaunch) => workerEngine.runErrand(id, text, attachments, { ...(conversation ? { conversation } : {}), ...(untrusted ? { untrusted: true } : {}), ...(mayLaunch ? { mayLaunch: true } : {}) }),
       changesOf: (id) => workerEngine.changesOf(id),
       writesCode: (id) => {
@@ -602,15 +612,15 @@ export function createOrgService(
     asks: fileAskStore,
     triggers: engines.triggers,
     serverTools: async (name) => {
-      const config = readClaudeMcpServers()[name];
+      const config = serverConfig(name);
       return config ? listServerTools(config) : { ok: false, error: `${name} isn't installed on this server.` };
     },
     serverToolSchemas: async (name) => {
-      const config = readClaudeMcpServers()[name];
+      const config = serverConfig(name);
       return config ? listServerTools(config, { schemas: true }) : { ok: false, error: `${name} isn't installed on this server.` };
     },
     callServerTool: async (server, tool, args) => {
-      const config = readClaudeMcpServers()[server];
+      const config = serverConfig(server);
       return config ? callTool(config, tool, args) : { ok: false, error: `${server} isn't installed on this server.` };
     },
     teamFiles: fileTeamFileStore,
@@ -629,7 +639,7 @@ export function createOrgService(
       update: updateToolSettings,
       edit: editTool,
       login: async (name) => {
-        const config = readClaudeMcpServers()[name];
+        const config = serverConfig(name);
         if (!config) return null;
         const env = config.env && typeof config.env === 'object' && !Array.isArray(config.env) ? (config.env as Record<string, string>) : {};
         const now = Date.now();

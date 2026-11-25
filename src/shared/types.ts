@@ -2040,6 +2040,8 @@ export interface IPCInvokeMap {
   'git:worktreeForBranch': (args: { projectPath: string; branch: string }) =>
     | { ok: true; worktreePath: string; reused: boolean; mainCheckout: boolean }
     | { ok: false; error: string };
+  /// Linked worktrees (not the main checkout) that have a branch checked out.
+  'git:listLinkedWorktrees': (args: { projectPath: string }) => Array<{ branch: string; worktreePath: string }>;
   'git:createReviewWorktree': (args: {
     projectPath: string;
     agentName: string;
@@ -2629,6 +2631,10 @@ export interface IPCInvokeMap {
     runIn?: 'cwd' | 'worktree';
     /// Required when `runIn === 'worktree'`.
     baseBranch?: string;
+    /// Run inside the worktree(s) that already have this branch checked out
+    /// instead of forking new ones. A workspace needs one in every member.
+    /// Implies `runIn: 'worktree'`; `baseBranch` is ignored.
+    existingBranch?: string;
   }) =>
     | { ok: true; runId: UUID }
     | {

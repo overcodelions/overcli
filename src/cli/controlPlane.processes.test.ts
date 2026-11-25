@@ -8,6 +8,7 @@ import type { OrgCaller } from '../shared/org/policy';
 import type { ProcessState } from '../shared/org/process';
 import { parseIdea } from '../main/slack/processSlack';
 import { buildPeopleDirectory } from '../main/org/peopleDirectory';
+import { teamToYaml } from '../shared/org/teamYaml';
 
 const PAT: OrgCaller = { name: 'Pat', slackUserId: 'U0ACMEPAT', admin: false };
 const RILEY: OrgCaller = { name: 'Riley', slackUserId: 'U0ACMERILEY', admin: false };
@@ -59,6 +60,12 @@ describe('process routes', () => {
     peopleDirectory: (slack: Array<{ id: string; name: string; handle?: string }>) => buildPeopleDirectory({ seen: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }], slack }),
     repoList: () => ({ ok: true, repos: [{ name: 'acme-repo', path: '/x' }], workspaces: [] }),
     teamPage: (c: OrgCaller) => ({ ok: true, team: { id: 't-product', name: 'Product', budgetUSDPerTask: 50, canChange: c === PAT, checkpoints: { askFirst: true, finalReview: true }, members: [{ name: 'Lena', role: 'Writes' }] } }),
+    // The route hands the whole export to the org service (OrgService.exportTeam).
+    exportTeam(c: OrgCaller, id: string) {
+      const res = this.teamPage(c);
+      if (!res.team.canChange || id !== res.team.id) return { ok: false, error: 'Only someone who can change this team can export it.' };
+      return { ok: true, name: res.team.name, yaml: teamToYaml(res.team), left: [] };
+    },
   };
   const as = (who: OrgCaller) => ({ Authorization: `Bearer ${who === PAT ? 'ocli_pat' : 'ocli_riley'}`, 'Content-Type': 'application/json' });
   const call = async (who: OrgCaller, method: string, p: string, body?: unknown) =>

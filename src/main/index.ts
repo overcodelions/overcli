@@ -32,6 +32,7 @@ import {
   createWorktreeAsync,
   createReviewWorktree,
   worktreeForBranch,
+  listLinkedWorktrees,
   promoteReviewWorktree,
   switchProjectToBranch,
   switchBranch,
@@ -1939,6 +1940,7 @@ export function registerIpc(): void {
   ipcMain.handle('git:createWorktree', (_e, args) => createWorktreeAsync(args));
   ipcMain.handle('git:createReviewWorktree', (_e, args) => createReviewWorktree(args));
   ipcMain.handle('git:worktreeForBranch', (_e, args) => worktreeForBranch(args));
+  ipcMain.handle('git:listLinkedWorktrees', (_e, { projectPath }) => listLinkedWorktrees(projectPath));
   ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));

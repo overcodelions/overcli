@@ -17,7 +17,7 @@ vi.mock('../diagnostics', () => ({
 }));
 
 import type { Worker } from '../../shared/flows/worker';
-import { deleteWorker, loadAllWorkers, saveWorker } from './workersStore';
+import { deleteWorker, forgetRetiredWorker, loadAllWorkers, loadRetiredWorkers, retireWorker, saveWorker } from './workersStore';
 
 function makeWorker(overrides: Partial<Worker> = {}): Worker {
   return {
@@ -128,5 +128,16 @@ describe('workersStore', () => {
     expect(() => saveWorker(makeWorker({ id: '.' }))).toThrow(/Unsafe worker id/);
     // A real id is a UUID, so the guard costs nothing legitimate.
     expect(() => saveWorker(makeWorker({ id: '3f2a1c4e-0b7d-4f9a-8c21-5e6d7a8b9c01' }))).not.toThrow();
+  });
+});
+
+describe('letting a worker go', () => {
+  it('takes it off the roster but keeps its record, until it is brought back', () => {
+    saveWorker(makeWorker({ id: 'w-kept', name: 'Nadia' }));
+    retireWorker('w-kept', 1234);
+    expect(loadAllWorkers().map((w) => w.id)).not.toContain('w-kept');
+    expect(loadRetiredWorkers()).toEqual([{ worker: expect.objectContaining({ id: 'w-kept', name: 'Nadia' }), retiredAt: 1234 }]);
+    forgetRetiredWorker('w-kept');
+    expect(loadRetiredWorkers()).toEqual([]);
   });
 });

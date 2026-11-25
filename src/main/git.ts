@@ -1160,6 +1160,28 @@ export function worktreeForBranch(args: {
   return { ok: true, worktreePath, reused: false, mainCheckout: false };
 }
 
+/// The worktrees linked to a repo that have a branch checked out — every
+/// `git worktree list` entry except the main checkout itself, detached HEADs
+/// and folders deleted by hand. Backs the flow launcher's "existing" run-in
+/// choice, which runs a flow inside one of these instead of forking a new one.
+export function listLinkedWorktrees(projectPath: string): Array<{ branch: string; worktreePath: string }> {
+  const listing = runGit(['worktree', 'list', '--porcelain'], projectPath);
+  if (listing.exitCode !== 0) return [];
+  const main = path.resolve(projectPath);
+  const out: Array<{ branch: string; worktreePath: string }> = [];
+  let current: string | null = null;
+  for (const line of listing.stdout.split('\n')) {
+    if (line.startsWith('worktree ')) current = line.slice('worktree '.length).trim();
+    else if (line.startsWith('branch refs/heads/') && current) {
+      if (path.resolve(current) !== main && fs.existsSync(current)) {
+        out.push({ branch: line.slice('branch refs/heads/'.length).trim(), worktreePath: current });
+      }
+      current = null;
+    }
+  }
+  return out;
+}
+
 export function createReviewWorktree(args: {
   projectPath: string;
   agentName: string;

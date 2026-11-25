@@ -96,17 +96,7 @@ import {
   type Treasury,
   type TreasuryAllocation,
 } from '../../shared/flows/treasury';
-import {
-  deleteWorker,
-  loadAllWorkers,
-  loadHeldHandoffs,
-  loadTreasury,
-  loadWorkersAway,
-  saveHeldHandoffs,
-  saveTreasury,
-  saveWorker,
-  saveWorkersAway,
-} from './workersStore';
+import { deleteWorker, loadAllWorkers, loadHeldHandoffs, loadTreasury, loadWorkersAway, saveHeldHandoffs, saveTreasury, saveWorker, saveWorkersAway, retireWorker, loadRetiredWorkers, forgetRetiredWorker, type RetiredWorker } from './workersStore';
 import {
   appendWorkerJournalEntry,
   clearWorkerJournal,
@@ -292,6 +282,10 @@ export interface WorkerEngineDeps {
     loadAll: () => Worker[];
     save: (w: Worker) => void;
     remove: (id: string) => void;
+    /// Workers let go whose records were kept (`retireWorker`), and taking
+    /// one off that list once it's back. Absent: letting go is for good.
+    retired?: () => RetiredWorker[];
+    unretire?: (id: string) => void;
   };
   journal?: {
     append: (entry: WorkerJournalEntry) => boolean;
@@ -551,7 +545,9 @@ export class WorkerEngine {
     this.store = deps.store ?? {
       loadAll: loadAllWorkers,
       save: saveWorker,
-      remove: deleteWorker,
+      remove: (id) => retireWorker(id, this.now()),
+      retired: loadRetiredWorkers,
+      unretire: forgetRetiredWorker,
     };
     this.journal = deps.journal ?? {
       append: appendWorkerJournalEntry,
@@ -1245,6 +1241,27 @@ export class WorkerEngine {
     }
     this.persistAndEmit(w);
     return { ok: true };
+  }
+
+  /// Workers let go whose records were kept, newest first.
+  retired(): RetiredWorker[] {
+    return (this.store.retired?.() ?? []).filter((r) => !this.workers.has(r.worker.id)).sort((a, b) => b.retiredAt - a.retiredAt);
+  }
+
+  /// Back on the roster as it was let go, under the same id, so its journal
+  /// and the teams that still list it pick it up again. Paused: whoever
+  /// brings it back starts it. Reporting to a boss who has since gone, it
+  /// reports to nobody.
+  bringBack(id: UUID): { ok: true; worker: Worker } | { ok: false; error: string } {
+    if (this.workers.has(id)) return { ok: false, error: 'That worker is already on the roster.' };
+    const kept = this.store.retired?.().find((r) => r.worker.id === id);
+    if (!kept) return { ok: false, error: 'No worker that was let go by that id.' };
+    const w: Worker = { ...kept.worker, enabled: false, deskSession: undefined };
+    if (w.reportsTo && !this.workers.has(w.reportsTo)) delete w.reportsTo;
+    this.workers.set(w.id, w);
+    this.persistAndEmit(w);
+    this.store.unretire?.(w.id);
+    return { ok: true, worker: w };
   }
 
   remove(id: UUID): { ok: true } | { ok: false; error: string } {
