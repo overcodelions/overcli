@@ -10,6 +10,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Run a flow in an existing worktree.** The flow launcher has a new "existing" choice that runs the flow inside a worktree already checked out on a branch (one per member for a workspace) instead of forking a new one. (#1257)
 - **Bring back a worker you let go.** Letting a worker go now keeps its record. The console lists them under "Let go", and bringing one back restores it paused under the same id. Admins, or a manager who may hire, can do it. (#1257)
 - **Team files carry their workers.** An exported team file includes its members' worker files. Importing one hires the members that aren't here yet and reuses the ones that are. The team dialogs can download and open team files. (#1257)
+- **Close tabs to the right.** A conversation tab's right-click menu can close every tab after it, offered only when there are tabs to its right. If the tab on screen closes, the one you clicked takes over, and a split showing a closed tab is cleared. (#1259)
+- **Sort the flow library Z to A.** "Name (Z-A)" sits next to "Name (A-Z)". Name sorting ignores case and puts numbers in natural order, and the library remembers your choice. (#1261)
 
 ### Changed
 - **The tool gateway's own calls use a server key.** Watch polls, "Test it", sign-in checks and the Slack bridge no longer use the shared key, which may not call tools. (#1257)
