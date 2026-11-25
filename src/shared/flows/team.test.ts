@@ -19,7 +19,9 @@ import {
   applyPackUpdate,
   resolveTaskFileRef,
   parsePlanReply,
+  renameAs,
   renameIfTaken,
+  takenWorkerNames,
   checkStepOf,
   resolveMember,
   safeTeamFileName,
@@ -608,6 +610,18 @@ describe('renameIfTaken', () => {
     expect(out.tagline).toBe('Bram keeps the site current');
     expect(out.jobDescription).toBe('Bram updates the website. Theodore is someone else.');
     expect(out.errandStarters).toEqual(['Bram, update the release notes']);
+  });
+
+  it('treats a name a worker had before a rename as taken', () => {
+    const taken = takenWorkerNames([{ name: 'Ada' }, { name: 'Felix', formerNames: ['Theo'] }]);
+    expect(renameIfTaken(draft, taken).name).toBe('Bram');
+  });
+});
+
+describe('renameAs', () => {
+  it('carries a chosen name through the worker’s own words', () => {
+    const out = renameAs({ name: 'Hugo', jobDescription: 'Hugo answers QA questions.', tagline: 'Hugo knows the box' }, 'Mek');
+    expect(out).toEqual({ name: 'Mek', jobDescription: 'Mek answers QA questions.', tagline: 'Mek knows the box' });
   });
 });
 

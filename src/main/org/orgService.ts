@@ -67,7 +67,7 @@ import { describeScope, inToolScope, mcpServerKey, parseToolScope, withinScope, 
 import { answerOptions, projectMonthEnd, trustReadiness, workerState, type TrustReadiness, type WorkerState } from '../../shared/org/insights';
 import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamKnowledgeRefresh, TeamStageKind, TeamTask } from '../../shared/flows/team';
 import { resolveShortNames } from '../../shared/shortName';
-import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
+import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf, renameIfTaken, takenWorkerNames } from '../../shared/flows/team';
 import { CARRIED_LIMITS, SHARE_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
 import { teamToYaml, teamWorkerFiles, type TeamWorkerFile } from '../../shared/org/teamYaml';
 import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_LIMITS, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
@@ -1087,7 +1087,7 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   /// worker onto the roster. Absent: publishing is not offered.
   importWorker?(
     yaml: string,
-    opts: { projectPath?: string; mcpServers: string[]; extra: Partial<Pick<Worker, 'manager' | 'reportsTo' | 'visibility'>> },
+    opts: { projectPath?: string; mcpServers: string[]; name?: string; extra: Partial<Pick<Worker, 'manager' | 'reportsTo' | 'visibility'>> },
   ): { ok: true; worker: Worker } | { ok: false; error: string };
   /// One of its workers as a share file, with an export's extras. Absent:
   /// workers can't be exported from here.
@@ -4585,6 +4585,8 @@ export class OrgService {
       const landed = this.deps.importWorker(hire.imported.yaml, {
         projectPath: hire.options.projectPath,
         mcpServers,
+        // The file's name, unless it was taken here or someone renamed the hire.
+        name: hire.imported.name,
         extra: {
           manager: { name: by.name, ...(by.slackUserId ? { slackUserId: by.slackUserId } : {}) },
           ...(hire.options.reportsTo ? { reportsTo: hire.options.reportsTo } : {}),
@@ -7722,7 +7724,9 @@ export class OrgService {
     // An exported file carries its own.
     const templates = [...tools, ...parseTemplates(parsed.bundle.carried?.tools)];
     if (templates.length) this.deps.tools?.remember?.(templates);
-    const w = parsed.bundle.worker;
+    // A name someone here already answers to, now or before a rename, gets a
+    // free one: two workers with one name leave Slack unable to tell them apart.
+    const w = renameIfTaken({ ...parsed.bundle.worker, tagline: parsed.bundle.worker.description }, takenWorkerNames(this.deps.workers.roster()));
     const hire: PendingHire = {
       id: randomUUID(),
       status: 'drafted',
@@ -7734,7 +7738,7 @@ export class OrgService {
       imported: {
         yaml,
         name: w.name,
-        ...(w.description ? { tagline: w.description } : {}),
+        ...(w.tagline ? { tagline: w.tagline } : {}),
         jobDescription: w.jobDescription,
         budgetUSDPerMonth: w.budgetUSDPerMonth,
         mcpServers: w.mcpServers ?? [],

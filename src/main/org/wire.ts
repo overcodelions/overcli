@@ -37,6 +37,7 @@ import { pickPicture } from './pickPicture';
 import { oneShotDraftText, reviseFlowFromPrompt } from '../flows/drafter';
 import { reviseWorkerFromPrompt } from '../flows/workerDrafter';
 import { resolveWorkPlace } from './defaultProject';
+import { renameAs, renameIfTaken, takenWorkerNames } from '../../shared/flows/team';
 import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templateFrom, toolTemplatesFile, uninstallTool, updateToolSettings, editTool } from './tools';
 import { host } from '../host';
 import { readClaudeInit } from '../flows/mcpProbe';
@@ -146,7 +147,7 @@ function backendProbe(): () => HealthItem {
 function importSharedWorker(
   workerEngine: WorkerEngine,
   yaml: string,
-  opts: { projectPath?: string; mcpServers: string[]; extra: Partial<Pick<Worker, 'manager' | 'reportsTo' | 'visibility'>> },
+  opts: { projectPath?: string; mcpServers: string[]; name?: string; extra: Partial<Pick<Worker, 'manager' | 'reportsTo' | 'visibility'>> },
 ): { ok: true; worker: Worker } | { ok: false; error: string } {
   const store = Store.load();
   const library = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) });
@@ -156,7 +157,11 @@ function importSharedWorker(
     saveFlow: (flow) => saveFlow({ flow, target: 'user' }),
   });
   if (!landed.ok) return landed;
-  const w = landed.result.bundle.worker;
+  // The name the hire settled on, and never one someone here answers to:
+  // between drafting and landing, another worker may have taken it.
+  const sent = landed.result.bundle.worker;
+  const asked = opts.name?.trim() ? renameAs({ ...sent, tagline: sent.description }, opts.name.trim()) : { ...sent, tagline: sent.description };
+  const w = renameIfTaken(asked, takenWorkerNames(workerEngine.roster()));
   const missing = new Set(landed.result.notes.missingFlowIds);
   const flowIds = w.flowIds.filter((id) => !missing.has(id));
   if (flowIds.length === 0) return { ok: false, error: `${w.name} arrived without any flow it can run.` };
@@ -167,7 +172,7 @@ function importSharedWorker(
   const carried = landed.result.bundle.carried;
   const saved = workerEngine.save({
     name: w.name,
-    ...(w.description ? { tagline: w.description } : {}),
+    ...(w.tagline ? { tagline: w.tagline } : {}),
     jobDescription: w.jobDescription,
     projectPath,
     cadence: w.cadence,

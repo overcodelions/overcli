@@ -13,6 +13,7 @@ import { useTeamsStore } from './teamsStore';
 import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
 import { hireAnswerText, moveInRoster, placeInRoster, type WorkerManager, type WorkerVisibility } from '@shared/flows/worker';
+import { renameIfTaken, takenWorkerNames } from '@shared/flows/team';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { allocateTreasury, fundingFor, type Treasury, type TreasuryAllocation } from '@shared/flows/treasury';
 import type {
@@ -1986,8 +1987,14 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       // learn about them before the draft references them.
       await useFlowsStore.getState().reload(projectPaths);
       const available = useFlowsStore.getState().flows.map((f) => f.id);
-      get().openEditor(draftFromPortable(res.worker, projectPath, available), {
-        hireSummary: [`Imported ${res.worker.name}.`, res.summary].filter(Boolean).join(' '),
+      // A name someone here already answers to gets a free one, suggested in
+      // the editor: two workers with one name can't be told apart.
+      const draft = renameIfTaken(draftFromPortable(res.worker, projectPath, available), takenWorkerNames(Object.values(get().workers)));
+      const renamed = draft.name !== res.worker.name
+        ? `There’s already a worker called ${res.worker.name} here, so this one is ${draft.name}. Change it if you like.`
+        : null;
+      get().openEditor(draft, {
+        hireSummary: [`Imported ${res.worker.name}.`, renamed, res.summary].filter(Boolean).join(' '),
       });
       // A shared worker was written for whoever shared it. Start reading it
       // for their details now rather than on a click: the answer takes a few

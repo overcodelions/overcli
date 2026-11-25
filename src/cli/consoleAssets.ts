@@ -563,7 +563,10 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .sl-pane-head { padding: 22px 28px 18px; border-bottom: 1px solid var(--line); min-height: 144px; box-sizing: border-box; }
 .sl-pane-head .sl-col { display: flex; flex-direction: column; gap: 10px; }
 .sl-pane-meta { font-size: 12.5px; color: var(--muted); } .sl-pane-meta b { color: var(--ink); font-weight: 600; }
-.sl-pane-q { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+/* A long question would push the thread below the panel's clipped edge,
+   leaving nothing to scroll. It reads in full as the thread's first message. */
+.sl-pane-q { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.sl-pane-head { flex: none; }
 .sl-pane-body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 26px 28px 32px; }
 .sl-pane-foot { flex: none; display: flex; align-items: center; height: 48px; padding: 0 28px; box-sizing: border-box; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .sl-live-line { display: flex; align-items: center; gap: 8px; }
@@ -13087,7 +13090,7 @@ export const CONSOLE_JS = String.raw`
         sig = s;
         fill(top, h('div', { class: 'sl-col' },
           h('div', { class: 'sl-pane-meta' }, h('b', { text: c.by }), ' · asked ' + ago(c.at) + (c.dm ? ' in a DM' : ' in a channel') + (c.lastAt > c.at + 60000 ? ' · last activity ' + ago(c.lastAt) : '')),
-          h('h2', { class: 'sl-pane-q', text: c.text }),
+          h('h2', { class: 'sl-pane-q', text: c.text, title: c.text }),
           h('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap' }, slackOutcome(c, true),
             c.url ? h('a', { class: 'linkish', href: c.url.indexOf('#') >= 0 ? c.url.slice(c.url.indexOf('#')) : c.url, text: 'Open it' }) : null)));
         if (moved) { fill(body, thinking('Reading the thread from Slack…')); load(); }
