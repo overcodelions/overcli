@@ -60,6 +60,19 @@ export function closeTab(
   return { tabs: next, selected: next[idx] ?? next[idx - 1] ?? null };
 }
 
+/// Close every tab after `id`. When the tab on screen was one of them, `id`
+/// takes over.
+export function closeTabsToRight(
+  tabs: readonly UUID[],
+  id: UUID,
+  selected: UUID | null,
+): { tabs: UUID[]; selected: UUID | null } {
+  const idx = tabs.indexOf(id);
+  if (idx === -1 || idx === tabs.length - 1) return { tabs: tabs as UUID[], selected };
+  const next = tabs.slice(0, idx + 1);
+  return { tabs: next, selected: selected && !next.includes(selected) ? id : selected };
+}
+
 /// Move `id` to sit where `before` is (or to the end when `before` is null).
 export function moveTab(tabs: readonly UUID[], id: UUID, before: UUID | null): UUID[] {
   if (id === before || !tabs.includes(id)) return tabs as UUID[];

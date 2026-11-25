@@ -324,6 +324,10 @@ function ConversationTab({
   const closeItems = [
     { label: 'Close tab', run: close },
     { label: 'Close other tabs', run: () => useStore.getState().closeOtherConversationTabs(id) },
+    // Offered only when something is to the right of this tab.
+    ...(useStore.getState().conversationTabs.at(-1) !== id
+      ? [{ label: 'Close tabs to the right', run: () => useStore.getState().closeConversationTabsToRight(id) }]
+      : []),
   ];
 
   return (

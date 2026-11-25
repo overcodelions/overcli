@@ -91,7 +91,7 @@ import {
 } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import { isPopoutWindow, popoutConversationId } from './popoutWindow';
-import { closeTab, cycleTab, moveTab, openTab, parseTabKey, pruneTabs, runTabKey } from './conversationTabs';
+import { closeTab, closeTabsToRight, cycleTab, moveTab, openTab, parseTabKey, pruneTabs, runTabKey } from './conversationTabs';
 import { applyConversationChanges, diffConversations, indexConversations } from './conversationSync';
 import {
   conversationTranscriptLevel,
@@ -347,6 +347,7 @@ interface StoreState {
   activateTab(key: string): void;
   closeConversationTab(key: string): void;
   closeOtherConversationTabs(key: string): void;
+  closeConversationTabsToRight(key: string): void;
   moveConversationTab(key: string, before: string | null): void;
   cycleConversationTab(step: 1 | -1): void;
   /// Show `id` beside the selected conversation. Opening the selected one
@@ -1646,6 +1647,19 @@ export const useStore = create<StoreState>((set, get) => ({
       splitConversationId: null,
     });
     if (currentTabKey() !== key) get().activateTab(key);
+  },
+
+  closeConversationTabsToRight(key) {
+    const s = get();
+    const active = currentTabKey();
+    const next = closeTabsToRight(s.conversationTabs, key, active);
+    if (next.tabs.length === s.conversationTabs.length) return;
+    set({
+      conversationTabs: next.tabs,
+      splitConversationId:
+        s.splitConversationId && !next.tabs.includes(s.splitConversationId) ? null : s.splitConversationId,
+    });
+    if (next.selected && next.selected !== active) get().activateTab(next.selected);
   },
 
   moveConversationTab(id, before) {

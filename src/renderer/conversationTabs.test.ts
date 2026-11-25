@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_CONVERSATION_TABS,
   closeTab,
+  closeTabsToRight,
   cycleTab,
   moveTab,
   openTab,
@@ -76,5 +77,20 @@ describe('pruneTabs', () => {
   it('drops missing conversations, junk and duplicates', () => {
     const exists = (id: string) => id !== 'gone';
     expect(pruneTabs(['a', 'gone', 'a', 3, '', 'b'], exists)).toEqual(['a', 'b']);
+  });
+});
+
+describe('closeTabsToRight', () => {
+  it('keeps the tab and everything before it', () => {
+    expect(closeTabsToRight(['a', 'b', 'c', 'd'], 'b', 'a')).toEqual({ tabs: ['a', 'b'], selected: 'a' });
+  });
+
+  it('moves to the tab itself when the one on screen was closed', () => {
+    expect(closeTabsToRight(['a', 'b', 'c', 'd'], 'b', 'd')).toEqual({ tabs: ['a', 'b'], selected: 'b' });
+  });
+
+  it('does nothing for the last tab', () => {
+    const tabs = ['a', 'b'];
+    expect(closeTabsToRight(tabs, 'b', 'b').tabs).toBe(tabs);
   });
 });

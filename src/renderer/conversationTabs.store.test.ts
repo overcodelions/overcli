@@ -169,3 +169,19 @@ describe('flow runs as tabs', () => {
     expect(useStore.getState().conversationTabs).toEqual(['a']);
   });
 });
+
+describe('close tabs to the right', () => {
+  it('closes runs and conversations after the tab, and the side view with them', () => {
+    useStore.setState({
+      conversationTabs: ['a', 'b', 'run:r1', 'c', 'd'],
+      selectedConversationId: 'd',
+      splitConversationId: 'c',
+    });
+    useStore.getState().closeConversationTabsToRight('b');
+    expect(useStore.getState()).toMatchObject({
+      conversationTabs: ['a', 'b'],
+      selectedConversationId: 'b',
+      splitConversationId: null,
+    });
+  });
+});
