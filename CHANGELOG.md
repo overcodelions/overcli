@@ -4,6 +4,16 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-11-24
+
+### Added
+- **Run a flow in an existing worktree.** The flow launcher has a new "existing" choice that runs the flow inside a worktree already checked out on a branch (one per member for a workspace) instead of forking a new one. (#1257)
+- **Bring back a worker you let go.** Letting a worker go now keeps its record. The console lists them under "Let go", and bringing one back restores it paused under the same id. Admins, or a manager who may hire, can do it. (#1257)
+- **Team files carry their workers.** An exported team file includes its members' worker files. Importing one hires the members that aren't here yet and reuses the ones that are. The team dialogs can download and open team files. (#1257)
+
+### Changed
+- **The tool gateway's own calls use a server key.** Watch polls, "Test it", sign-in checks and the Slack bridge no longer use the shared key, which may not call tools. (#1257)
+
 ## [0.27.2] - 2026-11-23
 
 ### Added
@@ -1528,7 +1538,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.2...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.3...HEAD
+[0.27.3]: https://github.com/overcodelions/overcli/compare/v0.27.2...v0.27.3
 [0.27.2]: https://github.com/overcodelions/overcli/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/overcodelions/overcli/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/overcodelions/overcli/compare/v0.26.6...v0.27.0
