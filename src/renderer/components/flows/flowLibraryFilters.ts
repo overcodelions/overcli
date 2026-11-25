@@ -7,7 +7,7 @@ import { flowHasTags, flowMatchesQuery } from './flowGrouping';
 
 export type FlowScope =
   | 'all' | 'starred' | 'mine' | 'project' | 'installed' | 'generated' | 'archived';
-export type FlowSort = 'usage' | 'name' | 'recent' | 'steps';
+export type FlowSort = 'usage' | 'name' | 'name-desc' | 'recent' | 'steps';
 
 export interface FlowUsage { count: number; lastAt: number }
 
@@ -24,7 +24,8 @@ export const SCOPES: Array<{ key: FlowScope; label: string }> = [
 export const SORTS: Array<{ key: FlowSort; label: string }> = [
   { key: 'usage', label: 'Most used' },
   { key: 'recent', label: 'Recently run' },
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name (A–Z)' },
+  { key: 'name-desc', label: 'Name (Z–A)' },
   { key: 'steps', label: 'Steps' },
 ];
 
@@ -67,14 +68,22 @@ export function scopeCounts(
   return out;
 }
 
+/// A stored sort, or the default when it's missing or from an older build.
+export function flowSortOrDefault(value: unknown): FlowSort {
+  return SORTS.some((s) => s.key === value) ? (value as FlowSort) : 'usage';
+}
+
 export function sortFlows(
   flows: readonly Flow[],
   sort: FlowSort,
   usage: Record<string, FlowUsage>,
 ): Flow[] {
-  const byName = (a: Flow, b: Flow) => a.name.localeCompare(b.name);
+  // Case-insensitive and number-aware, so "demo 2" sorts before "Demo 10".
+  const byName = (a: Flow, b: Flow) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
   return [...flows].sort((a, b) => {
     if (sort === 'name') return byName(a, b);
+    if (sort === 'name-desc') return byName(b, a);
     if (sort === 'steps') return b.steps.length - a.steps.length || byName(a, b);
     if (sort === 'recent') {
       return (usage[b.id]?.lastAt ?? 0) - (usage[a.id]?.lastAt ?? 0) || byName(a, b);

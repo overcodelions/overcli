@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { flowInScope, scopeCounts, sortFlows } from './flowLibraryFilters';
+import { flowInScope, flowSortOrDefault, scopeCounts, sortFlows } from './flowLibraryFilters';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 
 function flow(over: Partial<Flow> & { id: string }): Flow {
@@ -61,5 +61,22 @@ describe('scopeCounts', () => {
     expect(counts.all).toBe(1);
     expect(counts.generated).toBe(1);
     expect(counts.archived).toBe(1);
+  });
+});
+
+describe('sorting by name', () => {
+  const named = (...names: string[]) => names.map((name, i) => ({ id: `f${i}`, name, steps: [] }) as unknown as Flow);
+  const names = (flows: Flow[]) => flows.map((f) => f.name);
+
+  it('is case-insensitive and number-aware, both ways', () => {
+    const flows = named('beta', 'Demo 10', 'Alpha', 'demo 2');
+    expect(names(sortFlows(flows, 'name', {}))).toEqual(['Alpha', 'beta', 'demo 2', 'Demo 10']);
+    expect(names(sortFlows(flows, 'name-desc', {}))).toEqual(['Demo 10', 'demo 2', 'beta', 'Alpha']);
+  });
+
+  it('falls back to most used for a missing or unknown stored sort', () => {
+    expect(flowSortOrDefault(undefined)).toBe('usage');
+    expect(flowSortOrDefault('bogus')).toBe('usage');
+    expect(flowSortOrDefault('name-desc')).toBe('name-desc');
   });
 });

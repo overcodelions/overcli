@@ -1355,6 +1355,8 @@ export interface AppSettings {
   /// app's content region to zero.
   sidebarWidth: number;
   editorPaneWidth: number;
+  /// The flow library's sort, remembered across visits. Unset: most used.
+  flowLibrarySort?: string;
   /// The share (0–1) of the chat room the conversation beside the selected
   /// one takes. A share, not px, so opening the file editor narrows both
   /// chats in proportion and closing it gives back the same split. Unset is

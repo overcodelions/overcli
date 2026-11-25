@@ -23,7 +23,7 @@ import {
   registryEntryMatchesQuery,
 } from './flowGrouping';
 import {
-  SCOPES, SORTS, filterFlows, scopeCounts, sortFlows,
+  SCOPES, SORTS, filterFlows, flowSortOrDefault, scopeCounts, sortFlows,
   type FlowScope, type FlowSort,
 } from './flowLibraryFilters';
 import { compactStepModel } from './flowSpine';
@@ -943,7 +943,12 @@ function FlowLibraryList({
   const openEditor = useFlowsStore((s) => s.openEditor);
 
   const [scope, setScope] = useState<FlowScope>('all');
-  const [sort, setSort] = useState<FlowSort>('usage');
+  // Remembered in settings, so the list comes back the way you left it.
+  const sort = useStore((s) => flowSortOrDefault(s.settings.flowLibrarySort));
+  const setSort = (next: FlowSort) => {
+    const { settings, saveSettings } = useStore.getState();
+    void saveSettings({ ...settings, flowLibrarySort: next });
+  };
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // All-time run tallies, so most-used flows float and dusty ones sink.
