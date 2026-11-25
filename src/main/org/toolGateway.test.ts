@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpServerConfig } from '../mcpConfig';
-import { bindToolGateway, boundGatewayTools, closeToolGateway, isRelayUrl, openToolGateway, type GatewayCaller, type ToolGateway } from './toolGateway';
+import { bindToolGateway, boundGatewayTools, closeToolGateway, isRelayUrl, openToolGateway, serverToolConfig, type GatewayCaller, type ToolGateway } from './toolGateway';
 import { credentialRules } from './credentialGuard';
 
 /// The bearer header a bound gateway entry carries.
@@ -122,6 +122,31 @@ describe('tool gateway', () => {
     // A run this start handed a key to, worker or not, still calls.
     expect((await post(url, `Bearer ${gw.keyFor('a-run')}`, call('search_records'))).json.result.content[0].text).toBe('from the tool');
     expect(tool.seen.filter((x) => x.body.includes('tools/call'))).toHaveLength(1);
+  });
+
+  it('lets the server’s own calls through (a watch’s poll), on a key no worker can make', async () => {
+    const dir = tmpDir();
+    const tool = await upstream();
+    const file = configFile({ crm: { type: 'http', url: tool.url, headers: { Authorization: `Bearer ${TOKEN}` } } });
+    const calls: Array<{ who: string; allowed: boolean }> = [];
+    await open(dir, file, {}, calls);
+    const url = String(file.servers.crm.url);
+    const mine = serverToolConfig(file.servers.crm);
+    expect(bearerOf(mine)).toMatch(/^Bearer s\./);
+    expect(bearerOf(file.servers.crm)).toMatch(/^Bearer b\./);
+
+    const r = await post(url, bearerOf(mine), call('search_records'));
+    expect(r.json.result.content[0].text).toBe('from the tool');
+    expect(tool.seen.at(-1)?.auth).toBe(`Bearer ${TOKEN}`);
+    expect(calls).toEqual([expect.objectContaining({ who: 'the server (watches and checks)', allowed: true })]);
+
+    // Signed with the key file, as a worker that read it could: refused.
+    const root = fs.readFileSync(path.join(dir, 'tool-gateway.key'));
+    const mac = Buffer.from(hkdfSync('sha256', root, Buffer.alloc(0), 'tool-gateway key', 32));
+    expect((await post(url, `Bearer s.${createHmac('sha256', mac).update('s').digest('base64url')}`, call('search_records'))).status).toBe(401);
+    // A tool not behind the gateway is left as it is.
+    const direct = { type: 'http', url: 'https://tools.acme.test/mcp', headers: { Authorization: 'Bearer x' } } as McpServerConfig;
+    expect(serverToolConfig(direct)).toBe(direct);
   });
 
   it('refuses a live run key made from the key file', async () => {

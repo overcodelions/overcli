@@ -156,6 +156,15 @@ export function bindToolGateway(configJson: string, conversationId: string): str
   return changed ? JSON.stringify(parsed) : configJson;
 }
 
+/// A vaulted tool's config for the server's own calls (a Watch trigger's
+/// poll, "Test it", a tool's sign-in check): the server's key in place of the
+/// box key, which may never call a tool. Anything else passes through.
+export function serverToolConfig(config: McpServerConfig): McpServerConfig {
+  const gw = active;
+  if (!gw || typeof config.url !== 'string' || !gw.owns(config.url)) return config;
+  return { ...config, headers: { Authorization: `Bearer ${gw.serverKey()}` } };
+}
+
 /// For a run that loads the CLIs' whole config: its gateway tools again, each
 /// with a key bound to the run. Passed as the run's own `--mcp-config`, they
 /// win over the config's entries of the same name, so the run never calls on
@@ -350,6 +359,13 @@ export class ToolGateway {
     return `${subject}.${this.sign(subject)}`;
   }
 
+  /// The key for the server's own calls. Signed with the run key, which is
+  /// never written down, so no worker can make it from the key file, and
+  /// held in this process only: no config on disk carries it.
+  serverKey(): string {
+    return `s.${this.sign('s')}`;
+  }
+
   /// Seal a tool's real address and headers, and give back the config the
   /// CLIs get instead.
   wrap(name: string, url: string, headers: Record<string, string>): McpServerConfig {
@@ -386,12 +402,13 @@ export class ToolGateway {
   }
 
   private sign(subject: string): string {
-    return createHmac('sha256', subject.startsWith('c.') ? this.runMac : this.mac).update(subject).digest('base64url');
+    return createHmac('sha256', subject.startsWith('c.') || subject === 's' ? this.runMac : this.mac).update(subject).digest('base64url');
   }
 
   /// Who a key belongs to: `box` for the shared config, a conversation id for
-  /// a run, null for anything this gateway did not issue.
-  private verify(header: string | undefined): { conversationId?: string } | null {
+  /// a run, `server` for the server's own calls, null for anything this
+  /// gateway did not issue.
+  private verify(header: string | undefined): { conversationId?: string; server?: true } | null {
     const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : '';
     const dot = token.lastIndexOf('.');
     if (dot <= 0) return null;
@@ -400,6 +417,7 @@ export class ToolGateway {
     const got = Buffer.from(token.slice(dot + 1));
     if (got.length !== want.length || !timingSafeEqual(got, want)) return null;
     if (subject === 'b') return {};
+    if (subject === 's') return { server: true };
     return subject.startsWith('c.') ? { conversationId: subject.slice(2) } : null;
   }
 
@@ -424,7 +442,7 @@ export class ToolGateway {
       // A run key with no worker behind it and never handed out here: it
       // may list tools, like the shared key, but never call one.
       const unknown = !!who.conversationId && !caller && !this.issued.has(who.conversationId);
-      const label = caller?.workerName ?? (who.conversationId ? `${unknown ? 'unknown run' : 'run'} ${who.conversationId.slice(0, 8)}` : 'unattributed');
+      const label = who.server ? 'the server (watches and checks)' : caller?.workerName ?? (who.conversationId ? `${unknown ? 'unknown run' : 'run'} ${who.conversationId.slice(0, 8)}` : 'unattributed');
 
       const chunks: Buffer[] = [];
       let size = 0;
@@ -435,7 +453,7 @@ export class ToolGateway {
       }
       const body = Buffer.concat(chunks);
 
-      const refused = this.checkCalls(name, body, caller, label, !who.conversationId ? BOX_REFUSAL : unknown ? UNKNOWN_REFUSAL : null);
+      const refused = this.checkCalls(name, body, caller, label, who.server ? null : !who.conversationId ? BOX_REFUSAL : unknown ? UNKNOWN_REFUSAL : null);
       if (refused) return reply(200, refused);
 
       const headers: Record<string, string> = {};

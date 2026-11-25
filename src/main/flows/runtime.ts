@@ -91,6 +91,7 @@ import {
   runGit,
   runGitAsync,
   worktreeNameTaken,
+  listLinkedWorktrees,
 } from '../git';
 import { branchSlugFromPrompt } from './branchName';
 import { launchProgressMessage, launchTimingSummary, MAX_CONCURRENT_WORKTREE_FORKS } from './launchProgress';
@@ -141,6 +142,9 @@ export interface FlowRuntimeStartArgs {
   /// forking new ones off `baseBranch`. The run does not own them — see
   /// FlowRun.adoptedWorktree.
   adoptWorktrees?: AdoptedWorktrees;
+  /// The launcher's "existing" choice: run in the worktree(s) that already
+  /// have this branch checked out. Resolved into `adoptWorktrees` at start.
+  existingBranch?: string;
   /// Set when this run is one item of an Orchestrator batch. Recorded on
   /// the FlowRun so the runtime's run observer can route the run's terminal
   /// state back to the orchestrator (which pumps the next queued item).
@@ -1217,6 +1221,12 @@ export class FlowRuntimeImpl {
   async startRun(
     args: FlowRuntimeStartArgs,
   ): Promise<{ ok: true; runId: UUID } | { ok: false; error: string; preflight?: PreflightResult }> {
+    const existingBranch = args.existingBranch?.trim();
+    if (existingBranch && !args.adoptWorktrees) {
+      const resolved = this.existingWorktrees(args.projectPath, existingBranch);
+      if (!resolved.ok) return resolved;
+      args = { ...args, runIn: 'worktree', baseBranch: undefined, adoptWorktrees: resolved.adopt };
+    }
     const projectPaths = this.getProjects().map(p => p.path);
     const flows = loadAllFlows({ projectPaths });
     const found = flows.find(f => f.id === args.flowId);
@@ -5104,6 +5114,37 @@ export class FlowRuntimeImpl {
   /// Fork fresh worktree(s) for `projectPath` — one per member project when
   /// it is a workspace root, else one — named `name` (made unique) off
   /// `baseBranch`, or each repo's own default when that is empty.
+  /// The worktrees with `branch` checked out — one for a project, one per
+  /// member for a workspace — as an adoption, so the run works in them and
+  /// leaves them in place afterwards (FlowRun.adoptedWorktree).
+  private existingWorktrees(
+    projectPath: string,
+    branch: string,
+  ): { ok: true; adopt: AdoptedWorktrees } | { ok: false; error: string } {
+    const ws = this.getWorkspaces().find((w) => w.rootPath === projectPath);
+    const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
+    const repos = ws
+      ? ws.projectIds
+          .map((pid) => projectsById.get(pid))
+          .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
+          .map((p) => ({ name: p.name, projectPath: p.path }))
+      : [{ name: basename(projectPath), projectPath }];
+    if (repos.length === 0) return { ok: false, error: 'Workspace has no eligible member projects.' };
+    const adopted: AdoptedWorktrees['repos'] = [];
+    const missing: string[] = [];
+    for (const r of repos) {
+      const hit = listLinkedWorktrees(r.projectPath).find((w) => w.branch === branch);
+      if (hit) adopted.push({ ...r, worktreePath: hit.worktreePath });
+      else missing.push(r.name);
+    }
+    if (missing.length > 0) {
+      return { ok: false, error: `No worktree has ${branch} checked out in ${missing.join(', ')}.` };
+    }
+    // `batch` (not a team adoption): the run reviews and merges the branch
+    // itself, against each repo's own default branch.
+    return { ok: true, adopt: { branch, repos: adopted, batch: {} } };
+  }
+
   private async forkWorktrees(args: {
     projectPath: string;
     name: string;

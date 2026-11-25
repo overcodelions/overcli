@@ -1835,7 +1835,7 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .dialog.small p { margin: 0; }
 .ntwrap { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
 .ntmain { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
-.ntside { flex: 1 1 300px; max-width: 400px; position: sticky; top: calc(var(--chrome-h) + 16px); }
+.ntside { flex: 1 1 320px; max-width: 380px; min-width: 0; position: sticky; top: calc(var(--chrome-h) + 16px); }
 .ntbar { position: sticky; bottom: 0; z-index: 5; margin: 4px -4px 0; padding: 10px 4px 14px; background: linear-gradient(to bottom, transparent, var(--bg) 14px); display: flex; flex-direction: column; gap: 8px; }
 .ntbar-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px 10px 16px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.35); }
 .ntbar-sum { flex: 1 1 240px; font-size: 13.5px; color: var(--muted); }
@@ -1872,6 +1872,7 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .ntrole-who b { font-weight: 600; }
 .ntrole-who .faint { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ntrole.hire { align-items: flex-start; padding-top: 10px; padding-bottom: 10px; border-top-style: dashed; background: var(--go-soft); }
+.ntrole.bring { border-top-style: dashed; background: var(--go-soft); }
 .ntrole-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 0 11px; }
 .ntrole > input { flex: 1; min-width: 0; }
 .ntchecks { display: flex; flex-direction: column; }
@@ -5133,15 +5134,17 @@ export const CONSOLE_JS = String.raw`
   }
 
   function viewWorkers() {
-    return Promise.all([api('GET', '/api/workers'), api('GET', '/api/report?days=30').catch(function () { return null; }), api('GET', '/api/teams').catch(function () { return []; })]).then(function (res) {
+    return Promise.all([api('GET', '/api/workers'), api('GET', '/api/report?days=30').catch(function () { return null; }), api('GET', '/api/teams').catch(function () { return []; }),
+      api('GET', '/api/workers/retired').catch(function () { return null; })]).then(function (res) {
       var list = res[0], chart = spendChart(res[1]);
+      var gone = letGoSection(res[3] && res[3].ok !== false ? res[3].workers : []);
       // Which teams each worker sits on, by name, as the teams list them.
       var teamsOf = {};
       (Array.isArray(res[2]) ? res[2] : []).forEach(function (t) {
         (t.members || []).forEach(function (m) { (teamsOf[m.name] = teamsOf[m.name] || []).push(t.shortName || t.name); });
       });
       var inTeam = function (w) { return !!teamsOf[w.name]; };
-      if (!list.length) return [head('Workers', null, hireButton(), 'Workspace'), emptyState('No workers you can see yet.', 'Hire one, or ask your admin to make a team’s workers visible to you.', hireButton())];
+      if (!list.length) return [head('Workers', null, hireButton(), 'Workspace'), emptyState('No workers you can see yet.', 'Hire one, or ask your admin to make a team’s workers visible to you.', hireButton()), gone];
       var filter = state.workersFilter || 'all';
       var attention = function (w) { return workerStatus(w).cls === 'bad' || w.waiting > 0 || w.state === 'stuck' || !!(w.enabled && w.last30 && w.last30.lastRun && w.last30.lastRun.outcome === 'failed'); };
       var counts = { all: list.length, mine: list.filter(function (w) { return w.youManage; }).length, teams: list.filter(inTeam).length, solo: list.filter(function (w) { return !inTeam(w); }).length, attention: list.filter(attention).length };
@@ -5229,8 +5232,39 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'tscroll' }, h('table', { class: 'data wk-table' },
             h('thead', null, h('tr', null, [['Worker'], ['Last run'], ['Success, 30d'], ['Jobs, 30d', 'r'], ['Trust'], ['Manager'], ['Schedule'], ['Spend vs budget']].map(function (t) { return h('th', { class: t[1] || null, text: t[0] }); }))),
             body)),
-          h('div', { class: 'tfoot' }, shown, h('button', { class: 'linkish', style: 'color:var(--go)', text: 'View as org chart →', onclick: function () { go('chart'); } })))];
+          h('div', { class: 'tfoot' }, shown, h('button', { class: 'linkish', style: 'color:var(--go)', text: 'View as org chart →', onclick: function () { go('chart'); } }))),
+        gone];
     });
+  }
+
+  /// Workers let go that you could bring back: as they were, paused, under
+  /// the same id, so their journal and any team still listing them pick them
+  /// up again. Nothing at all when there are none.
+  function letGoSection(gone) {
+    if (!gone || !gone.length) return null;
+    return h('section', { class: 'sec', style: 'margin-top:16px', 'aria-label': 'Let go' },
+      h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Let go · ' + gone.length }),
+        h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Brought back as they were, paused.' })),
+      h('div', { class: 'sec-body flush' }, gone.map(function (w) {
+        var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        var back = h('button', { class: 'btn small', text: 'Bring back' });
+        back.onclick = function () {
+          var restore = busy(back, 'Bringing back…');
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/bring-back').then(function (x) {
+            restore();
+            if (x.ok === false) { fill(out, [msg(x)]); return; }
+            openWorker(x.worker.id);
+          }, function (e) { restore(); fill(out, [msg({ ok: false, error: String((e && e.message) || e) })]); });
+        };
+        var meta = ['Let go ' + when(w.retiredAt)];
+        if (w.manager) meta.push('managed by ' + w.manager);
+        if (w.teams.length) meta.push('rejoins ' + listWords(w.teams));
+        return h('div', { class: 'row', style: 'gap:12px;padding:12px 18px;align-items:center' },
+          avatar(w.id, w.name, 's'),
+          h('span', { class: 'stack', style: 'gap:2px;flex:1;min-width:0' }, h('b', { text: w.name }),
+            h('span', { class: 'faint', style: 'font-size:12.5px', text: (w.tagline ? w.tagline + ' · ' : '') + meta.join(' · ') })),
+          out, back);
+      })));
   }
 
   /// Every run a worker has finished, newest first, 50 at a time. A row
@@ -6775,7 +6809,7 @@ export const CONSOLE_JS = String.raw`
         letGo.onclick = function () {
           if (!armed) {
             letGo.textContent = 'Yes, let ' + w.name + ' go';
-            saved.textContent = ''; saved.appendChild(h('div', { class: 'msg err', role: 'alert', text: 'This retires ' + w.name + ' for good. Its finished work and journal stay; its reports move up to its boss. Press again to confirm.' }));
+            saved.textContent = ''; saved.appendChild(h('div', { class: 'msg err', role: 'alert', text: 'This takes ' + w.name + ' off the roster. Its finished work and journal stay, and its reports move up to its boss. You can bring it back from Workers. Press again to confirm.' }));
             armed = setTimeout(function () { armed = null; letGo.textContent = 'Let ' + w.name + ' go'; saved.textContent = ''; }, 6000);
             return;
           }
@@ -7543,16 +7577,17 @@ export const CONSOLE_JS = String.raw`
   function teamYamlDialog(t) {
     yamlDialog({
       title: t ? t.name + ' as YAML' : 'Import a team from YAML',
-      intro: t ? 'Its members go by name, and its workers don’t come with it: bring those over first. Who was picked to give it tasks stays here.' : 'Its members go by name, and need to exist here first. Nothing is made until you check it in the form.',
+      intro: t ? 'Its members go by name, and each member’s worker file comes with it, so a server that lacks one can hire it. Who was picked to give it tasks stays here.' : 'Members already here are used as they are. Ones that aren’t are hired from the worker files the team file carries when you make the team. Nothing is made until you check it in the form.',
       placeholder: 'name: Design Team\\npurpose: What the team does\\nmembers:\\n  - worker: A Worker\\n    role: What they do on this team\\nbudget_per_task: 50\\ncheckpoints:\\n  ask_first: true\\n  final_review: true',
       openText: t ? null : 'Open in the form',
       load: t ? '/api/teams/' + encodeURIComponent(t.id) + '/yaml' : null,
       copyable: !!t,
+      download: t ? t.name.replace(/[^A-Za-z0-9 _-]+/g, '').trim().replace(/\s+/g, '-').toLowerCase() + '.team.yaml' : null,
       read: function (yaml) { return api('POST', '/api/teams/from-yaml', { yaml: yaml }); },
-      // Nobody it names is here, so there's no form to open yet.
-      refuse: function (x) { return x.draft.members.length ? null : 'None of its members are here: ' + x.missing.workers.join(', ') + '. Hire or bring them over first, then import this again.'; },
-      opened: function (x) {
-        state.newTeamPrefill = { name: x.draft.name, purpose: x.draft.purpose || '', imported: { draft: x.draft, notes: x.notes || [], missing: x.missing } };
+      // Nobody it names is here or carried in it, so there's no form to open yet.
+      refuse: function (x) { return x.draft.members.length || (x.draft.bring || []).length ? null : 'None of its members are here, and it doesn’t carry their worker files: ' + x.missing.workers.join(', ') + '. Hire or bring them over first, then import this again.'; },
+      opened: function (x, yaml) {
+        state.newTeamPrefill = { name: x.draft.name, purpose: x.draft.purpose || '', imported: { draft: x.draft, notes: x.notes || [], missing: x.missing, yaml: yaml } };
         go('newteam', { teamRunId: null });
       },
     });
@@ -7565,6 +7600,18 @@ export const CONSOLE_JS = String.raw`
     var out = h('div', { 'aria-live': 'polite' });
     var open = o.openText ? h('button', { class: 'btn go', text: o.openText }) : null;
     var copy = h('button', { class: 'btn', text: 'Copy', onclick: function () { if (navigator.clipboard) navigator.clipboard.writeText(box.value).then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy'; }, 1500); }); } });
+    // A file is easier to carry than a paste once worker files come with it.
+    var save = o.download ? h('button', { class: 'btn', text: 'Download', onclick: function () {
+      var a = h('a', { href: URL.createObjectURL(new Blob([box.value], { type: 'text/yaml' })), download: o.download });
+      document.body.appendChild(a); a.click(); a.remove();
+    } }) : null;
+    var picker = open ? h('input', { type: 'file', accept: '.yaml,.yml,text/yaml', style: 'display:none' }) : null;
+    var pick = picker ? h('button', { type: 'button', class: 'btn quiet', text: 'Open a file', onclick: function () { picker.click(); } }) : null;
+    if (picker) picker.onchange = function () {
+      var f = picker.files && picker.files[0];
+      if (!f) return;
+      f.text().then(function (text) { box.value = text; fill(out, []); }, function () { fill(out, [msg({ ok: false, error: 'That file could not be read.' })]); });
+    };
     var scrim = h('div', { class: 'scrim' });
     var close = function () { scrim.remove(); document.removeEventListener('keydown', onKey); };
     var onKey = function (e) { if (e.key === 'Escape') close(); };
@@ -7584,9 +7631,15 @@ export const CONSOLE_JS = String.raw`
     append(scrim, h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'yaml-title' },
       h('div', null, h('h2', { id: 'yaml-title', text: o.title }), h('p', { class: 'muted', style: 'margin-top:4px', text: o.intro })),
       box, out,
-      h('div', { class: 'row', style: 'justify-content:flex-end' }, h('button', { class: 'btn quiet', text: open ? 'Cancel' : 'Close', onclick: close }), o.copyable ? copy : null, open)));
+      h('div', { class: 'row', style: 'justify-content:flex-end' }, pick, picker, h('span', { style: 'flex:1' }), h('button', { class: 'btn quiet', text: open ? 'Cancel' : 'Close', onclick: close }), o.copyable ? copy : null, save, open)));
     document.body.appendChild(scrim);
-    if (o.load) api('GET', o.load).then(function (x) { if (x.ok === false) fill(out, [msg(x)]); else if (!box.value) box.value = x.yaml; });
+    if (o.load) api('GET', o.load).then(function (x) {
+      if (x.ok === false) { fill(out, [msg(x)]); return; }
+      if (!box.value) box.value = x.yaml;
+      // What didn't come with it, e.g. members whose files aren't yours to export.
+      if (x.left && x.left.length) fill(out, [h('div', { class: 'msg need', role: 'status' }, h('b', { text: 'Left out of the file:' }),
+        h('ul', { style: 'margin:6px 0 0;padding-left:18px' }, x.left.map(function (l) { return h('li', { text: l }); })))]);
+    });
     setTimeout(function () { box.focus(); }, 0);
   }
 
@@ -9856,9 +9909,13 @@ export const CONSOLE_JS = String.raw`
       var workers = all.filter(function (w) { return w.enabled && (w.youManage || state.me.admin); })
         .sort(function (a, b) { return (b.youManage ? 1 : 0) - (a.youManage ? 1 : 0) || a.name.localeCompare(b.name); });
       var back = function () { go('teams'); };
-      if (workers.length < 1) return [head('Make a team', 'A team needs at least one worker you manage.', null, 'Teams'), emptyState('No workers yet.', 'Hire a worker, then come back to put a team together.')];
+      var fileBrings = state.newTeamPrefill && state.newTeamPrefill.imported ? state.newTeamPrefill.imported.draft.bring || [] : [];
+      if (workers.length < 1 && !fileBrings.length) return [head('Make a team', 'A team needs at least one worker you manage.', null, 'Teams'), emptyState('No workers yet.', 'Hire a worker, then come back to put a team together.')];
 
       var picked = {}, roles = {}, order = [], gaps = [];
+      // Members from a team file that aren't here: hired from the worker file
+      // it carries when the team is made (bringTeamMembers).
+      var bring = fileBrings.map(function (b) { return { name: b.name, role: b.role || '' }; });
       var checks = { askFirst: true, reviewBeforeChallenge: false, finalReview: true, approveRoomWork: true };
       var name = h('input', { type: 'text', placeholder: 'Product', 'aria-label': 'Team name', maxlength: '80' });
       var purpose = h('input', { type: 'text', placeholder: 'What the team produces, and for whom', 'aria-label': 'What the team does', maxlength: '500' });
@@ -9919,7 +9976,7 @@ export const CONSOLE_JS = String.raw`
       // suggestion said needs a new hire, as a row of its own.
       var drawRoles = function () {
         var hires = state.me.canHire ? gaps : [];
-        if (!order.length && !hires.length) {
+        if (!order.length && !hires.length && !bring.length) {
           fill(roleList, [h('span', { class: 'label', text: 'The crew, and what each does' }),
             h('div', { class: 'ntempty', text: 'Nobody yet. Pick from your workers below, or let overgo suggest a crew.' })]);
           return;
@@ -9932,7 +9989,14 @@ export const CONSOLE_JS = String.raw`
             return h('div', { class: 'ntrole', 'data-id': id }, avatar(w.id, w.name, 's'),
               h('span', { class: 'ntrole-who' }, h('b', { text: w.name }), h('span', { class: 'faint', text: w.tagline || '' })), input,
               h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Take ' + w.name + ' off the team', onclick: function () { toggle(id, false); } }, icon('x', 14)));
-          }).concat(hires.map(function (g) {
+          }).concat(bring.map(function (b) {
+            var input = h('input', { type: 'text', value: b.role, placeholder: 'What ' + b.name + ' does on this team', 'aria-label': 'What ' + b.name + ' does on this team', maxlength: '200' });
+            input.oninput = function () { b.role = input.value; };
+            return h('div', { class: 'ntrole bring', 'data-bring': b.name },
+              h('span', { class: 'avatar s ntw-new', 'aria-hidden': 'true' }, icon('plus', 14)),
+              h('span', { class: 'ntrole-who' }, h('span', { class: 'ntw-tag', text: 'From the file' }), h('b', { text: b.name })), input,
+              h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Leave ' + b.name + ' off the team', title: 'Leave off the team', onclick: function () { bring = bring.filter(function (x) { return x !== b; }); draw(); } }, icon('x', 14)));
+          })).concat(hires.map(function (g) {
             var job = h('span', { class: 'faint ntclamp', text: g.job });
             var more = h('button', { type: 'button', class: 'linkish', style: 'color:var(--go);font-size:12px;font-weight:600;align-self:flex-start', text: 'The whole job' });
             more.onclick = function () { var open = job.classList.toggle('ntclamp'); more.textContent = open ? 'The whole job' : 'Less'; };
@@ -9943,10 +10007,11 @@ export const CONSOLE_JS = String.raw`
                 h('span', { class: 'row', style: 'gap:6px 12px' }, more, h('span', { class: 'faint', style: 'font-size:12px', text: 'Hired when you make the team' }))),
               h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Skip this hire', title: 'Skip this hire', onclick: function () { gaps = gaps.filter(function (x) { return x !== g; }); draw(); } }, icon('x', 14)));
           }))),
+          bring.length ? h('span', { class: 'faint', style: 'font-size:12.5px', text: (bring.length === 1 ? 'The member from the file isn’t here yet, so it is' : 'The members from the file aren’t here yet, so they are') + ' hired from the worker file it carries when you make the team, with you as manager.' }) : null,
           h('span', { class: 'faint', style: 'font-size:12.5px', text: 'The coordinator isn’t one of them: it plans each task, drafts, and writes the final pack.' })]);
       };
       var drawPreview = function () {
-        var names = order.map(function (id) { return byId(id).name; });
+        var names = order.map(function (id) { return byId(id).name; }).concat(bring.map(function (b) { return b.name; }));
         var steps = [];
         if (checks.askFirst) steps.push(['Asks what it needs to know', 'One round of questions, each with the default it will use.', true]);
         steps.push(['You approve the plan', 'Who does what, and the assumptions it rests on.', true]);
@@ -9959,11 +10024,13 @@ export const CONSOLE_JS = String.raw`
             h('div', { style: 'min-width:0' }, h('span', { class: 'tmname', text: n || 'Your new team' }), purpose.value.trim() ? h('p', { class: 'tmpurpose', text: purpose.value.trim() }) : null),
             h('div', { class: 'tmmeta' },
               order.length ? h('span', { class: 'faces' }, order.slice(0, 6).map(function (id) { var w = byId(id); return avatar(w.id, w.name, 's'); })) : null,
-              h('span', { class: 'faint tmstats', text: plural(order.length, 'member', 'members') + ' · $' + (Number(budget.value) || 0) + ' a task' }))),
+              h('span', { class: 'faint tmstats', text: plural(names.length, 'member', 'members') + ' · $' + (Number(budget.value) || 0) + ' a task' }))),
+          // The list in a body of its own: .ntflow zeroes padding, and on the
+          // body itself that ran the steps into the panel's edge.
           h('section', { class: 'sec' }, h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'When you give it a task' })),
-            h('ol', { class: 'ntflow sec-body' }, steps.map(function (st, i) {
+            h('div', { class: 'sec-body' }, h('ol', { class: 'ntflow' }, steps.map(function (st, i) {
               return h('li', null, h('span', { class: 'ntnum' + (st[2] ? ' you' : ''), text: String(i + 1) }), h('span', { class: 'stack', style: 'gap:1px' }, h('b', { text: st[0] }), h('span', { class: 'faint', text: st[1] })));
-            }))),
+            })))),
           h('section', { class: 'sec' }, h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Give it work from Slack' })),
             h('div', { class: 'sec-body stack', style: 'gap:6px' }, codeBlock('@overgo ' + (n || 'Product') + ', write a …'),
               h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Or don’t name it: requests that fit what it’s for come to it. /team ' + (n || 'Product') + ': … works too.' })))]);
@@ -9971,10 +10038,15 @@ export const CONSOLE_JS = String.raw`
       var draw = function () {
         drawCards(); drawRoles(); drawPreview();
         var toHire = state.me.canHire ? gaps.length : 0;
-        count.textContent = (order.length ? order.length + ' on the team' : 'None picked yet') + (toHire ? ' · ' + toHire + ' to hire' : '');
-        var n = name.value.trim(), total = order.length + toHire;
-        summary.textContent = !n ? 'Give the team a name.' : total < 1 ? n + ' needs at least one member.' : n + ': ' + plural(order.length, 'member', 'members') + (toHire ? ' and ' + toHire + ' to hire' : '') + '.';
-        make.disabled = !name.value.trim() || order.length + (state.me.canHire ? gaps.length : 0) < 1;
+        var parts = [];
+        if (order.length) parts.push(order.length + ' on the team');
+        if (bring.length) parts.push(bring.length + ' from the file');
+        if (toHire) parts.push(toHire + ' to hire');
+        count.textContent = parts.length ? parts.join(' · ') : 'None picked yet';
+        var n = name.value.trim(), total = order.length + bring.length + toHire;
+        var also = [bring.length ? bring.length + ' from the file' : '', toHire ? toHire + ' to hire' : ''].filter(Boolean);
+        summary.textContent = !n ? 'Give the team a name.' : total < 1 ? n + ' needs at least one member.' : n + ': ' + plural(order.length, 'member', 'members') + (also.length ? ' and ' + also.join(' and ') : '') + '.';
+        make.disabled = !n || total < 1;
       };
       find.oninput = drawCards;
       name.oninput = draw; purpose.oninput = drawPreview; budget.oninput = drawPreview;
@@ -10007,6 +10079,37 @@ export const CONSOLE_JS = String.raw`
       };
 
       make.onclick = function () {
+        var unsaid = bring.filter(function (b) { return !b.role.trim(); })[0];
+        if (unsaid) {
+          var at = [].filter.call(roleList.querySelectorAll('[data-bring] input'), function (el) { return el.closest('[data-bring]').getAttribute('data-bring') === unsaid.name; })[0];
+          if (at) at.focus();
+          fill(out, [msg({ ok: false, error: 'Say what ' + unsaid.name + ' does on this team.' })]);
+          return;
+        }
+        if (!bring.length) { makeNow(); return; }
+        // Members the file carries but who aren't here: hired (or found, if an
+        // earlier try already brought them) first, then on the team as anyone.
+        var restore = busy(make, 'Bringing members over…');
+        api('POST', '/api/teams/bring-members', { yaml: importedTeam.yaml, names: bring.map(function (b) { return b.name; }) }).then(function (y) {
+          restore();
+          if (y.ok === false) { fill(out, [msg(y)]); return; }
+          var roleOf = {};
+          bring.forEach(function (b) { roleOf[b.name.toLowerCase()] = b.role.trim(); });
+          y.members.forEach(function (m) {
+            if (!byId(m.workerId)) workers.push({ id: m.workerId, name: m.name, tagline: m.hired ? 'Hired from the team file' : '', enabled: true, youManage: true });
+            if (!picked[m.workerId]) { picked[m.workerId] = true; order.push(m.workerId); }
+            roles[m.workerId] = roleOf[m.asked.toLowerCase()] || roles[m.workerId] || '';
+          });
+          bring = [];
+          draw();
+          if (y.waitingOn.length) {
+            fill(out, [msg({ ok: false, error: listWords(y.waitingOn) + (y.waitingOn.length === 1 ? ' is' : ' are') + ' over your hiring allowance and wait' + (y.waitingOn.length === 1 ? 's' : '') + ' for an approver, so ' + (y.waitingOn.length === 1 ? 'it is' : 'they are') + ' left off. Make the team without them now, and add them once they’re hired.' })]);
+            return;
+          }
+          makeNow();
+        }, function (e) { restore(); fill(out, [msg({ ok: false, error: String((e && e.message) || e) })]); });
+      };
+      var makeNow = function () {
         var missing = order.filter(function (id) { return !(roles[id] || '').trim(); })[0];
         if (missing) {
           var el = roleList.querySelector('[data-id="' + missing + '"] input');

@@ -69,6 +69,7 @@ import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, 
 import { resolveShortNames } from '../../shared/shortName';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_KNOWLEDGE_REFRESH_MODES, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
 import { CARRIED_LIMITS, SHARE_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
+import { teamToYaml, teamWorkerFiles, type TeamWorkerFile } from '../../shared/org/teamYaml';
 import { ORG_BUNDLE_FORMAT, ORG_BUNDLE_LIMITS, ORG_BUNDLE_VERSION, bareRepoUrl, type OrgBundle, type OrgBundleSetup, type OrgBundleTeam, type OrgBundleWorker, type OrgImportReport } from './orgBundle';
 import { OVERDB_TOOL, parseOverdbConnection } from '../../shared/overdbConnection';
 import { overapiToolName, parseApiPush } from '../../shared/overapiProject';
@@ -868,6 +869,10 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
     save(input: Worker): { ok: true; worker: Worker } | { ok: false; error: string };
     setEnabled(id: UUID, enabled: boolean): { ok: true } | { ok: false; error: string };
     remove(id: UUID): { ok: true } | { ok: false; error: string };
+    /// Workers let go whose records were kept, and putting one back.
+    /// Absent: letting go is for good.
+    retired?(): Array<{ worker: Worker; retiredAt: number }>;
+    bringBack?(id: UUID): { ok: true; worker: Worker } | { ok: false; error: string };
     /// `conversation`: a conversation of its own (a Slack thread), not today's desk.
     /// `mayLaunch`: asked by someone else, of a worker that only reads.
     runErrand(id: UUID, instruction: string, attachments?: Attachment[], conversation?: string, untrusted?: boolean, mayLaunch?: boolean): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }>;
@@ -4249,6 +4254,46 @@ export class OrgService {
     const res = this.deps.workers.remove(found.worker.id);
     if (res.ok) this.record(caller, `Let ${found.worker.name} go.`);
     return res.ok ? { ok: true, name: found.worker.name } : res;
+  }
+
+  /// Workers let go that the caller could bring back: every one for an
+  /// admin, else the ones they managed, if they may hire. With the teams
+  /// that still list each, which it rejoins.
+  retiredWorkers(caller: OrgCaller): Result<{ workers: Array<{ id: UUID; name: string; tagline?: string; retiredAt: number; manager?: string; teams: string[] }> }> {
+    const teams = this.deps.teams?.list().teams.filter((t) => !t.disbanded) ?? [];
+    const workers = (this.deps.workers.retired?.() ?? [])
+      .filter((r) => this.mayBringBack(caller, r.worker))
+      .map((r) => ({
+        id: r.worker.id,
+        name: r.worker.name,
+        ...(r.worker.tagline ? { tagline: r.worker.tagline } : {}),
+        retiredAt: r.retiredAt,
+        ...(r.worker.manager?.name ? { manager: r.worker.manager.name } : {}),
+        teams: teams.filter((t) => t.members.some((m) => m.workerId === r.worker.id)).map((t) => t.name),
+      }));
+    return { ok: true, workers };
+  }
+
+  private mayBringBack(caller: OrgCaller, w: Worker): boolean {
+    const policy = this.policy();
+    if (isAdmin(policy, caller)) return true;
+    return canHire(policy, caller) && !!caller.slackUserId && w.manager?.slackUserId === caller.slackUserId;
+  }
+
+  /// A worker that was let go, back as it was, paused.
+  bringBack(caller: OrgCaller, id: string): Result<{ worker: WorkerSummary }> {
+    if (!this.deps.workers.bringBack || !this.deps.workers.retired) return { ok: false, error: 'Workers that were let go can’t be brought back on this server.' };
+    const kept = this.deps.workers.retired().find((r) => r.worker.id === id);
+    if (!kept) return { ok: false, error: 'No worker that was let go by that id.' };
+    if (!this.mayBringBack(caller, kept.worker)) return { ok: false, error: `Only ${kept.worker.name}’s manager, if they may hire, or an admin can bring it back.` };
+    if (this.deps.workers.roster().some((w) => w.name.toLowerCase() === kept.worker.name.toLowerCase())) {
+      return { ok: false, error: `There’s already a worker called ${kept.worker.name}. Rename that one first.` };
+    }
+    const res = this.deps.workers.bringBack(id);
+    if (!res.ok) return res;
+    this.record(caller, `Brought ${res.worker.name} back.`);
+    const summary = this.summaryFor(caller, res.worker.id);
+    return summary ? { ok: true, worker: summary } : { ok: false, error: NOT_FOUND };
   }
 
   // ---- HIRE -------------------------------------------------------------
@@ -7724,6 +7769,70 @@ export class OrgService {
   /// and its journal. `left`: what stays behind, besides secrets and trust.
   /// `whole`: moving the org, so all of its notes and journal go (as much as
   /// the server keeps); otherwise a share's trimmed history.
+  // ---- EXPORT AND IMPORT A TEAM -----------------------------------------
+
+  /// A team as its file, for whoever could change it, with the worker file
+  /// of each member they manage (or every member, for an admin), so the
+  /// server it goes to can hire any it lacks. `left`: members whose files
+  /// stay behind.
+  exportTeam(caller: OrgCaller, idOrName: string): Result<{ name: string; yaml: string; left: string[] }> {
+    const res = this.teamPage(caller, idOrName);
+    if (!res.ok) return res;
+    if (!res.team.canChange) return { ok: false, error: 'Only someone who can change this team can export it.' };
+    const files: TeamWorkerFile[] = [];
+    const left: string[] = [];
+    for (const m of res.team.members) {
+      const w = this.deps.workers.get(m.workerId);
+      if (!w) continue;
+      if (!this.deps.shareWorker) {
+        left.push(`${w.name}: workers can’t be exported from this server.`);
+        continue;
+      }
+      if (!this.managed(caller, w.id).ok) {
+        left.push(`${w.name}: only its manager or an admin can export its worker file.`);
+        continue;
+      }
+      files.push({ name: w.name, sourceId: w.id, yaml: this.portableFile(w, {}).yaml });
+    }
+    return { ok: true, name: res.team.name, yaml: teamToYaml(res.team, files), left };
+  }
+
+  /// The members of an imported team that weren't here when it was read,
+  /// from the worker files the team file carries. One brought over before
+  /// (by its id where it came from) or here under its name is used as it
+  /// is; any other is hired as a published worker is, the caller its
+  /// manager. `waitingOn`: hires over the caller's allowance, which wait for
+  /// an approver and are left off the team.
+  bringTeamMembers(caller: OrgCaller, yaml: string, names: string[]): Result<{ members: Array<{ asked: string; name: string; workerId: UUID; hired: boolean }>; waitingOn: string[] }> {
+    if (!canHire(this.policy(), caller)) {
+      return { ok: false, error: 'You are not on the list of people who may hire workers, so the members that aren’t here can’t be brought over. Ask an admin to add you to the org policy.' };
+    }
+    if (names.length > TEAM_MAX_MEMBERS) return { ok: false, error: `A team can have at most ${TEAM_MAX_MEMBERS} members.` };
+    const read = teamWorkerFiles(yaml);
+    if (!read.ok) return read;
+    const members: Array<{ asked: string; name: string; workerId: UUID; hired: boolean }> = [];
+    const waitingOn: string[] = [];
+    for (const name of names) {
+      const key = name.trim().toLowerCase();
+      const f = read.files.find((x) => x.name.toLowerCase() === key);
+      if (!f) return { ok: false, error: `The team file doesn’t carry ${name}’s worker file.` };
+      const policy = this.policy();
+      const roster = this.deps.workers.roster();
+      const localId = f.sourceId && LOCAL_ID.test(f.sourceId) ? f.sourceId : undefined;
+      const before = localId ? this.publishedWorker(localId) : null;
+      const here = before && canSee(policy, roster, before, caller) ? before : roster.find((w) => w.name.toLowerCase() === key && canSee(policy, roster, w.id, caller))?.id;
+      if (here) {
+        members.push({ asked: name, name: this.deps.workers.get(here)!.name, workerId: here, hired: false });
+        continue;
+      }
+      const res = this.publishWorker(caller, f.yaml, {}, [], localId);
+      if (!res.ok) return { ok: false, error: `Could not hire ${f.name}: ${res.error}` };
+      if (res.hired) members.push({ asked: name, name: res.hired.name, workerId: res.hired.id, hired: true });
+      else waitingOn.push(f.name);
+    }
+    return { ok: true, members, waitingOn };
+  }
+
   private portableFile(w: Worker, opts: { learned?: boolean; journal?: boolean; whole?: boolean }): { yaml: string; filename: string; left: string[] } {
     const limits = opts.whole ? CARRIED_LIMITS : SHARE_LIMITS;
     const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;

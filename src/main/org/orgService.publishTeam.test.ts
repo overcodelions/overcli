@@ -4,6 +4,7 @@ import type { Team } from '../../shared/flows/team';
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
 import { parseWorkerYaml, serializeWorker } from '../../shared/flows/workerYaml';
 import { DEFAULT_ORG_POLICY, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
+import { teamFromYaml } from '../../shared/org/teamYaml';
 import { OrgService, type PendingHire, type TeamPublishInput } from './orgService';
 import type { AuditEntry, PublishedState } from './orgStores';
 
@@ -35,6 +36,7 @@ function worker(id: string, over: Partial<Worker> = {}): Worker {
 function harness(policy: Partial<OrgPolicy> = {}) {
   const roster = new Map<string, Worker>();
   const teams = new Map<string, Team>();
+  let retired: Array<{ worker: Worker; retiredAt: number }> = [];
   let hires: PendingHire[] = [];
   let published: PublishedState = { workers: {}, teams: {}, waiting: [] };
   const audit: AuditEntry[] = [];
@@ -47,6 +49,15 @@ function harness(policy: Partial<OrgPolicy> = {}) {
       save: (w) => ({ ok: true, worker: w }),
       setEnabled: () => ({ ok: true }),
       remove: () => ({ ok: true }),
+      retired: () => retired,
+      bringBack: (id) => {
+        const r = retired.find((x) => x.worker.id === id);
+        if (!r) return { ok: false, error: 'gone' };
+        retired = retired.filter((x) => x !== r);
+        const w = { ...r.worker, enabled: false };
+        roster.set(w.id, w);
+        return { ok: true, worker: w };
+      },
       runErrand: async () => ({ ok: false, error: 'no' }),
       journalFor: () => [],
       spentThisMonth: () => new Map(),
@@ -92,10 +103,11 @@ function harness(policy: Partial<OrgPolicy> = {}) {
       roster.set(w.id, w);
       return { ok: true, worker: w };
     },
+    shareWorker: (w) => ({ yaml: serializeWorker({ worker: w, flows: [] }), filename: `${w.name}.yaml`, missingFlowIds: [] }),
     audit: { append: (e) => audit.push(e), recent: (k) => audit.slice(-k).reverse(), all: () => [...audit] },
     now: () => 0,
   });
-  return { svc, roster, teams, audit, rosterAsks, hires: () => hires };
+  return { svc, roster, teams, audit, rosterAsks, hires: () => hires, retire: (w: Worker) => void retired.push({ worker: w, retiredAt: 1 }) };
 }
 
 const member = (localId: string, name: string, budget = 20) => ({
@@ -268,5 +280,69 @@ describe('making a team on the server', () => {
     expect(h.rosterAsks).toEqual([['a', 'b']]);
     expect(res).toMatchObject({ ok: true, name: 'Pair', members: [{ workerId: 'a', name: 'A' }, { workerId: 'b', name: 'B' }], gaps: [{ job: 'A designer', role: 'Designs the visuals' }] });
     expect(await h.svc.suggestTeam(sam, 'Writes PR/FAQs')).toMatchObject({ ok: false, error: expect.stringContaining('two workers you manage') });
+  });
+});
+
+describe('a team file between servers', () => {
+  it('exports each member’s worker file, and hires only the members the other server lacks', () => {
+    const from = harness({ budgetAllowanceUSD: 100 });
+    from.roster.set('ada', worker('ada', { name: 'Ada', manager: { name: 'Pat', slackUserId: PAT } }));
+    from.roster.set('cy', worker('cy', { name: 'Cy', manager: { name: 'Pat', slackUserId: PAT } }));
+    from.teams.set('t1', { id: 't1', name: 'Launch crew', members: [{ workerId: 'ada', role: 'Writes' }, { workerId: 'cy', role: 'Checks' }], budgetUSDPerTask: 40, checkpoints: DEFAULT_TEAM_CHECKPOINTS, createdAt: 0 } as Team);
+    const out = from.svc.exportTeam(pat, 't1');
+    if (!out.ok) throw new Error(out.error);
+    expect(out.left).toEqual([]);
+
+    // The other server already has Ada; Cy comes from the file.
+    const to = harness({ budgetAllowanceUSD: 100 });
+    to.roster.set('here-ada', worker('here-ada', { name: 'Ada', manager: { name: 'Sam', slackUserId: SAM } }));
+    const read = teamFromYaml(out.yaml, { workers: [{ id: 'here-ada', name: 'Ada' }] });
+    if (!read.ok) throw new Error(read.error);
+    expect(read.draft.members.map((m) => m.name)).toEqual(['Ada']);
+    expect(read.draft.bring).toEqual([{ name: 'Cy', role: 'Checks' }]);
+
+    const brought = to.svc.bringTeamMembers(sam, out.yaml, ['Cy']);
+    expect(brought).toMatchObject({ ok: true, members: [{ asked: 'Cy', name: 'Cy', hired: true }], waitingOn: [] });
+    expect(to.roster.size).toBe(2);
+    // Again (a retry after a failed make): the one it hired is found, not hired twice.
+    expect(to.svc.bringTeamMembers(sam, out.yaml, ['Cy'])).toMatchObject({ ok: true, members: [{ name: 'Cy', hired: false }] });
+    expect(to.roster.size).toBe(2);
+  });
+
+  it('leaves out the files of members the exporter doesn’t manage', () => {
+    const h = harness();
+    h.roster.set('ada', worker('ada', { name: 'Ada', manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('cy', worker('cy', { name: 'Cy', manager: { name: 'Sam', slackUserId: SAM } }));
+    h.teams.set('t1', { id: 't1', name: 'Launch crew', members: [{ workerId: 'ada', role: 'Writes' }, { workerId: 'cy', role: 'Checks' }], budgetUSDPerTask: 40, checkpoints: DEFAULT_TEAM_CHECKPOINTS, createdAt: 0 } as Team);
+    const out = h.svc.exportTeam(pat, 't1');
+    if (!out.ok) throw new Error(out.error);
+    expect(out.left).toEqual([expect.stringContaining('Cy')]);
+    expect(out.yaml).toContain('worker: Ada\n    id: ada');
+    expect(out.yaml).not.toContain('id: cy');
+  });
+});
+
+describe('bringing back a worker that was let go', () => {
+  it('lets her manager bring her back onto the team that still lists her, and nobody else', () => {
+    const h = harness();
+    const nadia = worker('nadia', { name: 'Nadia', manager: { name: 'Pat', slackUserId: PAT } });
+    h.retire(nadia);
+    h.teams.set('t1', { id: 't1', name: 'MLP Team', members: [{ workerId: 'nadia', role: 'Market' }], budgetUSDPerTask: 50, checkpoints: DEFAULT_TEAM_CHECKPOINTS, createdAt: 0 } as Team);
+
+    expect(h.svc.retiredWorkers(sam)).toEqual({ ok: true, workers: [] });
+    expect(h.svc.bringBack(sam, 'nadia')).toMatchObject({ ok: false });
+    expect(h.svc.retiredWorkers(pat)).toMatchObject({ ok: true, workers: [{ id: 'nadia', name: 'Nadia', manager: 'Pat', teams: ['MLP Team'] }] });
+
+    const res = h.svc.bringBack(pat, 'nadia');
+    expect(res).toMatchObject({ ok: true, worker: { id: 'nadia', name: 'Nadia' } });
+    expect(h.roster.get('nadia')?.enabled).toBe(false);
+    expect(h.svc.retiredWorkers(pat)).toEqual({ ok: true, workers: [] });
+  });
+
+  it('won’t bring one back over a worker of the same name', () => {
+    const h = harness();
+    h.retire(worker('nadia', { name: 'Nadia', manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('other', worker('other', { name: 'nadia' }));
+    expect(h.svc.bringBack(pat, 'nadia')).toMatchObject({ ok: false, error: expect.stringContaining('already a worker called Nadia') });
   });
 });

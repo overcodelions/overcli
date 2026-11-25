@@ -14,6 +14,7 @@ import { flowStarKey } from '@shared/flows/schema';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { Composer } from '../Composer';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
+import { BranchCombobox } from '../sheets/BranchCombobox';
 import { FlowMonogram } from './FlowMonogram';
 import { PlacePicker } from '../PlacePicker';
 
@@ -35,6 +36,8 @@ export function RunPanel({
   onRunIn,
   baseBranch,
   onBaseBranch,
+  existingBranch,
+  onExistingBranch,
   baseBranchRepoPaths,
   launchProgress,
   isDraft = false,
@@ -58,10 +61,14 @@ export function RunPanel({
   /// True when the target is a workspace (multiple member repos). Switches
   /// the base-branch control to "each repo's default + shared override".
   isWorkspace?: boolean;
-  runIn: 'cwd' | 'worktree';
-  onRunIn: (v: 'cwd' | 'worktree') => void;
+  runIn: LaunchRunIn;
+  onRunIn: (v: LaunchRunIn) => void;
   baseBranch: string;
   onBaseBranch: (s: string) => void;
+  /// With `runIn === 'existing'`: the branch whose existing worktree(s) the
+  /// run works in.
+  existingBranch: string;
+  onExistingBranch: (s: string) => void;
   /// Repos the worktree(s) will be minted from. Single project →
   /// `[projectPath]`; workspace → each member's path. Passed straight
   /// through to `BaseBranchSelect`, which lists the branch names that
@@ -184,6 +191,13 @@ export function RunPanel({
                     >
                       worktree
                     </SegmentButton>
+                    <SegmentButton
+                      active={runIn === 'existing'}
+                      onClick={() => onRunIn('existing')}
+                      title="Run in a worktree you already have checked out — no new branch"
+                    >
+                      existing
+                    </SegmentButton>
                   </div>
                   {runIn === 'worktree' && (
                     <WorktreeBaseControl
@@ -191,6 +205,13 @@ export function RunPanel({
                       repoPaths={baseBranchRepoPaths}
                       value={baseBranch}
                       onChange={onBaseBranch}
+                    />
+                  )}
+                  {runIn === 'existing' && (
+                    <ExistingWorktreeControl
+                      repoPaths={baseBranchRepoPaths}
+                      value={existingBranch}
+                      onChange={onExistingBranch}
                     />
                   )}
                 </>
@@ -256,10 +277,11 @@ export function FlowRunLauncher({
   // a worktree-first user doesn't re-flip it on every launch. The toggle
   // still wins for this run; flipping the setting re-seeds the launcher.
   const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'worktree');
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
+  const [runIn, setRunIn] = useState<LaunchRunIn>(defaultRunIn);
   useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
   // Empty → BaseBranchSelect auto-detects the repo's default branch.
   const [baseBranch, setBaseBranch] = useState('');
+  const [existingBranch, setExistingBranch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -312,8 +334,7 @@ export function FlowRunLauncher({
         projectPath: targetPath,
         userPrompt: text,
         attachments: attachments.length > 0 ? attachments : undefined,
-        runIn: canUseWorktree ? runIn : 'cwd',
-        baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
+        ...launchPlacement({ canUseWorktree, runIn, baseBranch, existingBranch }),
       });
       if (!result.ok) {
         setError(result.error);
@@ -363,10 +384,28 @@ export function FlowRunLauncher({
       onRunIn={setRunIn}
       baseBranch={baseBranch}
       onBaseBranch={setBaseBranch}
+      existingBranch={existingBranch}
+      onExistingBranch={setExistingBranch}
       baseBranchRepoPaths={baseBranchRepoPaths}
       launchProgress={launchProgressMap[targetPath]}
     />
   );
+}
+
+/// The launcher's run-in toggle: the two placements a flow can be given,
+/// plus `existing` — work in a worktree the user already has checked out.
+export type LaunchRunIn = 'cwd' | 'worktree' | 'existing';
+
+/// The `flows:startRun` placement fields for a launcher's toggle state.
+export function launchPlacement(args: {
+  canUseWorktree: boolean;
+  runIn: LaunchRunIn;
+  baseBranch: string;
+  existingBranch: string;
+}): { runIn: 'cwd' | 'worktree'; baseBranch?: string; existingBranch?: string } {
+  if (!args.canUseWorktree || args.runIn === 'cwd') return { runIn: 'cwd' };
+  if (args.runIn === 'existing') return { runIn: 'worktree', existingBranch: args.existingBranch };
+  return { runIn: 'worktree', baseBranch: args.baseBranch };
 }
 
 function stripTargetPrefix(target: string): string {
@@ -697,5 +736,62 @@ export function StepPreview({ flow }: { flow: Flow }) {
         </>
       )}
     </>
+  );
+}
+
+/// Branch picker for an `existing` run: the branches that have a linked
+/// worktree checked out — in every repo, for a workspace, since the run needs
+/// one per member. Picks the first when nothing (or something stale) is set.
+function ExistingWorktreeControl({
+  repoPaths,
+  value,
+  onChange,
+}: {
+  repoPaths: string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [options, setOptions] = useState<string[] | null>(null);
+  const key = repoPaths.join('\0');
+  useEffect(() => {
+    let cancelled = false;
+    setOptions(null);
+    void Promise.all(
+      repoPaths.map((projectPath) =>
+        window.overcli.invoke('git:listLinkedWorktrees', { projectPath }).catch(() => []),
+      ),
+    ).then((lists) => {
+      if (cancelled) return;
+      const names = lists.map((l) => l.map((w) => w.branch));
+      setOptions(names.length === 0 ? [] : names[0].filter((b) => names.every((n) => n.includes(b))));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+
+  useEffect(() => {
+    if (options && options.length > 0 && !options.includes(value)) onChange(options[0]);
+  }, [options, value, onChange]);
+
+  if (options && options.length === 0) {
+    return (
+      <span className="text-[11px] text-amber-400">
+        {repoPaths.length > 1 ? 'No branch has a worktree in every repo' : 'No existing worktrees'}
+      </span>
+    );
+  }
+  return (
+    <div className="inline-flex items-center gap-1.5 text-[11px]">
+      <span className="text-ink-faint">on</span>
+      <BranchCombobox
+        options={options ?? []}
+        value={options?.includes(value) ? value : ''}
+        onChange={onChange}
+        disabled={!options}
+        placeholder={options ? 'Pick a worktree' : 'Loading worktrees…'}
+        className="text-[11px]"
+      />
+    </div>
   );
 }

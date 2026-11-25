@@ -12,7 +12,7 @@ import { createBranchedAgent, createDetachedAgent } from './sheets/NewAgentSheet
 import { BranchCombobox } from './sheets/BranchCombobox';
 import { useProjectBranches } from './sheets/useProjectBranches';
 import { worktreeChoices, type WorktreeChoice } from '../worktreeChoices';
-import { FlowCard, RunPanel } from './flows/FlowLaunch';
+import { FlowCard, RunPanel, launchPlacement, type LaunchRunIn } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
 import { FlowsAboutModal } from './flows/FlowsAbout';
 import { CopyButton } from './ManualCommand';
@@ -1132,7 +1132,7 @@ function WelcomeFlowsRow({
   // a worktree-first user doesn't re-flip it on every launch. The toggle
   // still wins for this run; flipping the setting re-seeds the launcher.
   const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'worktree');
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
+  const [runIn, setRunIn] = useState<LaunchRunIn>(defaultRunIn);
   useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
   // baseBranch starts empty — the BaseBranchSelect below populates it
   // from the repo's actual branches (and `detectBaseBranch` picks a
@@ -1140,6 +1140,7 @@ function WelcomeFlowsRow({
   // main/master exists). Hardcoding "main" was lying to users whose
   // repos use `master`.
   const [baseBranch, setBaseBranch] = useState('');
+  const [existingBranch, setExistingBranch] = useState('');
 
   // Repos the worktree(s) are minted from. For a workspace we hand the
   // selector each member's path so the branch list it shows is the
@@ -1394,8 +1395,7 @@ function WelcomeFlowsRow({
         projectPath: target,
         userPrompt: text,
         attachments: attachments.length > 0 ? attachments : undefined,
-        runIn: canUseWorktree ? runIn : 'cwd',
-        baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
+        ...launchPlacement({ canUseWorktree, runIn, baseBranch, existingBranch }),
       });
       if (!result.ok) {
         setError(result.error);
@@ -1681,6 +1681,8 @@ function WelcomeFlowsRow({
             onRunIn={setRunIn}
             baseBranch={baseBranch}
             onBaseBranch={setBaseBranch}
+            existingBranch={existingBranch}
+            onExistingBranch={setExistingBranch}
             baseBranchRepoPaths={baseBranchRepoPaths}
             launchProgress={launchProgressMap[target]}
           />

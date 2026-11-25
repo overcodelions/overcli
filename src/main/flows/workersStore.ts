@@ -171,6 +171,56 @@ export function saveWorkersAway(away: WorkersAway | null): void {
   }
 }
 
+/// A worker let go, kept so it can be brought back as it was.
+export interface RetiredWorker {
+  worker: Worker;
+  retiredAt: number;
+}
+
+function retiredPathFor(id: string): string {
+  if (!isSafeIdSegment(id)) throw new Error(`Unsafe worker id: ${id}`);
+  return path.join(dir(), 'retired', `${id}.json`);
+}
+
+/// Off the roster, but its record kept under workers/retired/: letting a
+/// worker go used to delete it, and there was no way back.
+export function retireWorker(id: string, at: number = Date.now()): void {
+  try {
+    const worker = JSON.parse(fs.readFileSync(pathFor(id), 'utf8')) as Worker;
+    fs.mkdirSync(path.dirname(retiredPathFor(id)), { recursive: true });
+    writeAtomic(retiredPathFor(id), JSON.stringify({ worker, retiredAt: at } satisfies RetiredWorker), `retired ${id}`);
+  } catch (err) {
+    log('warn', 'workers', `Could not keep ${id} on retiring it: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  deleteWorker(id);
+}
+
+export function loadRetiredWorkers(): RetiredWorker[] {
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(path.join(dir(), 'retired')).filter((n) => n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  return names.flatMap((n) => {
+    try {
+      const r = JSON.parse(fs.readFileSync(path.join(dir(), 'retired', n), 'utf8')) as RetiredWorker;
+      return r?.worker?.id && typeof r.retiredAt === 'number' ? [r] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/// Brought back: its record is on the roster again.
+export function forgetRetiredWorker(id: string): void {
+  try {
+    fs.rmSync(retiredPathFor(id), { force: true });
+  } catch {
+    // best-effort
+  }
+}
+
 export function deleteWorker(id: string): void {
   try {
     fs.rmSync(pathFor(id), { force: true });

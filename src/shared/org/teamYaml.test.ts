@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { processFromYaml } from './processYaml';
-import { teamFromYaml, teamToYaml } from './teamYaml';
+import { teamFromYaml, teamToYaml, teamWorkerFiles } from './teamYaml';
 
 const workers = [{ id: 'w-lena', name: 'Lena' }, { id: 'w-vera', name: 'Omar' }, { id: 'w-a', name: 'Twin' }, { id: 'w-b', name: 'Twin' }];
 const read = (source: string, places?: string[]) => {
@@ -125,5 +125,39 @@ stages:
     if (!res.ok) throw new Error(res.error);
     expect(res.missing).toEqual({ teams: [], workers: [], people: [], places: [] });
     expect(res.draft.codeIn).toBe('acme-repo');
+  });
+});
+
+describe('a team file with its members’ worker files', () => {
+  const team = { name: 'Design Team', budgetUSDPerTask: 50, checkpoints: {}, members: [{ name: 'Lena', role: 'Lead' }, { name: 'Nadia', role: 'Research' }] };
+  const files = [
+    { name: 'Lena', sourceId: 'src-lena', yaml: 'worker:\n  name: Lena\n' },
+    { name: 'Nadia', sourceId: 'src-nadia', yaml: 'worker:\n  name: Nadia\n  jobDescription: |\n    Digs.\n' },
+  ];
+
+  it('carries them last and reads them back', () => {
+    const yaml = teamToYaml(team, files);
+    expect(yaml.indexOf('worker_files')).toBeGreaterThan(yaml.indexOf('checkpoints'));
+    expect(teamWorkerFiles(yaml)).toEqual({ ok: true, files });
+  });
+
+  it('uses members already here, and brings the rest from their files', () => {
+    const { draft, notes, missing } = read(teamToYaml(team, files));
+    expect(draft.members).toEqual([{ workerId: 'w-lena', name: 'Lena', role: 'Lead' }]);
+    expect(draft.bring).toEqual([{ name: 'Nadia', role: 'Research' }]);
+    expect(missing.workers).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it('still says who is missing when the file doesn’t carry them', () => {
+    const { draft, missing } = read(teamToYaml(team, files.slice(0, 1)));
+    expect(draft.bring).toBeUndefined();
+    expect(missing.workers).toEqual(['Nadia']);
+  });
+
+  it('allows a long file only for its worker files', () => {
+    const big = 'x'.repeat(200_000);
+    expect(teamFromYaml(teamToYaml(team, [{ name: 'Nadia', yaml: big }]), { workers }).ok).toBe(true);
+    expect(teamFromYaml(teamToYaml({ ...team, purpose: big }), { workers })).toMatchObject({ ok: false });
   });
 });
