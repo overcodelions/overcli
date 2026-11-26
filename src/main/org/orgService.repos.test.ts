@@ -35,6 +35,8 @@ function harness(runs: FlowRun[] = []) {
   const set: string[] = [];
   let changed = 0;
   let testsOff: string | undefined;
+  const resumed: Array<Record<string, unknown>> = [];
+  const steered: string[] = [];
   const svc = new OrgService({
     workers: {
       roster: () => [...roster.values()],
@@ -50,7 +52,18 @@ function harness(runs: FlowRun[] = []) {
       spentThisMonth: () => new Map(),
       workerNames: () => [...roster.values()].map((w) => w.name),
     },
-    runs: { listRuns: () => runs, getRun: (id) => runs.find((r) => r.id === id) ?? null, steerRun: () => ({ ok: true }), resumeRun: () => ({ ok: true }) },
+    runs: {
+      listRuns: () => runs,
+      getRun: (id) => runs.find((r) => r.id === id) ?? null,
+      steerRun: (a) => {
+        steered.push(a.text);
+        return { ok: true };
+      },
+      resumeRun: (a) => {
+        resumed.push(a);
+        return { ok: true };
+      },
+    },
     rejectRun: () => ({ ok: true }),
     policy: () => ({ ...DEFAULT_ORG_POLICY, hirers: '*' }),
     draft: async () => ({ ok: false, error: 'no' }),
@@ -93,7 +106,7 @@ function harness(runs: FlowRun[] = []) {
     audit: { append: (e) => audit.push(e.what), recent: () => [], all: () => [] },
     now: () => 0,
   });
-  return { svc, roster, flows, audit, set, changed: () => changed, turnTestsOff: (why: string | undefined) => (testsOff = why) };
+  return { svc, roster, flows, audit, set, resumed, steered, changed: () => changed, turnTestsOff: (why: string | undefined) => (testsOff = why) };
 }
 
 describe('repos', () => {
@@ -216,9 +229,48 @@ describe("a worker's runs on its page", () => {
     ]);
     expect(d.now[0].finished).toEqual(['capture']);
     expect(d.history).toMatchObject([{ runId: 'r2', outcome: 'done', minutes: 2, costUSD: 0.42, result: { name: 'report.md', body: 'Prices up 10%.' } }]);
-    expect(h.svc.resumeInterrupted(sam, 'r3').ok).toBe(false);
-    expect(h.svc.resumeInterrupted(pat, 'r3')).toEqual({ ok: true });
-    expect(h.svc.resumeInterrupted(pat, 'r1').ok).toBe(false);
+    expect(h.svc.carryOn(sam, 'r3').ok).toBe(false);
+    expect(h.svc.carryOn(pat, 'r3')).toEqual({ ok: true });
+    expect(h.svc.carryOn(pat, 'r1').ok).toBe(false);
+  });
+});
+
+describe('carrying on a run paused on a failed step', () => {
+  const steps = [{ id: 'build' }, { id: 'eval', onFail: { action: 'goto', target: 'build', maxRetries: 2 } }, { id: 'pull-request' }];
+  const failed = (id: string, flowSteps: unknown[] = steps): FlowRun =>
+    ({
+      id, workerId: 'triage', workerName: 'Triage', flowId: 'f', flowSnapshot: { name: 'Solve a ticket', steps: flowSteps }, userPrompt: 'Fix ACME-7',
+      state: { kind: 'paused', nextStepId: 'eval', reason: 'failure' }, createdAt: 1_000,
+      attempts: [{ stepId: 'eval', startedAt: 1_000, endedAt: 2_000, outcome: 'error', errorMessage: 'Verdict: CHANGES REQUESTED' }], artifacts: {},
+    }) as unknown as FlowRun;
+
+  it('says why it is paused and where it sends failures, on the run page', () => {
+    const h = harness([failed('r1')]);
+    expect(h.svc.runDetail(pat, 'r1')).toMatchObject({ ok: true, run: { state: 'paused', pause: { reason: 'failure', step: 'eval', sendsBackTo: 'build', error: 'Verdict: CHANGES REQUESTED' } } });
+  });
+
+  it('sends it back by default, with the note, and retries or skips when asked', () => {
+    const h = harness([failed('r1')]);
+    expect(h.svc.carryOn(pat, 'r1', undefined, 'Use 0.90, not 0.9.')).toEqual({ ok: true });
+    expect(h.resumed.at(-1)).toEqual({ runId: 'r1', sendBack: { reason: 'Pat sent this back after "eval" failed: Use 0.90, not 0.9. Fix what it found.' } });
+    expect(h.audit.at(-1)).toContain('back to "build" after "eval" failed');
+    expect(h.svc.carryOn(pat, 'r1', 'retry')).toEqual({ ok: true });
+    expect(h.resumed.at(-1)).toEqual({ runId: 'r1' });
+    expect(h.svc.carryOn(pat, 'r1', 'skip', 'It is fine.')).toEqual({ ok: true });
+    expect(h.resumed.at(-1)).toEqual({ runId: 'r1', override: true });
+    expect(h.steered).toEqual(['Pat: It is fine.']);
+  });
+
+  it('retries a step with nowhere to send failures, and refuses what only its manager may do or what waits elsewhere', () => {
+    const h = harness([
+      failed('r1', [{ id: 'build' }, { id: 'eval' }]),
+      { ...failed('r2'), state: { kind: 'paused', nextStepId: 'eval', reason: 'externalAction' } } as FlowRun,
+    ]);
+    expect(h.svc.carryOn(sam, 'r1').ok).toBe(false);
+    expect(h.svc.carryOn(pat, 'r1', 'sendBack')).toMatchObject({ ok: false, error: expect.stringContaining('Retry it or skip it') });
+    expect(h.svc.carryOn(pat, 'r1')).toEqual({ ok: true });
+    expect(h.resumed).toEqual([{ runId: 'r1' }]);
+    expect(h.svc.carryOn(pat, 'r2')).toMatchObject({ ok: false, error: expect.stringContaining('approval or an answer') });
   });
 });
 

@@ -9,6 +9,9 @@
 import { oneShotDraftText, type DraftDeps } from '../flows/drafter';
 import type { ExistingHit } from './existingWork';
 import { tierModel } from './frontDoorRoute';
+import { withoutPaths } from './deliver';
+
+export { withoutPaths };
 
 export interface AnswerSource {
   /// "Product Team's task "Q1 roadmap" (2 days ago)", "What Product Team knows".
@@ -58,27 +61,6 @@ export function answerPrompt(question: string, sources: AnswerSource[]): string 
     if (body) parts.push(`[${i + 1}] ${s.label}\n${body}`);
   });
   return `Question:\n${question.slice(0, 2000)}\n\nSources:\n\n${parts.join('\n\n---\n\n')}`;
-}
-
-/// A path on the server, which nobody in Slack can open: "~/.overcli/…/plan.html",
-/// "Workers/Hugo/2026-10-19 report/". Web addresses are left alone.
-const SERVER_ROOT = /^(?:~\/|\/(?:Users|home|private|tmp|var)\/|(?:Workers|team-files|worker-files|coordinators|pack|files)\/)/;
-const BARE_PATH = /(?<![\w:/`])(?:~\/|\/(?:Users|home|private|tmp|var)\/)[^\s`)]+?(?=[.,;]?(?:\s|$|\)))/g;
-
-/// A path said as the document's own name, or nothing when it is a folder.
-function saidAs(p: string): string {
-  const name = p.trim().replace(/\/+$/, '').split('/').pop() ?? '';
-  return /\.[a-z0-9]{1,5}$/i.test(name) ? `_${name}_` : '';
-}
-
-/// Each server path said as the document's name, or dropped when it is a folder.
-export function withoutPaths(text: string): string {
-  return text
-    .replace(/`([^`\n]+)`/g, (m, inner: string) => (SERVER_ROOT.test(inner.trim()) ? saidAs(inner) : m))
-    .replace(BARE_PATH, saidAs)
-    .replace(/\(\s*\)/g, '')
-    .replace(/[ \t]+([.,;])/g, '$1')
-    .replace(/ {2,}/g, ' ');
 }
 
 /// The model's answer and the sources it used, or null when it said they

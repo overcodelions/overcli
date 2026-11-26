@@ -17,6 +17,42 @@ describe('the console script', () => {
   });
 });
 
+describe('the ticket a piece of work is about', () => {
+  const from = CONSOLE_JS.indexOf('var NOT_KEYS');
+  const to = CONSOLE_JS.indexOf('/// Set by the bar above the tabs');
+  const fns = new Function(`${CONSOLE_JS.slice(from, to)}\nreturn { keyIn: keyIn, keyless: keyless, unFrom: unFrom };`)() as {
+    keyIn: (s: string) => string; keyless: (title: string, key: string) => string; unFrom: (s: string) => string;
+  };
+
+  it('finds Jira and Linear keys, and GitHub issues and pull requests as repo#n', () => {
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    expect(fns.keyIn('ACME-7346: Extended send times')).toBe('ACME-7346');
+    expect(fns.keyIn('see https://linear.app/acme/issue/ENG-412/webhook-retries')).toBe('ENG-412');
+    expect(fns.keyIn('https://github.com/acme/web/issues/1284')).toBe('web#1284');
+    expect(fns.keyIn('https://github.com/acme/web/pull/88')).toBe('web#88');
+    expect(fns.keyIn('can you look at acme/web#77 today')).toBe('web#77');
+  });
+
+  it('skips words shaped like a key, and finds nothing where there is nothing', () => {
+    expect(fns.keyIn('Save it as UTF-8, then retry ACME-12')).toBe('ACME-12');
+    expect(fns.keyIn('the ISO-8601 date is wrong')).toBe('');
+    expect(fns.keyIn('post it in #support')).toBe('');
+    expect(fns.keyIn('')).toBe('');
+  });
+
+  it('takes the key off the front of a title, but never leaves it empty', () => {
+    expect(fns.keyless('ACME-7814: Partner invoices fail', 'ACME-7814')).toBe('Partner invoices fail');
+    expect(fns.keyless('ACME-7814', 'ACME-7814')).toBe('ACME-7814');
+    expect(fns.keyless('Fix it, see ACME-7814', 'ACME-7814')).toBe('Fix it, see ACME-7814');
+  });
+
+  it('drops a "From someone:" put in front of an ask', () => {
+    expect(fns.unFrom('From Priya Shah in #support: the login loops')).toBe('the login loops');
+    expect(fns.unFrom('From what I can see, it loops: why?')).toBe('From what I can see, it loops: why?');
+  });
+});
+
 describe('the loops in a flow', () => {
   const from = CONSOLE_JS.indexOf('function flowLoops(steps)');
   const to = CONSOLE_JS.indexOf('// What a step does when its work');

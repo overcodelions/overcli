@@ -193,6 +193,19 @@ export interface HireOptions {
   budgetUSDPerMonth?: number;
 }
 
+/// How a manager moves on a run paused on a failed step (`OrgService.carryOn`).
+export type CarryOn = 'sendBack' | 'retry' | 'skip';
+
+/// A run paused where only its manager can move it on.
+export interface RunPause {
+  reason: 'interrupted' | 'failure';
+  /// The step it stopped at: the one that failed, or was cut short.
+  step: string;
+  /// The earlier step this one hands its failures to, when it does.
+  sendsBackTo?: string;
+  error?: string;
+}
+
 export interface WorkerSummary {
   id: UUID;
   name: string;
@@ -909,7 +922,7 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
     listRuns(): FlowRun[];
     getRun(id: UUID): FlowRun | null;
     steerRun(args: { runId: UUID; text: string }): { ok: true } | { ok: false; error: string };
-    resumeRun(args: { runId: UUID; forRun?: boolean }): { ok: true } | { ok: false; error: string };
+    resumeRun(args: { runId: UUID; forRun?: boolean; override?: boolean; sendBack?: { reason: string } }): { ok: true } | { ok: false; error: string };
     /// A message to a finished run's last step, answered in its conversation
     /// (`FlowRuntimeImpl.chatWithRun`). Absent: follow-ups go to the worker.
     chatWithRun?(args: { runId: UUID; text: string; attachments?: Attachment[] }): Promise<{ ok: true; reply: string } | { ok: false; error: string }>;
@@ -1216,6 +1229,19 @@ export interface OrgServiceDeps extends OverdbDeps, OverapiDeps {
   /// Tell the person who asked how it went.
   onHireDecided?(hire: PendingHire, outcome: { approved: boolean; by: string; worker?: Worker; error?: string }): void;
   now?(): number;
+}
+
+/// When a run stopped before `stepId`: its last recorded stop there, else the
+/// run's latest activity. Never 0 — a scheduled run has no user turn, and 0
+/// shows as "Dec 31" (1970 in a western timezone) on the approval card.
+function pausedAt(run: FlowRun, stepId: string): number {
+  const stop = [...(run.pausedSteps ?? [])].reverse().find((p) => p.stepId === stepId);
+  if (stop) return stop.at;
+  return Math.max(
+    run.lastUserTurnAt ?? 0,
+    run.createdAt ?? 0,
+    ...(run.attempts ?? []).map((a) => a.endedAt ?? a.startedAt ?? 0),
+  );
 }
 
 function pauseKind(run: FlowRun): 'question' | 'approval' | null {
@@ -2077,7 +2103,7 @@ export class OrgService {
         ...(exchange?.note ? { why: exchange.note } : {}),
         ...(exchange && answerOptions(exchange.question).length ? { options: answerOptions(exchange.question) } : {}),
         ...(kind === 'approval' ? approvalDetail(run, stepId) : {}),
-        since: exchange?.answeredAt ?? exchange?.askedAt ?? run.lastUserTurnAt ?? 0,
+        since: exchange?.answeredAt ?? exchange?.askedAt ?? pausedAt(run, stepId),
       });
     }
     return out.sort((a, b) => a.since - b.since);
@@ -3847,6 +3873,25 @@ export class OrgService {
     return { ok: true, ask };
   }
 
+  /// The caller's own questions, newest first, across every worker or one: so
+  /// a client that lost an askId can find what it already asked.
+  myAsks(caller: OrgCaller, opts: { worker?: string; limit?: number } = {}): Result<{ asks: AskRecord[] }> {
+    let workerId: string | undefined;
+    if (opts.worker) {
+      const w = this.resolve(caller, opts.worker);
+      if (!w) return { ok: false, error: NOT_FOUND };
+      workerId = w.id;
+    }
+    const mine = (a: AskRecord) => (caller.slackUserId ? a.slackUserId === caller.slackUserId : a.by === caller.name);
+    const asks = this.allAsks()
+      .filter((a) => mine(a) && (!workerId || a.workerId === workerId))
+      // Stored oldest first: reversed, so a tie on time still puts the later one first.
+      .reverse()
+      .sort((a, b) => b.at - a.at)
+      .slice(0, Math.max(1, Math.min(opts.limit ?? 10, 50)));
+    return { ok: true, asks };
+  }
+
   private maySeeAsk(caller: OrgCaller, ask: AskRecord): boolean {
     const mine = caller.slackUserId ? ask.slackUserId === caller.slackUserId : ask.by === caller.name;
     return mine || canManage(this.policy(), this.deps.workers.roster(), ask.workerId, caller);
@@ -5208,7 +5253,7 @@ export class OrgService {
   /// wrong stands out. What a link from Slack, a ticket or the Library opens.
   runDetail(caller: OrgCaller, runId: UUID): Result<{
     worker: { id: UUID; name: string; enabled: boolean; manager?: string };
-    run: { id: UUID; title: string; state: string; startedAt: number; endedAt?: number; steps: number; costUSD?: number; error?: string };
+    run: { id: UUID; title: string; state: string; startedAt: number; endedAt?: number; steps: number; costUSD?: number; error?: string; pause?: RunPause };
     thread: WorkThread | null;
     waiting: WaitingItem[];
     youManage: boolean;
@@ -5235,6 +5280,7 @@ export class OrgService {
         steps: r.flowSnapshot.steps.length,
         ...(r.costUSD ? { costUSD: r.costUSD } : {}),
         ...(past?.error ? { error: past.error } : {}),
+        ...(OrgService.runPause(r) ? { pause: OrgService.runPause(r) } : {}),
       },
       thread: this.threadsFor(caller, w, false).find((t) => t.runs.some((x) => x.runId === r.id) || (t.followUps ?? []).some((f) => f.runs.some((x) => x.runId === r.id))) ?? null,
       waiting: this.listWaiting(caller).filter((x) => x.runId === r.id),
@@ -5623,13 +5669,56 @@ export class OrgService {
   }
 
   /// Carry on a run a restart cut short. Its manager or an admin.
-  resumeInterrupted(caller: OrgCaller, runId: UUID): Result {
+  /// Move on a run only its manager can: one the server stopped mid-step, or
+  /// one whose step failed after its retries. A failed step is sent back to
+  /// the step it hands failures to (with what it found), retried, or skipped.
+  /// A run waiting on an approval or an answer is settled where it waits.
+  carryOn(caller: OrgCaller, runId: UUID, how?: CarryOn, note?: string): Result {
     const run = this.deps.runs.getRun(runId);
-    if (!run?.workerId || run.state.kind !== 'paused' || run.state.reason !== 'interrupted') return { ok: false, error: 'No interrupted run with that id.' };
+    const pause = run ? OrgService.runPause(run) : undefined;
+    if (!run?.workerId || !pause) {
+      return { ok: false, error: run?.state.kind === 'paused' ? 'It is waiting on an approval or an answer: settle that where it waits.' : 'That run isn’t paused.' };
+    }
     if (!canManage(this.policy(), this.deps.workers.roster(), run.workerId, caller)) return { ok: false, error: 'Only its manager or an admin can do that.' };
-    const res = this.deps.runs.resumeRun({ runId });
-    if (res.ok) this.record(caller, `Carried on ${run.workerName ?? 'a worker'}'s interrupted run ${this.runRef(run)}.`);
+    const who = run.workerName ?? 'a worker';
+    const said = note?.trim().slice(0, 2000);
+    if (pause.reason === 'interrupted') {
+      const res = this.deps.runs.resumeRun({ runId });
+      if (res.ok) this.record(caller, `Carried on ${who}'s interrupted run ${this.runRef(run)}.`);
+      return res;
+    }
+    const choice = how ?? (pause.sendsBackTo ? 'sendBack' : 'retry');
+    if (choice === 'sendBack' && !pause.sendsBackTo) return { ok: false, error: `"${pause.step}" doesn't hand its failures back to an earlier step. Retry it or skip it instead.` };
+    if (said && choice !== 'sendBack') {
+      const steer = this.deps.runs.steerRun({ runId, text: `${caller.name}: ${said}` });
+      if (!steer.ok) return steer;
+    }
+    const res =
+      choice === 'sendBack'
+        ? this.deps.runs.resumeRun({ runId, sendBack: { reason: `${caller.name} sent this back after "${pause.step}" failed${said ? `: ${said}` : '.'} Fix what it found.` } })
+        : choice === 'skip'
+          ? this.deps.runs.resumeRun({ runId, override: true })
+          : this.deps.runs.resumeRun({ runId });
+    if (res.ok) {
+      const what = choice === 'sendBack' ? `Sent ${who}'s run ${this.runRef(run)} back to "${pause.sendsBackTo}" after "${pause.step}" failed` : choice === 'skip' ? `Skipped the failed "${pause.step}" on ${who}'s run ${this.runRef(run)}` : `Retried the failed "${pause.step}" on ${who}'s run ${this.runRef(run)}`;
+      this.record(caller, `${what}.`);
+    }
     return res;
+  }
+
+  /// Why a run is paused, when it is one `carryOn` moves on.
+  static runPause(r: FlowRun): RunPause | undefined {
+    if (r.state.kind !== 'paused') return undefined;
+    const { reason, nextStepId } = r.state;
+    if (reason !== 'interrupted' && reason !== 'failure') return undefined;
+    const step = r.flowSnapshot.steps.find((s) => s.id === nextStepId);
+    const error = reason === 'failure' ? [...(r.attempts ?? [])].reverse().find((a) => a.stepId === nextStepId)?.errorMessage : undefined;
+    return {
+      reason,
+      step: nextStepId,
+      ...(reason === 'failure' && step?.onFail?.action === 'goto' ? { sendsBackTo: step.onFail.target } : {}),
+      ...(error ? { error: String(error).slice(0, 500) } : {}),
+    };
   }
 
   /// What its runs asked along the way, newest first.

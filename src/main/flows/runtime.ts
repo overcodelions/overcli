@@ -302,6 +302,10 @@ export interface FlowRuntimeResumeArgs {
   /// need only the same outside tools, not just this one. See
   /// `FlowRun.externalActionRunGrant`.
   forRun?: boolean;
+  /// On a FAILURE pause whose step hands its failures back to an earlier
+  /// step (`on_fail: goto`): run that hand-back once more, after the
+  /// automatic retries ran out. `reason` is what the target step is told.
+  sendBack?: { reason: string };
 }
 
 export interface FlowRuntimeDeleteArgs {
@@ -1843,6 +1847,32 @@ export class FlowRuntimeImpl {
     if (args.override && pausedReason === 'failure') {
       run.state = { kind: 'running', currentStepId: nextStepId };
       this.advanceAfterStep(args.runId, nextStepId);
+      return { ok: true };
+    }
+
+    // Send back: what `on_fail: goto` does on its own, asked for by a person
+    // once its retries are spent. The target step gets the failed step's
+    // output as feedback (a reviewer's findings), and the budget starts again.
+    if (args.sendBack) {
+      if (pausedReason !== 'failure') return { ok: false, error: 'Only a run paused on a failed step can be sent back.' };
+      const failed = run.flowSnapshot.steps.find((s) => s.id === nextStepId);
+      const policy = failed?.onFail;
+      if (!failed || policy?.action !== 'goto') {
+        return { ok: false, error: `"${nextStepId}" doesn't hand its failures back to an earlier step. Retry it or skip it instead.` };
+      }
+      this.retryCounts.delete(`${args.runId}:${failed.id}`);
+      this.retryFeedback.set(args.runId, {
+        targetStepId: policy.target,
+        fromStepId: failed.id,
+        artifactName: run.artifacts[failed.output] ? failed.output : null,
+        reason: args.sendBack.reason,
+        attempt: 1,
+        maxRetries: policy.maxRetries,
+      });
+      run.state = { kind: 'running', currentStepId: policy.target };
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+      void this.executeStep(args.runId, policy.target);
       return { ok: true };
     }
 

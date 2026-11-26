@@ -36,6 +36,16 @@ describe('a folder a reply names', () => {
     expect(x.posts[0]).toContain('/etc/secrets');
   });
 
+  it('never posts a path to a file it could not send', async () => {
+    const x = io();
+    const other = '/data/worker-files/ed890688-0a59/2026-11-25-1849-errand-raise-insight.md';
+    await send(x, `I can't create it. The ready text is in ${other}.\n\n\`\`\`\ncat /data/x/y.md\n\`\`\``);
+    expect(x.uploads).toEqual([]);
+    expect(x.posts[0]).toContain('The ready text is in _2026-11-25-1849-errand-raise-insight.md_.');
+    expect(x.posts[0]).not.toContain('/data/worker-files');
+    expect(x.posts[0]).toContain('cat /data/x/y.md');
+  });
+
   it('says when there is more than fits', async () => {
     const many = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`f${n}.md`, 'x']));
     const x = io({ workerFile: () => Buffer.from('x'), workerFolder: () => Object.keys(many) });

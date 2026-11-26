@@ -1225,6 +1225,9 @@ table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wl-row.on { background: var(--go-soft); border-left-color: var(--go); }
 .wl-row.quiet .wl-title { color: var(--muted); font-weight: 400; }
 .wl-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wl-key { display: inline-block; margin-right: 7px; padding: 0 6px; border-radius: 5px; font: 600 11.5px/18px ui-monospace, SFMono-Regular, Menlo, monospace; vertical-align: 1px; white-space: nowrap; text-decoration: none; background: hsl(var(--wh) 50% 50% / var(--chip-bg-a)); color: hsl(var(--wh) 65% var(--chip-ink-l)); }
+a.wl-key:hover { text-decoration: underline; }
+.wl-detail-title .wl-key { font-size: 0.7em; line-height: 1.6; vertical-align: 0.15em; }
 .wl-sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wl-meta { font-size: 12px; color: var(--faint); white-space: nowrap; text-align: right; }
 .wl-meta.bad { color: var(--bad); } .wl-meta.need { color: var(--need); }
@@ -6019,6 +6022,27 @@ export const CONSOLE_JS = String.raw`
   /// The note overcli puts in front of a trigger's ask, which no one typed.
   function stripPreface(prompt) { return plainSlack(prompt).replace(/^\(Set off by a trigger[^)]*\)\s*/, ''); }
   function plainSlack(s) { return String(s || '').replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, '$2').replace(/<((?:https?|mailto):[^>]+)>/g, '$1'); }
+  /// The ticket or issue some text names, as a short key: a Jira or Linear
+  /// key (ACME-7311, ENG-412), or a GitHub issue or pull request as repo#123.
+  /// '' when it names none. Words shaped like a key (UTF-8) are not one.
+  var NOT_KEYS = /^(UTF|ISO|SHA|RFC|HTTP|HTTPS|TLS|SSL|UTC|GMT|MD|AES|RSA|CVE|PEP|COVID)$/;
+  function keyIn(text) {
+    var s = String(text || ''), m, re = /\b([A-Z][A-Z0-9]{1,9})-(\d+)\b/g;
+    while ((m = re.exec(s))) if (!NOT_KEYS.test(m[1])) return m[0];
+    m = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:issues|pull)\/(\d+)/.exec(s);
+    if (m) return m[1] + '#' + m[2];
+    m = /(?:^|[\s(])(?:[A-Za-z][\w.-]*\/)?([A-Za-z][\w.-]*)#(\d+)\b/.exec(s);
+    return m ? m[1] + '#' + m[2] : '';
+  }
+  /// A title with its key taken off the front, since the key shows beside it.
+  function keyless(title, key) {
+    if (!key || title.indexOf(key) !== 0) return title;
+    var rest = title.slice(key.length).replace(/^[\s:\u2013\u2014·-]+/, '');
+    return rest || title;
+  }
+  /// An ask with the "From Priya Shah in #support:" someone put in front of
+  /// it: who asked is on the line under the title already.
+  function unFrom(text) { return String(text || '').replace(/^From [^:\n.,!?]{1,80}:\s*/, ''); }
 
   /// Set by the bar above the tabs: hides it while the thread it tells of is
   /// the one open on the right, which says the same.
@@ -6395,18 +6419,23 @@ export const CONSOLE_JS = String.raw`
         var tp = triggerParts(t.prompt);
         if (tp && (tp.key || tp.title)) return (tp.key ? tp.key + ' · ' : '') + (tp.title || tp.trigger);
         if (t.runs.length === 1 && t.source !== 'ask') return t.runs[0].title.replace(/^\[[^\]]+\]\s*/, '');
-        var p = stripPreface(t.prompt); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p;
+        var p = unFrom(stripPreface(t.prompt)); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p;
       }
       if (t.runs.length) return t.runs[0].title;
       return t.source === 'runNow' ? 'Run now' : 'Scheduled check';
     };
-    /// The ticket a thread is about (ACME-7311), from what set it off or its
-    /// title; '' when it names none.
+    /// The ticket a thread is about (ACME-7311, ENG-412, web#123), from what
+    /// set it off, its link, its title, or what was asked; '' when it names none.
     var ticketKey = function (t) {
       var tp = t.prompt ? triggerParts(t.prompt) : null;
       if (tp && tp.key) return tp.key;
-      var m = /\b([A-Z][A-Z0-9]+-\d+)\b/.exec(titleOf(t));
-      return m ? m[1] : '';
+      var asked = !tp && (t.source === 'ask' || t.source === 'colleague' || t.source === 'followUp');
+      return keyIn(tp && tp.link) || keyIn(titleOf(t)) || (asked ? keyIn(stripPreface(t.prompt)) : '') || keyIn(t.runs.length ? t.runs[0].title : '');
+    };
+    /// A key as a pill, one colour per project or repo.
+    var keyPill = function (k, link) {
+      var attrs = { class: 'wl-key', style: '--wh:' + hue(k.replace(/[-#]\d+$/, '')), text: k };
+      return link ? h('a', Object.assign(attrs, { href: link, target: '_blank', rel: 'noopener', title: 'Open ' + k })) : h('span', attrs);
     };
     var whoFor = function (t) {
       if (t.team) return 'For ' + t.team.name;
@@ -6448,7 +6477,7 @@ export const CONSOLE_JS = String.raw`
     };
     var matches = function (t) {
       var words = q.value.trim().toLowerCase();
-      return !words || (titleOf(t) + ' ' + t.headline + ' ' + (t.team ? t.team.name : '')).toLowerCase().indexOf(words) >= 0;
+      return !words || (ticketKey(t) + ' ' + titleOf(t) + ' ' + t.headline + ' ' + (t.by || '') + ' ' + (t.team ? t.team.name : '')).toLowerCase().indexOf(words) >= 0;
     };
     var row = function (t) {
       var on = t.id === sel;
@@ -6456,7 +6485,7 @@ export const CONSOLE_JS = String.raw`
       var sub = whoFor(t) + ' · ' + (t.stage === 'running' ? 'running' : t.stage === 'deciding' ? 'deciding' : t.headline);
       return h('button', { class: 'wl-row' + (on ? ' on' : '') + (t.stage === 'nothing' || t.stage === 'declined' ? ' quiet' : ''), role: 'option', 'aria-selected': on ? 'true' : 'false', onclick: function () { sel = t.id; state.wlSel[w.id] = sel; drawList(); drawDetail(true); } },
         outcomeMark(t),
-        h('span', { class: 'wl-title', text: titleOf(t) }),
+        (function () { var k = ticketKey(t); return h('span', { class: 'wl-title', title: titleOf(t) }, k ? keyPill(k) : null, keyless(titleOf(t), k)); })(),
         h('span', { class: 'wl-meta' + (t.stage === 'failed' || t.stage === 'stopped' ? ' bad' : t.stage === 'waiting' || t.stage === 'needsYou' ? ' need' : ''), text: meta }),
         h('span', { class: 'wl-sub', text: sub }),
         h('span', { class: 'wl-meta', text: dayLabel(t.lastAt || t.at) === 'Today' ? clock(t.lastAt || t.at) : new Date(t.lastAt || t.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }));
@@ -6536,8 +6565,10 @@ export const CONSOLE_JS = String.raw`
       var plain = asked ? stripPreface(t.prompt) : '';
       var ask = asked && one && !tp && plain !== heading ? plain : '';
       var source = tp ? h('div', { class: 'row', style: 'gap:8px;font-size:12.5px' },
-        h('span', { class: 'faint', text: 'Set off by ' + tp.via + ' · “' + tp.trigger + '”' }),
-        tp.key ? (/^https?:\/\//.test(tp.link) ? h('a', { class: 'tag', href: tp.link, target: '_blank', rel: 'noopener', text: tp.key + ' ↗' }) : h('span', { class: 'tag', text: tp.key })) : null) : null;
+        // Its key sits in the title, linked.
+        h('span', { class: 'faint', text: 'Set off by ' + tp.via + ' · “' + tp.trigger + '”' })) : null;
+      var hk = ticketKey(t);
+      heading = keyless(heading, hk);
       var original = tp ? h('details', { class: 't-report wl-original' }, h('summary', null, 'Original request'), h('pre', { class: 'watch-raw', text: plain })) : null;
       cur = t; drawComposer();
       var hadFocus = document.activeElement === input, caret = [input.selectionStart, input.selectionEnd];
@@ -6553,7 +6584,7 @@ export const CONSOLE_JS = String.raw`
             liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null,
             // Its logs, for whoever may stop it: how each step ended and why.
             one && one.runId && data.youManage ? h('button', { class: 'btn small quiet', text: 'Logs', onclick: function () { runLogs(one.runId, w.name + ' · ' + one.title); } }) : null),
-          h('h2', { class: 'wl-detail-title' }, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
+          h('h2', { class: 'wl-detail-title' }, hk ? keyPill(hk, tp && /^https?:\/\//.test(tp.link) ? tp.link : null) : null, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
           source,
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
           original),

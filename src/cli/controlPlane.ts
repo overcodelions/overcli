@@ -59,7 +59,7 @@ import type { AccessService, PersonRole } from '../main/org/accessService';
 import { withoutEmails } from '../main/org/peopleDirectory';
 import type { SlackPerson } from '../main/slack/slackApi';
 import { slackManifestForConsole } from '../main/slack/slackManifest';
-import type { OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
+import type { CarryOn, OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
 import { AUDIENCE_ROLES, isAdmin, parseAudience, type OrgCaller } from '../shared/org/policy';
 import { CONSOLE_CSS, CONSOLE_HTML, CONSOLE_ICON, CONSOLE_JS } from './consoleAssets';
 import { registerOrgTools } from './orgMcpTools';
@@ -1463,7 +1463,15 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/retry$/, handle: (c, b, [id]) => org.retryTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
     { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/skip$/, handle: (c, b, [id]) => org.skipTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
     { method: 'POST', path: /^\/api\/teams\/suggest$/, handle: (c, b) => org.suggestTeam(c, str(b.purpose).slice(0, 1000), str(b.name).slice(0, 80)) },
-    { method: 'POST', path: /^\/api\/runs\/([^/]+)\/resume$/, handle: (c, _b, [id]) => org.resumeInterrupted(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/runs\/([^/]+)\/resume$/,
+      handle: (c, b, [id]) => {
+        const how = str(b.how);
+        if (how && how !== 'sendBack' && how !== 'retry' && how !== 'skip') return { ok: false, error: 'how is sendBack, retry or skip.' };
+        return org.carryOn(c, decodeURIComponent(id), (how || undefined) as CarryOn | undefined, str(b.note) || undefined);
+      },
+    },
     { method: 'GET', path: /^\/api\/secrets$/, handle: (c) => org.secretList(c) },
     { method: 'POST', path: /^\/api\/secrets$/, handle: (c, b) => org.setSecret(c, str(b.name), str(b.value)) },
     { method: 'POST', path: /^\/api\/secrets\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.removeSecret(c, decodeURIComponent(name)) },
