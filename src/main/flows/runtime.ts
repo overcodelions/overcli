@@ -52,6 +52,7 @@ import type {
   MainToRendererEvent,
   PermissionMode,
   Project,
+  StreamEventKind,
   UUID,
   Workspace,
 } from '../../shared/types';
@@ -103,6 +104,8 @@ import {
   type WorkspaceMemberRef,
 } from '../../shared/flows/workspaceMembers';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
+import { changesFromTranscript, describeChange, type RunChange } from '../../shared/flows/runChanges';
+import { scrubOutbound } from '../secretScrub';
 import { appendRunSummary } from './runSummaryLog';
 import { nextRunNumber } from './runNumbers';
 import { host } from '../host';
@@ -848,6 +851,7 @@ export class FlowRuntimeImpl {
       const run = this.runs.get(runId);
       if (!run) return;
       this.markStepActivity(runId);
+      if (this.keepRunChanges && run.workerId && !run.trial) this.noteChanges(run, event.events);
 
       // An unattended worker with no grant for external actions runs under
       // `acceptEdits` (see resolvePermissionMode), which keeps the approval
@@ -2998,6 +3002,79 @@ export class FlowRuntimeImpl {
     this.emitRunUpdate(run);
     this.checkpoint(run);
     return { ok: true };
+  }
+
+  /// Whether worker runs keep what they change outside the server. Only an
+  /// org server turns it on (cli/serve.ts): its console is what shows it.
+  keepRunChanges = false;
+
+  /// Calls a worker run made of tools that don't only read, by run and call
+  /// id, until their result comes back. In memory only: the arguments are
+  /// read once, to say the change in a few words, and never kept.
+  private readonly changeCalls = new Map<string, { tool: string; input: string; at: number }>();
+
+  /// A change as a run keeps it: a few words, its detail scrubbed of secrets.
+  private static keptChange(tool: string, input: string, at: number): RunChange {
+    const c = describeChange(tool, input, at);
+    return c.detail ? { ...c, detail: scrubOutbound(c.detail) } : c;
+  }
+
+  /// What a worker run changes outside the server, as it happens: a call of
+  /// an MCP tool that doesn't only read, once its result comes back without
+  /// an error. Kept on the run (the newest 40), so its thread can say what
+  /// changed instead of only that it finished.
+  private noteChanges(run: FlowRun, events: Array<{ kind: StreamEventKind }>): void {
+    // Kept from its first event on, even empty: an empty list says nothing
+    // changed, where a run from before this was kept says nothing either way.
+    if (!run.changed) run.changed = [];
+    for (const ev of events) {
+      if (ev.kind.type === 'assistant' && !ev.kind.info.isPartial) {
+        for (const u of ev.kind.info.toolUses) {
+          if (u.name.startsWith('mcp__') && !isReadOnlyMcpTool(u.name)) this.changeCalls.set(`${run.id}:${u.id}`, { tool: u.name, input: (u.inputJSON ?? '').slice(0, 4000), at: Date.now() });
+        }
+      } else if (ev.kind.type === 'toolResult') {
+        for (const r of ev.kind.results) {
+          const key = `${run.id}:${r.id}`;
+          const call = this.changeCalls.get(key);
+          if (!call) continue;
+          this.changeCalls.delete(key);
+          if (r.isError) continue;
+          run.changed = [...(run.changed ?? []), FlowRuntimeImpl.keptChange(call.tool, call.input, Date.now())].slice(-40);
+          this.checkpoint(run);
+        }
+      }
+    }
+    // A call whose result never came (the run died mid-call) is let go
+    // after an hour, so nothing piles up over a long-running server.
+    if (this.changeCalls.size > 100) {
+      const stale = Date.now() - 60 * 60_000;
+      for (const [k, c] of this.changeCalls) if (c.at < stale) this.changeCalls.delete(k);
+    }
+  }
+
+  /// Runs from before changes were kept as they happened: what they changed,
+  /// read back from their steps' session transcripts, within each run's own
+  /// time. Only finished worker runs started after since that have none yet; one
+  /// whose transcripts are gone stays unknown, and is tried again next time.
+  backfillChanges(transcript: (sessionId: string) => string[] | null, since: number): { runs: number; changes: number } {
+    let runs = 0, changes = 0;
+    for (const run of this.runs.values()) {
+      if (!run.workerId || run.trial || run.changed || run.createdAt < since || run.state.kind === 'running') continue;
+      const ids = [...new Set(Object.values(run.sessionIdsByParticipant ?? {}))];
+      const found = ids.map((id) => transcript(id)).filter((l): l is string[] => !!l);
+      if (!found.length) continue;
+      const end = Math.max(run.createdAt, ...run.attempts.map((a) => a.endedAt ?? a.startedAt ?? run.createdAt)) + 60_000;
+      const list = found
+        .flatMap((lines) => changesFromTranscript(lines, run.createdAt - 1000, end, isReadOnlyMcpTool))
+        .sort((a, b) => a.at - b.at)
+        .map((c) => (c.detail ? { ...c, detail: scrubOutbound(c.detail) } : c))
+        .slice(-40);
+      run.changed = list;
+      saveRun(run);
+      runs++;
+      changes += list.length;
+    }
+    return { runs, changes };
   }
 
   /// Note that the run's executing step is still alive. Any event on one

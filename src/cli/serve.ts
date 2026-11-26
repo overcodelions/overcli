@@ -212,6 +212,31 @@ export function startDaemon(
     };
   }
 
+  // Worker runs keep what they change outside the server, for the console's
+  // thread cards. Runs from the last 30 days that have no record yet are read
+  // back once from their steps' session transcripts, shortly after start.
+  engines.flowRuntime.keepRunChanges = true;
+  setTimeout(() => {
+    try {
+      const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
+      const files = new Map<string, string>();
+      for (const dir of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+        let names: string[] = [];
+        try { names = fs.readdirSync(path.join(root, dir)); } catch { continue; }
+        for (const n of names) if (n.endsWith('.jsonl')) files.set(n.slice(0, -6), path.join(root, dir, n));
+      }
+      const read = (id: string): string[] | null => {
+        const f = files.get(id);
+        if (!f) return null;
+        try { return fs.readFileSync(f, 'utf8').split('\n'); } catch { return null; }
+      };
+      const done = engines.flowRuntime.backfillChanges(read, Date.now() - 30 * 24 * 60 * 60_000);
+      if (done.runs) console.log(`[overcli] read back what ${done.runs} past run(s) changed: ${done.changes} change(s).`);
+    } catch (e) {
+      console.log(`[overcli] couldn't read back past runs' changes: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, 10_000).unref?.();
+
   // Schedules fire in the process's local time. A container runs in UTC, so
   // "weekdays at 09:00" would mean 09:00 UTC; the org's time zone, when
   // org.json names one and TZ is not set, makes it 09:00 where the org is.

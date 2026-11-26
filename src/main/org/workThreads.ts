@@ -14,6 +14,7 @@ import type { WorkerJournalEntry } from '../../shared/flows/worker';
 import type { AskRecord } from './orgStores';
 import { TRIGGER_STARTS, withoutPreface } from './askPreface';
 import { LANDED_ARTIFACT, pullRequestsIn, type LandedPullRequest } from './landBranches';
+import type { RunChange } from '../../shared/flows/runChanges';
 
 type UUID = string;
 
@@ -55,6 +56,44 @@ export interface ThreadRun {
   /// The journal entry its result was filed under, for "was this useful?".
   entryId?: string;
   rating?: { useful: boolean; by: string; note?: string };
+  /// What it changed outside the server, in words, oldest first. Absent for
+  /// a run from before changes were kept.
+  changes?: RunChange[];
+  /// What the repo's CI said about what it pushed (ciWatch.ts), when watched.
+  ci?: RunCi;
+}
+
+/// The CI verdict on a run's pushed branch, as a person needs it: passed;
+/// failing and sent back to the worker to fix; failed and handed to its
+/// manager after that; or not known (not watched, never reported, too slow).
+export interface RunCi {
+  state: 'passed' | 'fixing' | 'failed' | 'unknown';
+  /// The watcher's own first line: why, in a sentence.
+  note: string;
+  failing: Array<{ name: string; url?: string }>;
+}
+
+/// The watcher's note (ciWatch.ts writes it as ci.md on the run) read back as
+/// a verdict. Its first line after the heading says where CI stands; each
+/// "- FAILED: name (url)" line is a check that failed.
+export function ciOf(body: string): RunCi | undefined {
+  const lines = body.split('\n').map((l) => l.trim());
+  const note = lines.find((l) => l && !l.startsWith('#') && !l.startsWith('- ')) ?? '';
+  if (!note) return undefined;
+  const failing = lines
+    .map((l) => /^- FAILED: (.+?)(?: \((https?:\/\/[^)\s]+)\))?$/.exec(l))
+    .filter((m): m is RegExpExecArray => !!m)
+    .map((m) => ({ name: m[1], ...(m[2] ? { url: m[2] } : {}) }));
+  const state: RunCi['state'] = /^Passed\b/.test(note) || /CI is green there/.test(note)
+    ? 'passed'
+    : /^Still failing\b/.test(note)
+      ? 'failed'
+      : /^(Not watched|No CI reported|Still running after|Failed, but)/.test(note)
+        ? 'unknown'
+        : failing.length
+          ? 'fixing'
+          : 'unknown';
+  return { state, note, failing };
 }
 
 export interface ThreadItem {
@@ -199,6 +238,10 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
   const filedSays = f && f.title && f.title !== title && !(landed && /^nothing to push\b/i.test(f.title)) ? f.title : undefined;
   const summary = filedSays ?? (artifact && /\.(md|markdown|txt)$/i.test(artifact.name) ? summarize(artifact.body) : undefined);
   const refused = [...new Set((r.refusedTools ?? []).map((t) => parseMcpToolName(t)?.server).filter((s): s is string => !!s))];
+  const changes = r.changed ?? [];
+  // The CI watcher's note (ciWatch.ts CI_ARTIFACT), named here to keep this file pure.
+  const ciFile = r.artifacts?.['ci.md'];
+  const ci = ciFile ? ciOf(ciFile.body ?? '') : undefined;
   return {
     runId: r.id,
     title,
@@ -230,6 +273,10 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
     ...(state === 'failed' && failedAttempt?.errorMessage ? { error: failedAttempt.errorMessage.slice(0, 400) } : {}),
     ...(refused.length ? { refused } : {}),
     ...(f ? { entryId: f.entryId, ...(f.rating ? { rating: f.rating } : {}) } : {}),
+    // Empty when it was watched and changed nothing; absent for a run from
+    // before changes were kept, which says nothing either way.
+    ...(r.changed ? { changes } : {}),
+    ...(ci ? { ci } : {}),
   };
 }
 

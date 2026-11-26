@@ -1315,19 +1315,74 @@ a.wl-key:hover { text-decoration: underline; }
 @media (max-width: 960px) { .wl-left { flex-basis: 100%; max-width: none; height: auto; max-height: 50vh; } .wl-detail-in { height: auto; } .wl-grip { display: none; } }
 .wl-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 2; touch-action: none; }
 .wl-grip:hover, .wl-grip.on, .wl-grip:focus-visible { background: var(--go-soft); box-shadow: inset -2px 0 0 var(--go); outline: none; }
-.wl-story { list-style: none; margin: 14px 0 2px; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; }
-.wl-st { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-.wl-st-bar { height: 4px; border-radius: 2px; background: var(--line-2); }
-.wl-st.done .wl-st-bar { background: var(--ok); }
-.wl-st.now .wl-st-bar { background: var(--go); }
-.wl-st.need .wl-st-bar { background: var(--need); }
-.wl-st.bad .wl-st-bar { background: var(--bad); }
-.wl-st.info .wl-st-bar { background: var(--info); }
-.wl-st-t { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; line-height: 1.35; }
-.wl-st-t b { font-weight: 600; color: var(--ink); }
-.wl-st.need .wl-st-t b { color: var(--need); }
-.wl-st.bad .wl-st-t b { color: var(--bad); }
-.wl-st-t span { color: var(--muted); }
+.oc { --tone: var(--ok); --tone-soft: var(--ok-soft); display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px; padding: 18px; margin: 12px 14px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); box-shadow: inset 0 3px 0 var(--tone); background: var(--panel); }
+.oc-now { --tone: var(--go); --tone-soft: var(--go-soft); }
+.oc-need { --tone: var(--need); --tone-soft: var(--need-soft); }
+.oc-bad { --tone: var(--bad); --tone-soft: var(--bad-soft); }
+.oc-main { flex: 999 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.oc-head { display: flex; gap: 14px; align-items: flex-start; }
+.oc-icon { flex: none; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--tone); color: var(--bg); font-size: 20px; }
+.oc-now .oc-icon { background: var(--tone-soft); }
+.oc-words { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.oc-badge { align-self: flex-start; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--tone-soft); color: var(--tone); }
+.oc-headline { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.35; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.oc-chip-about .oc-kind { color: var(--muted); }
+.oc-done { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; color: var(--muted); }
+.oc-done svg { color: var(--ok); }
+.oc-ci.passed .oc-kind { color: var(--ok); }
+.oc-ci.failed { border-color: color-mix(in srgb, var(--need) 45%, transparent); }
+.oc-ci.failed .oc-kind { color: var(--need); }
+.oc-ci.fixing .oc-kind { color: var(--go); }
+.oc-sub { font-size: 13px; color: var(--muted); }
+.oc-changes { display: flex; flex-direction: column; gap: 8px; }
+.oc-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.oc-chip { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); min-width: 0; color: var(--ink); text-decoration: none; }
+a.oc-chip:hover { border-color: var(--go); }
+.oc-kind { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--tone); }
+.oc-ct { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-cd { font-size: 12px; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
+.oc-turn { --t: var(--ok); --ts: var(--ok-soft); flex: 1 1 240px; max-width: 340px; display: flex; flex-direction: column; gap: 6px; padding: 16px; border-radius: 12px; background: var(--ts); border: 1px solid color-mix(in srgb, var(--t) 40%, transparent); }
+.oc-turn.need { --t: var(--need); --ts: var(--need-soft); }
+.oc-turn.bad { --t: var(--bad); --ts: var(--bad-soft); }
+.oc-turn.info { --t: var(--info); --ts: var(--info-soft); }
+.oc-turn.now { --t: var(--muted); --ts: var(--panel-2); }
+.oc-turn-l { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--t); }
+.oc-turn-t { font-size: 15.5px; }
+.oc-turn p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.oc-turn-b { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.oc-turn-b .btn { justify-content: flex-start; text-align: left; }
+.oc-turn-b .btn.go { background: var(--t); border-color: var(--t); color: var(--bg); }
+.oc-way { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.oc-path { list-style: none; margin: 0; padding: 0; display: flex; gap: 4px; overflow-x: auto; }
+.oc-stop { flex: 1 1 0; min-width: 96px; display: flex; }
+.oc-stop > button { all: unset; box-sizing: border-box; cursor: pointer; flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 10px; border-radius: 10px; min-width: 0; position: relative; }
+.oc-stop > button:hover { background: var(--panel-2); }
+.oc-stop > button:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
+.oc-stop > button[aria-pressed="true"] { box-shadow: inset 0 -2px 0 var(--go); }
+.oc-stop.info .oc-mark { background: var(--info); }
+.oc-stop.to-info > button::after { background: repeating-linear-gradient(90deg, var(--info) 0 6px, transparent 6px 11px); }
+.oc-stop.info .oc-st b { color: var(--info); }
+.oc-mark { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: var(--ok); color: var(--bg); position: relative; z-index: 1; }
+.oc-stop.now .oc-mark { background: var(--go); animation: oc-pulse 1.6s infinite; }
+.oc-stop.need .oc-mark { background: var(--need); }
+.oc-stop.bad .oc-mark { background: var(--bad); }
+.oc-stop.todo .oc-mark { background: transparent; border: 1.5px dashed var(--line-2); }
+.oc-stop[class*=" to-"] > button::after { content: ''; position: absolute; top: 19px; left: 38px; right: -2px; height: 2px; background: var(--ok); }
+.oc-stop.to-todo > button::after { background: repeating-linear-gradient(90deg, var(--line-2) 0 6px, transparent 6px 11px); }
+.oc-stop.to-now > button::after { background: var(--go); }
+.oc-stop.to-need > button::after { background: var(--need); }
+.oc-stop.to-bad > button::after { background: var(--bad); }
+.oc-st { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; line-height: 1.35; min-width: 0; }
+.oc-st b { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.oc-stop.need .oc-st b { color: var(--need); }
+.oc-stop.bad .oc-st b { color: var(--bad); }
+.oc-stop.todo .oc-st b { color: var(--muted); }
+.oc-st span { color: var(--muted); }
+.oc-about { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 10px; background: var(--panel-2); font-size: 13px; line-height: 1.5; }
+.oc-about b { white-space: nowrap; }
+.oc-about span { color: var(--muted); }
+@keyframes oc-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--go) 55%, transparent); } 70% { box-shadow: 0 0 0 8px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .oc-stop.now .oc-mark { animation: none; } }
 .wz-step[aria-current="page"] { background: var(--go-soft); }
 .jd-changes { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); }
 .jd-row { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13.5px; }
@@ -5956,7 +6011,9 @@ export const CONSOLE_JS = String.raw`
       // Once it has an answer and nothing is still moving, the answer leads
       // and how it got there follows; while it works, the steps lead.
       var settled = t.runs.some(function (r) { return r.state === 'done'; }) && !t.runs.some(function (r) { return r.state === 'working' || r.state === 'paused' || r.state === 'question' || r.state === 'approval'; });
-      if (settled) return [found, note, h('section', { class: 't-how', 'aria-label': 'How it got there' }, h('span', { class: 't-kind', text: 'How it got there' }), threadTimeline(t, w, ctx))];
+      // The path in brief is at the thread's top; this is every step, with
+      // what each did, folded for whoever wants it.
+      if (settled) return [found, note, h('details', { class: 't-how' }, h('summary', { class: 't-kind', style: 'cursor:pointer', text: 'Every step, in detail' }), threadTimeline(t, w, ctx))];
       return [threadTimeline(t, w, ctx), found, note];
     }
     return [
@@ -6579,43 +6636,221 @@ export const CONSOLE_JS = String.raw`
     /// What a thread came to, as a mark: a pull request, a comment, a report,
     /// nothing changed. The stage alone was a green dot on nearly every row.
     var threadPrs = prsOf;
-    /// What happened to a thread, as steps anyone can follow without knowing
-    /// how workers run: who asked, what it decided, the work, what came of
-    /// it, and whether it's now someone's turn.
-    var story = function (t) {
-      var runs = t.runs || [];
+    /// The top of an open thread, readable without knowing how workers run:
+    /// what happened in a sentence, what it changed outside the server, whose
+    /// turn it is with the buttons for it, and the path it took, a stop at a
+    /// time. The changes are the calls its runs made that came back without
+    /// an error (runChanges.ts), and what landing its branches did.
+    var outcomeStop = {};
+    var KIND_WORD = { comment: 'Comment', status: 'Status', fields: 'Fields', created: 'Created', removed: 'Removed', message: 'Message', pullRequest: 'Pull request', other: 'Change', pr: 'Pull request' };
+    var PR_SAID = { open: 'opened', draft: 'opened as a draft', updated: 'new commits pushed', existing: 'already open, left alone', unopened: 'branch pushed, not opened yet', linked: 'what this is about, not changed' };
+    var andJoin = function (xs) { return xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]; };
+    var outcome = function (t) {
+      var runs = [];
+      [t].concat(t.followUps || []).forEach(function (x) { runs = runs.concat(x.runs || []); });
+      var live = runs.filter(function (r) { return r.state === 'working'; })[0];
       var prs = threadPrs(t);
-      var live = runs.filter(function (r) { return r.state === 'working' || r.state === 'paused'; })[0];
       var bad = t.stage === 'failed' || t.stage === 'stopped';
-      var waitingOk = t.stage === 'waiting' || !!(t.proposal && t.proposal.waiting);
-      var asksYou = t.stage === 'needsYou' || (t.choices || []).length > 0;
-      var said = [t.headline || ''].concat(runs.map(function (r) { return r.summary || ''; })).join(' ');
-      var step = live && live.step && live.step.total ? 'step ' + live.step.index + ' of ' + live.step.total + (live.step.name ? ': ' + live.step.name.replace(/[-_]+/g, ' ') : '') : 'under way';
-      var steps = [
-        ['done', t.source === 'schedule' ? 'Its schedule' : whoFor(t), when(t.at)],
-        t.stage === 'deciding' ? ['now', 'Working out what to do', 'reading what was asked']
-          : waitingOk ? ['need', 'Proposed the work', 'waiting for an OK']
-          : runs.length ? ['done', 'Decided to do the work', runs.length > 1 ? plural(runs.length, 'run', 'runs') : 'one run']
-          : t.stage === 'nothing' ? ['done', 'Nothing to do', 'it says why below']
-          : t.stage === 'declined' ? ['done', 'Turned it down', 'it says why below']
-          : ['done', 'Answered', 'no work needed'],
-        runs.length ? (live ? ['now', 'Doing the work', step]
-          : bad ? ['bad', t.stage === 'failed' ? 'The work failed' : 'The work stopped', 'what happened is below']
-          : ['done', 'Did the work', runs.length > 1 ? 'all ' + runs.length + ' runs finished' : 'finished']) : null,
-        runs.length && !live && !bad ? (prs.length ? ['done', prs.length === 1 ? 'A pull request' : plural(prs.length, 'pull request', 'pull requests'), 'linked at the top right']
-          : /comment/i.test(said) ? ['done', 'Commented', 'on the ticket or pull request']
-          : ['done', 'Reported back', 'what it found is below']) : null,
-        asksYou ? ['need', 'Your turn', (t.choices || []).length ? 'pick what it does next, below' : 'it asked you something, below']
-          : waitingOk ? ['need', 'Your turn', 'OK the work, or turn it down']
-          : t.stage === 'deciding' || live ? ['wait', 'Back to you', 'only if it needs something']
-          : bad ? ['need', 'Your turn', 'carry on, retry, or leave it']
-          : prs.length ? ['info', 'Your turn', 'review the pull request']
-          : ['done', 'Nothing needed from you', ''],
-      ].filter(Boolean);
-      return h('ol', { class: 'wl-story', 'aria-label': 'What happened' }, steps.map(function (s) {
-        return h('li', { class: 'wl-st ' + s[0] }, h('span', { class: 'wl-st-bar', 'aria-hidden': 'true' }),
-          h('span', { class: 'wl-st-t' }, h('b', { text: s[1] }), s[2] ? h('span', { text: s[2] }) : null));
-      }));
+      var waiting = t.proposal && t.proposal.waiting ? t.proposal.items.filter(function (i) { return i.status === 'waiting'; }) : [];
+      var waitingOk = t.stage === 'waiting' || waiting.length > 0;
+      var choices = t.choices || [];
+      var asksYou = t.stage === 'needsYou' || choices.length > 0;
+      var deciding = t.stage === 'deciding';
+      // What the repo's CI said about what it pushed, from its newest watched run:
+      // failed and handed back is the manager's to fix; failing and sent back
+      // to the worker is still in its hands.
+      var ciRun = runs.filter(function (r) { return r.ci; }).slice(-1)[0];
+      var ci = ciRun ? ciRun.ci : null;
+      var ciBad = !!ci && ci.state === 'failed' && !live;
+      var ciFixing = !!ci && ci.state === 'fixing' && !live;
+      var pushedPr = prs.filter(function (p) { return p.state === 'open' || p.state === 'draft' || p.state === 'updated'; })[0];
+      var tone = live || deciding || ciFixing ? 'now' : waitingOk || asksYou || ciBad ? 'need' : bad ? 'bad' : 'ok';
+      var badge = tone === 'now' ? (live ? 'Working' : ciFixing ? 'Fixing the build' : 'Deciding') : tone === 'need' ? (waitingOk ? 'Needs your OK' : 'Needs you') : tone === 'bad' ? (t.stage === 'stopped' ? 'Stopped' : 'Failed') : t.stage === 'answered' ? 'Answered' : t.stage === 'nothing' ? 'Nothing to do' : 'Done';
+
+      // What changed: its calls, one card per kind and thing, then its PRs.
+      var groups = [], byKey = {};
+      runs.forEach(function (r) {
+        (r.changes || []).forEach(function (c) {
+          var k = c.kind + '|' + (c.target || c.server);
+          var g = byKey[k];
+          if (!g) groups.push(g = byKey[k] = { kind: c.kind, target: c.target, server: c.server, details: [], n: 0 });
+          g.n++;
+          if (c.detail && g.details.indexOf(c.detail) < 0) g.details.push(c.detail);
+        });
+      });
+      // A pull request it opened or pushed to is a change; one the ticket or
+      // the ask only names (linked), or that was open already, is what the
+      // work is about: said apart, and never "your turn".
+      var about = [];
+      prs.forEach(function (p) { (p.state === 'linked' || p.state === 'existing' ? about : groups).push({ kind: 'pr', target: prLabel(p), url: p.url, state: p.state, details: [], n: 1 }); });
+      // A pull request it commented on is already a card: that card links to
+      // it, rather than the same PR twice.
+      var flat = function (s) { return String(s || '').replace(/\s+/g, '').toLowerCase(); };
+      about = about.filter(function (a) {
+        var same = groups.filter(function (g) { return g.kind !== 'pr' && flat(g.target) === flat(a.target); });
+        same.forEach(function (g) { g.url = g.url || a.url; });
+        return !same.length;
+      });
+      var lastDetail = function (g) { return g.details[g.details.length - 1] || ''; };
+      var phrase = function (g, prev) {
+        var it = g.target && prev && prev.target === g.target ? 'it' : (g.target || 'it');
+        var to = lastDetail(g);
+        if (g.kind === 'comment') return (g.n > 1 ? 'left ' + g.n + ' comments on ' : 'commented on ') + it;
+        if (g.kind === 'status') return to && !/^transition \d+$/.test(to) ? 'moved ' + it + ' to ' + to : 'changed the status of ' + it;
+        if (g.kind === 'fields') { var n = /^(\d+) field/.exec(to); return 'set ' + (n ? plural(Number(n[1]), 'field', 'fields') : 'fields') + ' on ' + it; }
+        if (g.kind === 'created') return 'created ' + (g.target || (to ? '“' + to + '”' : 'something new'));
+        if (g.kind === 'removed') return 'removed something' + (g.target ? ' on ' + it : '');
+        if (g.kind === 'message') return 'posted a message' + (g.target ? ' in ' + g.target : '');
+        if (g.kind === 'pullRequest') return (to || 'acted on') + ' ' + it;
+        if (g.kind === 'pr') return g.state === 'open' || g.state === 'draft' ? 'opened ' + g.target : g.state === 'updated' ? 'pushed to ' + g.target : null;
+        return 'made a change' + (g.target ? ' on ' + g.target : ' in ' + g.server);
+      };
+      var phrases = [];
+      groups.forEach(function (g, i) { var p = phrase(g, groups[i - 1]); if (p) phrases.push(p); });
+      var cap1 = function (s) { return s.charAt(0).toUpperCase() + s.slice(1); };
+      var headline = live ? 'Working on it' + (live.step && live.step.total ? ': step ' + live.step.index + ' of ' + live.step.total + (live.step.name ? ', ' + live.step.name.toLowerCase().replace(/[-_]+/g, ' ') : '') : '')
+        : deciding ? 'Working out what to do'
+        : waitingOk ? (waiting.length ? 'Wants to ' + waiting[0].title.charAt(0).toLowerCase() + waiting[0].title.slice(1) + (waiting.length > 1 ? ', and ' + (waiting.length - 1) + ' more' : '') : 'Waiting for an OK to start')
+        : ciBad ? 'The build is failing on ' + (pushedPr ? prLabel(pushedPr) : 'its branch')
+        : ciFixing ? 'Fixing the failing build on ' + (pushedPr ? prLabel(pushedPr) : 'its branch')
+        : !bad && phrases.length ? cap1(andJoin(phrases.slice(0, 3))) + (phrases.length > 3 ? ', and more' : '')
+        : t.headline || badge;
+      var started = runs.length ? Math.min.apply(null, runs.map(function (r) { return r.startedAt; })) : 0;
+      var ended = runs.length && !live ? Math.max.apply(null, runs.map(function (r) { return r.endedAt || r.startedAt; })) : 0;
+      var pushed = prs.some(function (p) { return p.state === 'open' || p.state === 'draft' || p.state === 'updated'; });
+      var sub = [
+        ended && ended > started ? (bad ? 'stopped after ' : 'took ') + secs(ended - started) : live ? 'started ' + when(started) : '',
+        t.costUSD ? money(t.costUSD) + (live ? ' so far' : '') : '',
+        runs.length ? plural(runs.length, 'run', 'runs') : '',
+        runs.length && !live && !pushed && runs.some(function (r) { return /nothing to push|no repo changed/i.test(r.landed || ''); }) ? 'no code changed' : '',
+      ].filter(Boolean).join(' · ');
+
+      var chipsLabel = waitingOk ? 'It wants to' : live ? 'Changed so far' : bad ? 'Changed before it stopped' : 'What changed';
+      var chips = waitingOk ? waiting.map(function (i) { return h('div', { class: 'oc-chip' }, h('span', { class: 'oc-kind', text: 'Proposed' }), h('b', { text: i.title }), i.detail ? h('span', { class: 'oc-cd', text: i.detail }) : null); })
+        : groups.map(function (g) {
+          var text = g.kind === 'comment' ? (g.n > 1 ? g.n + ' comments on ' : 'On ') + (g.target || g.server)
+            : g.kind === 'status' ? (g.target || g.server) + (lastDetail(g) && !/^transition \d+$/.test(lastDetail(g)) ? ' → ' + lastDetail(g) : '')
+            : g.target || g.server;
+          // A tracker that only gives a transition number names no status: say what happened.
+          var detail = g.kind === 'pr' ? PR_SAID[g.state] || '' : g.kind === 'comment' ? (lastDetail(g) ? '“' + lastDetail(g) + '”' : '')
+            : g.kind === 'status' ? (lastDetail(g) && !/^transition \d+$/.test(lastDetail(g)) ? '' : 'status changed')
+            : g.details.slice(0, 2).join(' · ') || (g.kind === 'fields' ? 'fields updated' : '');
+          var inner = [h('span', { class: 'oc-kind', text: KIND_WORD[g.kind] || 'Change' }), h('b', { class: 'oc-ct', text: text }), detail ? h('span', { class: 'oc-cd', text: detail }) : null];
+          return g.url ? h('a', { class: 'oc-chip', href: g.url, target: '_blank', rel: 'noopener', title: 'Open ' + text }, inner) : h('div', { class: 'oc-chip' }, inner);
+        });
+      // The build, beside what it changed: passed, being fixed, or handed back.
+      var failUrl = ci && (ci.failing || []).map(function (c) { return c.url; }).filter(Boolean)[0];
+      if (ci && !waitingOk && ci.state !== 'unknown') {
+        var ciIn = [h('span', { class: 'oc-kind', text: 'Build' }), h('b', { class: 'oc-ct', text: ci.failing && ci.failing[0] ? ci.failing[0].name : 'CI' }),
+          h('span', { class: 'oc-cd', text: ci.state === 'passed' ? 'passed' : ci.state === 'failed' ? 'failing · handed to you' : 'failing · ' + w.name + ' is fixing it' })];
+        chips.push(failUrl ? h('a', { class: 'oc-chip oc-ci ' + ci.state, href: failUrl, target: '_blank', rel: 'noopener', title: 'Open the build' }, ciIn) : h('div', { class: 'oc-chip oc-ci ' + ci.state }, ciIn));
+      }
+      var changesBlock = chips.length ? h('div', { class: 'oc-changes' }, h('span', { class: 'label', text: chipsLabel }), h('div', { class: 'oc-chips' }, chips))
+        // Only when every run was watched: one from before changes were kept says nothing either way.
+        : runs.length && !live && !waitingOk && runs.every(function (r) { return r.changes; }) ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'Nothing outside the server changed.' }) : null;
+      var aboutBlock = about.length ? h('div', { class: 'oc-changes' }, h('span', { class: 'label', text: 'What it’s about' }),
+        h('div', { class: 'oc-chips' }, about.map(function (g) {
+          return h('a', { class: 'oc-chip oc-chip-about', href: g.url, target: '_blank', rel: 'noopener', title: 'Open ' + g.target },
+            h('span', { class: 'oc-kind', text: 'Pull request' }), h('b', { class: 'oc-ct', text: g.target }), h('span', { class: 'oc-cd', text: g.state === 'existing' ? 'already open, left alone' : 'mentioned, not changed by it' }));
+        }))) : null;
+
+      // Whose turn, and the buttons for it.
+      var focusReply = function () { if (input && input.isConnected) { input.focus(); input.scrollIntoView({ block: 'nearest' }); } };
+      var followUp = w.enabled ? h('button', { type: 'button', class: 'btn', text: 'Ask a follow-up', onclick: focusReply }) : null;
+      var said = h('div', { 'aria-live': 'polite' });
+      var turn = function (cls, label, title, text, buttons) {
+        return h('aside', { class: 'oc-turn ' + cls, 'aria-label': label }, h('span', { class: 'oc-turn-l', text: label }), h('b', { class: 'oc-turn-t', text: title }), text ? h('p', { text: text }) : null,
+          h('div', { class: 'oc-turn-b' }, buttons.filter(Boolean)), said);
+      };
+      var decide = function (approve, button, label) {
+        var ids = waiting.map(function (i) { return i.candidateId; });
+        var restore = busy(button, label);
+        api('POST', '/api/proposals/' + encodeURIComponent(t.proposal.batchId), { approve: approve ? ids : [], skip: approve ? [] : ids }).then(function (x) {
+          restore(); said.textContent = '';
+          if (x.ok === false) { said.appendChild(msg(x)); return; }
+          refreshCounts(); livePoke(w.id, 300);
+        }, function () { restore(); });
+      };
+      var reply = function (text, button) {
+        var restore = busy(button, 'Sending…');
+        api('POST', '/api/ask', { worker: w.id, message: text, replyTo: t.id }).then(function (x) {
+          restore(); said.textContent = '';
+          if (x.ok === false) { said.appendChild(msg(x)); return; }
+          livePoke(w.id, 150);
+        }, function () { restore(); });
+      };
+      // Only a pull request it opened waits on a review because of it. New
+      // commits on one already open (often a teammate's it keeps moving) are a
+      // change, said above; its author and reviewers see them on their PR.
+      var review = prs.filter(function (p) { return p.state === 'open' || p.state === 'draft'; });
+      var panel = waitingOk && waiting.length && data.youManage ? turn('need', 'Your turn', 'OK the work?', w.trust === 'probation' ? w.name + ' asks before any work. Nothing has changed yet.' : 'It asks first because this acts outside the server. Nothing has changed yet.', [
+          (function () { var b = h('button', { type: 'button', class: 'btn go', text: waiting.length === 1 ? 'OK, run it' : 'OK, run all ' + waiting.length }); b.onclick = function () { decide(true, b, 'Starting…'); }; return b; })(),
+          (function () { var b = h('button', { type: 'button', class: 'btn', text: 'Not now' }); b.onclick = function () { decide(false, b, 'Skipping…'); }; return b; })()])
+        : waitingOk ? turn('need', 'Waiting', 'Waiting for an OK', 'Its manager says yes or no. Nothing has changed yet.', [])
+        : asksYou && choices.length ? turn('need', 'Your turn', 'Pick what it does next', null, choices.map(function (c) { var b = h('button', { type: 'button', class: 'btn', text: c }); b.onclick = function () { reply(c, b); }; return b; }).concat([w.enabled ? h('button', { type: 'button', class: 'linkish', style: 'font-size:12.5px;align-self:flex-start', text: 'Or say something else', onclick: focusReply }) : null]))
+        : asksYou ? turn('need', 'Your turn', 'It asked you something', 'Its question is below. Answer in the box at the bottom.', [w.enabled ? h('button', { type: 'button', class: 'btn go', text: 'Reply', onclick: focusReply }) : null])
+        : ciBad ? turn('need', 'Your turn', 'Fix the failing build', ci.note, [
+          failUrl ? h('a', { class: 'btn go', href: failUrl, target: '_blank', rel: 'noopener', text: 'Open the failing build ↗' }) : null,
+          w.enabled ? h('button', { type: 'button', class: 'btn', text: 'Ask ' + w.name + ' to try again', onclick: function () {
+            if (input) input.value = 'CI is still failing on ' + (pushedPr ? prLabel(pushedPr) : 'the branch') + (ci.failing && ci.failing[0] ? ' (' + ci.failing[0].name + ')' : '') + '. Read the failing build and fix it on the same branch.';
+            focusReply();
+          } }) : null,
+          pushedPr ? h('a', { class: 'btn', href: pushedPr.url, target: '_blank', rel: 'noopener', text: 'Open ' + prLabel(pushedPr) + ' ↗' }) : null])
+        : ciFixing ? turn('now', 'Nothing needed yet', w.name + ' is fixing the build', ci.note, [])
+        : live ? turn('now', 'Nothing needed yet', w.name + ' is on it', 'You’ll hear here, and in Slack, if it gets stuck or needs a decision.', [
+          h('button', { type: 'button', class: 'btn', text: 'Watch it live', onclick: function () { watchRun(live.runId, w.name + ' · ' + live.title); } }),
+          data.youManage ? stopRunButton(live.runId, w) : null])
+        : deciding ? turn('now', 'Nothing needed yet', 'It’s working out what to do', 'It answers, or proposes work, in a moment.', [])
+        : bad ? turn('bad', 'Your turn', document.getElementById('wl-fail-' + t.id) || runs.some(function (r) { return r.state === 'failed' || r.state === 'interrupted'; }) ? 'Pick how to carry on' : 'It didn’t finish', t.error || runs.map(function (r) { return r.error; }).filter(Boolean)[0] || 'What went wrong is below.', [
+          h('button', { type: 'button', class: 'btn go', text: 'See the options', onclick: function () { var el = document.getElementById('wl-fail-' + t.id); if (el && el.firstChild) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); else focusReply(); } }), followUp])
+        : review.length ? turn('info', 'Your turn', review.length === 1 ? 'Review the pull request' : 'Review the ' + review.length + ' pull requests', null,
+          review.slice(0, 2).map(function (p) { return h('a', { class: 'btn go', href: p.url, target: '_blank', rel: 'noopener', text: 'Open ' + prLabel(p) + ' ↗' }); }).concat([followUp]))
+        : null;
+      // Done, and nothing asked of you: a line, not a panel with nothing to press.
+      var doneLine = panel ? null : h('p', { class: 'oc-done' }, icon('check', 14), h('span', { text: 'Nothing needed from you.' }),
+        w.enabled ? h('button', { type: 'button', class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Ask a follow-up', onclick: focusReply }) : null);
+
+      // The path it took: the thread's own stops, then whose turn it is, said
+      // as what's asked of them. Amber only when the work is held up on you;
+      // a pull request waiting for review is calm blue.
+      var you = waitingOk ? { label: 'Your turn', sub: 'OK the work', state: 'need', detail: 'Nothing happens until you OK it, or say not now.' }
+        : asksYou ? { label: 'Your turn', sub: choices.length ? 'pick what’s next' : 'answer its question', state: 'need', detail: 'It’s waiting on your answer.' }
+        : ciBad ? { label: 'Your turn', sub: 'fix the build', state: 'need', detail: ci.note }
+        : bad ? { label: 'Your turn', sub: 'carry on or retry', state: 'need', detail: 'The work stopped. Carry on, retry or leave it.' }
+        : tone === 'now' ? { label: 'You', sub: 'only if needed', state: 'next', detail: 'Nothing needed yet. You’ll hear if it gets stuck.' }
+        : review.length ? { label: 'Your turn', sub: review.length === 1 ? 'review the PR' : 'review ' + review.length + ' PRs', state: 'info', detail: 'The work is done. The pull request it opened waits for a person to review it.' } : null;
+      var path = (t.progress && t.progress.length ? t.progress : [{ label: whoFor(t), state: 'done', at: t.at }]).concat(you ? [you] : []);
+      var CLS = { done: 'ok', now: 'now', need: 'need', failed: 'bad', next: 'todo', skipped: 'todo', info: 'info' };
+      var firstOpen = -1;
+      path.forEach(function (p, i) { if (firstOpen < 0 && (p.state === 'now' || p.state === 'need' || p.state === 'failed')) firstOpen = i; });
+      // Nothing held up: open on its last step of its own, not on you.
+      if (firstOpen < 0 && you) firstOpen = path.length - 2;
+      var at = outcomeStop[t.id] != null && outcomeStop[t.id] < path.length ? outcomeStop[t.id] : firstOpen >= 0 ? firstOpen : path.length - 1;
+      var about = h('div', { class: 'oc-about', 'aria-live': 'polite' });
+      var stops = h('ol', { class: 'oc-path', 'aria-label': 'How it got there' });
+      var drawPath = function () {
+        stops.replaceChildren.apply(stops, path.map(function (p, i) {
+          var cls = CLS[p.state] || 'todo';
+          var next = path[i + 1];
+          return h('li', { class: 'oc-stop ' + cls + (next ? ' to-' + (CLS[next.state] || 'todo') : '') },
+            h('button', { type: 'button', 'aria-pressed': i === at ? 'true' : 'false', onclick: function () { at = i; outcomeStop[t.id] = i; drawPath(); } },
+              h('span', { class: 'oc-mark', 'aria-hidden': 'true' }, cls === 'ok' ? icon('check', 12) : cls === 'bad' ? icon('x', 12) : cls === 'need' ? '!' : ''),
+              h('span', { class: 'oc-st' }, h('b', { text: p.label }), p.sub ? h('span', { text: p.sub }) : p.at ? h('span', { text: clock(p.at) }) : null)));
+        }));
+        var p = path[at];
+        about.replaceChildren(h('b', { text: p.label }), h('span', { text: p.detail || (p.at ? when(p.at) : (CLS[p.state] === 'todo' ? 'Not yet.' : '')) }));
+      };
+      drawPath();
+
+      var iconFor = tone === 'ok' ? icon('check', 20) : tone === 'bad' ? icon('x', 20) : tone === 'need' ? h('b', { text: '!' }) : h('span', { class: 'wl-dot live' });
+      // Its stage is already the badge above the title: the icon says it here.
+      return [h('div', { class: 'oc oc-' + tone, role: 'region', 'aria-label': 'What happened' },
+          h('div', { class: 'oc-main' },
+            h('div', { class: 'oc-head' }, h('span', { class: 'oc-icon', role: 'img', 'aria-label': badge }, iconFor),
+              h('div', { class: 'oc-words' }, h('p', { class: 'oc-headline', text: headline }), sub ? h('span', { class: 'oc-sub', text: sub }) : null)),
+            changesBlock, aboutBlock, doneLine),
+          panel),
+        path.length > 1 ? h('section', { class: 'oc-way', 'aria-label': 'How it got there' }, h('span', { class: 'label', text: 'How it got there' }), stops, about) : null];
     };
     var outcomeMark = function (t) {
       var said = [t.headline].concat(t.runs.map(function (r) { return (r.summary || '') + ' ' + (r.landed || ''); })).join(' ');
@@ -6714,7 +6949,7 @@ export const CONSOLE_JS = String.raw`
         return;
       }
       if (!sel) { sel = t.id; state.wlSel[w.id] = sel; }
-      var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, prsOf(t), t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating]; })]);
+      var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, prsOf(t), t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating, (r.changes || []).length]; })]);
       if (!force && key === detailKey) return;
       detailKey = key;
       var ctx = { waiting: data.waiting, youManage: data.youManage, merge: true };
@@ -6754,10 +6989,9 @@ export const CONSOLE_JS = String.raw`
           h('h2', { class: 'wl-detail-title' }, hk ? keyPill(hk, tp && /^https?:\/\//.test(tp.link) ? tp.link : null) : null, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
           source,
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
-          original,
-          story(t)),
+          original),
         // The live activity sits inside the timeline's running step.
-        h('div', { class: 'wl-detail-body' }, failedPanel(t, w, data.youManage), threadCard(t, w, ctx),
+        h('div', { class: 'wl-detail-body' }, outcome(t), h('div', { id: 'wl-fail-' + t.id }, failedPanel(t, w, data.youManage)), threadCard(t, w, ctx),
           liveRun && !(t.progress && t.progress.length > 1) ? h('section', { class: 'stack', style: 'gap:8px;margin-top:14px' }, h('div', { class: 't-kind', text: 'What it’s doing' }), liveRunView(liveRun.runId, true)) : null),
         h('div', { class: 'wl-detail-foot' },
           t.team ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Open the team task', onclick: function () { go('team', { teamId: t.team.id }); } }) : null),
