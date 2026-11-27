@@ -4,25 +4,35 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.27.5] - 2026-11-27
+
 ### Added
-- **Carry on a paused run.** A run paused on a failed step can be sent back to the step it hands failures to (with a note), retried, or skipped, from the run page or `POST /api/runs/:id/resume`.
-- **Follow up on an ask.** `ask_worker` takes `followUpOn` to carry on from an earlier question, and `my_asks` lists the questions you sent and their replies.
-- **Work rows lead with the ticket key.** The console's work list starts each row with its Jira, Linear or GitHub key, coloured per project, drops a "From X:" prefix from ask titles, and searches keys and who asked. The detail header links the key to the ticket.
-- **What a worker's run changed, and whose turn it is.** On an org server a worker's runs keep what they changed outside the server: each call that doesn't only read and came back without an error, as a few words, with secrets scrubbed and never the call's arguments. A thread opens with an outcome card: what happened, what changed, the build's verdict, and a "your turn" panel with the action it needs. Desktop and CLI runs keep nothing.
-- **Pull request wakes carry new review comments.** The server reads them with its own sign-in and hands the new ones, clipped, to the worker, so a worker without the host's tool can still act on them.
-- **A failed tool call says which call it was,** with the API's status and message, in the run's activity.
+- **Carry on a paused run.** A run paused on a failed step can be sent back to the step it hands failures to (with a note), retried, or skipped, from the run page or `POST /api/runs/:id/resume`. (#1282)
+- **Follow up on an ask.** `ask_worker` takes `followUpOn` to carry on from an earlier question, and `my_asks` lists the questions you sent and their replies. (#1282)
+- **Work rows lead with the ticket key.** The console's work list starts each row with its Jira, Linear or GitHub key, coloured per project, drops a "From X:" prefix from ask titles, and searches keys and who asked. The detail header links the key to the ticket. (#1282)
+- **What a worker's run changed, and whose turn it is.** On an org server a worker's runs keep what they changed outside the server: each call that doesn't only read and came back without an error, as a few words, with secrets scrubbed and never the call's arguments. A thread opens with an outcome card: what happened, what changed, the build's verdict, and a "your turn" panel with the action it needs. Desktop and CLI runs keep nothing. (#1282)
+- **Pull request wakes carry new review comments.** The server reads them with its own sign-in, from any git host, and hands the new ones to the worker: author, file and line, and text, clipped. A worker without the host's tool can still act on them. (#1274)
+- **A failed tool call says which call it was,** with the API's status and message, in the run's activity. (#1266)
+- **Each answer lists its runs' tool calls** under "How it got there", failed and refused ones in red. (#1267)
 
 ### Changed
-- **The worker screens are six tabs: Conversation, Activity, Files, Job, Performance and Setup.** Access and Settings moved into Setup's six steps, Tuning is now Performance, Runs and Journal are now Activity, and Triggers are under Setup → When it works. Old links land where their content went. The docs follow.
-- **A written document a worker sends to Slack is attached as well as opened from its button,** for people who can't press the button.
-- **On the first start after upgrading, the server reads back what the last 30 days of worker runs changed** from their transcripts. It runs in the background, at most 200 runs a start, and a run with no transcript left is not looked for again.
-- **A paused member only holds a team back when they still have a piece to run.** Carrying on past a failed piece, retrying a stage, or retrying one piece checks only the members whose pieces would run.
+- **The worker screens are six tabs: Conversation, Activity, Files, Job, Performance and Setup.** Access and Settings moved into Setup's six steps, Tuning is now Performance, Runs and Journal are now Activity, and Triggers are under Setup → When it works. Old links land where their content went. The docs follow. (#1282)
+- **Saving on a page redraws only its content.** The top bar stays, nothing flashes to Loading, the scroll stays put and open sections stay open. Pausing or removing a trigger redraws only its row. (#1268, #1269)
+- **A run waiting on its worker's answer to its own question says so,** with the question, instead of "Running", and its activity shows the question without its tags. (#1275)
+- **"What it knows" is drawn as Markdown at full height,** with Edit (was "Correct it"), Learn again and its refresh setting in the card's header. (#1276)
+- **A written document a worker sends to Slack is attached as well as opened from its button,** for people who can't press the button. (#1273)
+- **On the first start after upgrading, the server reads back what the last 30 days of worker runs changed** from their transcripts. It runs in the background, one run at a time, at most 200 runs a start, and a run with no transcript left is not looked for again. (#1280)
+- **A team with a paused member stays on the bench.** Nothing it's asked starts, learns or carries on, and it says who to resume. For a task already under way, only members who still have a piece to run hold it back. (#1272)
+- **Long links show as their site and page,** with the full address on hover, and the work list's filters say what they keep. (#1281)
 
 ### Security
-- **A watch trigger may only make calls its worker may make.** Watch polls and "Try it now" run on the tool gateway's server key, which nothing scoped (#1257). Anyone but an admin now needs a call that only reads, on a tool the worker (or, for a process's intake, one of its workers) has, inside that worker's scope. This applies to saving and changing a trigger, trying one, and process intake. A watch a worker proposes after reading a ticket is held to the same rule whoever asked.
+- **A watch trigger may only make calls its worker may make.** Watch polls and "Try it now" run on the tool gateway's server key, which nothing scoped (#1257). Anyone but an admin now needs a call that only reads, on a tool the worker (or, for a process's intake, one of its workers) has, inside that worker's scope. This applies to saving and changing a trigger, trying one, and process intake. A watch a worker proposes after reading a ticket is held to the same rule whoever asked. (#1277)
+- **Edits to an ephemeral worker's Slack messages are scrubbed** as its posts are. (#1279)
 
 ### Fixed
-- **The "your turn" card keeps a reply's one-tap choices** when the ask also handed off work before replying. It had said "Nothing needed from you".
+- **"Your turn" follows the thread's newest message.** An earlier answer's choices no longer show after a later one says nothing is needed, and a reply's one-tap choices stay when the ask also handed off work before replying. (#1270)
+- **Setup → Tuning's flow suggestion reaches the worker's Performance tab** with its reason, and stays until the review starts. (#1271)
+- **A trigger's answer that ends in a status line is posted.** Only a bare status is kept out. (#1278)
 
 ## [0.27.4] - 2026-11-25
 
@@ -1569,7 +1579,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.4...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.27.5...HEAD
+[0.27.5]: https://github.com/overcodelions/overcli/compare/v0.27.4...v0.27.5
 [0.27.4]: https://github.com/overcodelions/overcli/compare/v0.27.3...v0.27.4
 [0.27.3]: https://github.com/overcodelions/overcli/compare/v0.27.2...v0.27.3
 [0.27.2]: https://github.com/overcodelions/overcli/compare/v0.27.1...v0.27.2
