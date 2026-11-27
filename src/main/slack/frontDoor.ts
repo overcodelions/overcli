@@ -2415,8 +2415,8 @@ export class FrontDoor {
           delete thread.done;
           this.save();
         }
-        // With a footer to hang it on, a written-up document opens from there
-        // rather than unfolding its whole self under the answer it repeats.
+        // With a footer to hang it on, a written-up document also opens from
+        // there, in a pop-up; it is attached either way (deliverText).
         const footer = !!(this.deps.slack.openView && this.deps.slack.postTs);
         const held = await deliverText(this.io(), f.channel, f.threadTs, f.workerName, res.reply, `${slug(f.workerName)}-answer.md`, f.workerId, { name: f.workerName, ...(f.avatarUrl ? { iconUrl: f.avatarUrl } : {}) }, footer);
         // "Writing it up…" has nothing left to say once the answer is under it.

@@ -54,11 +54,13 @@ describe('a folder a reply names', () => {
     expect(x.posts.at(-1)).toContain('2 more files');
   });
 
-  it('still holds one document it names, for the button', async () => {
+  it('returns one document it names for the button, and attaches it too, for whoever can’t press one', async () => {
     const x = io();
     const held = await send(x, `Full write-up: ${DIR}/spec.md`, true);
     expect(held.map((f) => f.name)).toEqual(['spec.md']);
-    expect(x.uploads).toEqual([]);
+    expect(x.uploads).toEqual(['spec.md']);
+    expect(x.posts[0]).toContain('spec.md (attached)');
+    expect(x.posts[0]).not.toContain(DIR);
   });
 
   it('finds folders, not files, in a reply', () => {

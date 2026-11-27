@@ -261,9 +261,10 @@ export function finishedText(workerName: string, p: ErrandProgress, library: str
 ///
 /// `as`: post it as the worker itself, under its name and picture.
 ///
-/// `hold`: a written document (Markdown, text) isn't attached, and the line
-/// pointing at it goes: Slack unfolds it whole under the answer it repeats.
-/// Returned, for a button that opens it instead.
+/// `hold`: a written document (Markdown, text) is returned too, for a button
+/// that opens it in a pop-up. It is still attached: someone who can't press
+/// a button (an assistant posting for a person, a guest from another
+/// workspace) had no way to it but asking the worker to paste it.
 export async function deliverText(io: DeliverIo, channel: string, threadTs: string, workerName: string, text: string, filename: string, workerId?: string, as?: PostAs, hold = false): Promise<Array<{ path: string; name: string }>> {
   const found = workerId && io.workerFile
     ? pathsInReply(text).slice(0, MAX_UPLOADS).flatMap((p) => {
@@ -272,7 +273,7 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
       })
     : [];
   const held = hold ? found.filter((f) => WRITTEN.test(f.name)) : [];
-  const files = found.filter((f) => !held.includes(f));
+  const files = [...found];
   let body = text.trim() || 'Done.';
   // A folder is a package, not a write-up of the answer: it goes up whole,
   // whatever `hold` says about a single document.
@@ -293,16 +294,6 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
       leftOut += picks.length - sendable.length;
       if (sendable.length) body = folderAttached(body, folder);
     }
-  }
-  for (const f of held) {
-    body = body
-      .split('\n')
-      // "Full write-up: <path>" says nothing once the file isn't there; a
-      // sentence that only mentions it in passing keeps its name.
-      .map((l) => (!l.includes(f.path) ? l : l.split(f.path).join('').trim().length < 40 ? null : l.split(f.path).join(f.name)))
-      .filter((l): l is string => l !== null)
-      .join('\n')
-      .trim();
   }
   for (const f of files) body = body.split(f.path).join(`${f.name} (attached)`);
   // Whatever it names that couldn't go up (another worker's file, one since

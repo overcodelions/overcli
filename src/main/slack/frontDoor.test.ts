@@ -489,9 +489,11 @@ describe('the front door', () => {
     expect(flat(footer.blocks)).toMatch(/^Worked out in \d+ min · 1 step · 1 source/);
     expect(h.posts.at(-1)).toContain('[as Vantage] Worked out in');
     expect(JSON.stringify(footer.blocks)).toContain('"value":"orch-t"');
-    // The write-up opens from the footer instead of unfolding under the answer.
-    expect(h.uploads).toEqual([]);
-    expect(h.posts.find((x) => x.includes('It moved'))).not.toContain('Full write-up');
+    // The write-up opens from the footer, and is attached too, for whoever
+    // can't press a button; the answer names it, never its server path.
+    expect(h.uploads).toEqual(['sender.md']);
+    expect(h.posts.find((x) => x.includes('It moved'))).toContain('sender.md (attached)');
+    expect(h.posts.find((x) => x.includes('It moved'))).not.toContain('/data/worker-files');
     const writeUp = (footer.blocks[1] as { elements: Array<{ action_id: string; value: string }> }).elements[1];
     expect(writeUp.action_id).toBe(`${DOOR_WRITEUP_ACTION}_0`);
     await h.door.showWriteUp('trig-0', writeUp.value);

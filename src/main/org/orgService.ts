@@ -3107,6 +3107,10 @@ export class OrgService {
     if (!found.ok) return found;
     const deliver = this.ownDms(caller, input.deliver);
     if (!deliver.ok) return deliver;
+    if (input.kind === 'watch' && input.watch?.server && input.watch.tool) {
+      const refused = this.watchRefusal(caller, input.watch, { workerIds: [found.worker.id] });
+      if (refused) return { ok: false, error: refused };
+    }
     const res = s.create({ ...input, deliver: deliver.deliver, workerId: found.worker.id, enabled: true, createdBy: caller.name });
     if (!res.ok) return res;
     this.record(caller, `Gave ${found.worker.name} a trigger: ${res.trigger.name}.`);
@@ -3130,6 +3134,12 @@ export class OrgService {
       const deliver = this.ownDms(caller, patch.deliver, found.trigger.deliver);
       if (!deliver.ok) return deliver;
       patch = { ...patch, deliver: deliver.deliver };
+    }
+    // A changed call is checked as a new one would be. A process's intake
+    // (no worker) is changed on its own screen, by its owner or an admin.
+    if (patch.watch?.server && patch.watch.tool && (patch.watch.server !== found.trigger.watch?.server || patch.watch.tool !== found.trigger.watch?.tool)) {
+      const refused = this.watchRefusal(caller, patch.watch, found.trigger.workerId ? { workerIds: [found.trigger.workerId] } : {});
+      if (refused) return { ok: false, error: refused };
     }
     const res = found.s.update(id, patch);
     if (!res.ok) return res;
@@ -3347,6 +3357,11 @@ export class OrgService {
     if (!call) return fail("it couldn't find a tool that looks tickets up.");
     const general = generalize(call.args, itemId);
     if (!general.found) return fail(`the call it used doesn't name ${itemId}, so it can't be pointed at other tickets.`);
+    // Proposed by a worker that read the ticket, and probed and then polled
+    // with this server's sign-in: only a call it can read with, in its scope.
+    if (!callable.includes(call.server)) return fail(`it used ${call.server}, which a watch can't call on its own.`);
+    const refused = this.watchRefusal(caller, call, { workerIds: [w.id], proposed: true });
+    if (refused) return fail(`it picked ${call.tool}, which a watch may not call on its word.`);
     const probe = await s.probe(call.server, call.tool, argsFor({ server: call.server, tool: call.tool, args: general.args, everyMinutes: 15, tracked: [itemId] }));
     if (!probe.ok) return fail(probe.error);
     const shape = readShape(probe.json, itemId);
@@ -3403,10 +3418,44 @@ export class OrgService {
     return { ok: true };
   }
 
-  async testWatch(caller: OrgCaller, watch: NonNullable<WorkerTrigger['watch']>): Promise<Result<{ items: Array<{ id: string; title: string; url?: string }> }>> {
+  /// Why a watch may not make this call, or null when it may. A watch calls
+  /// its tool with this server's own sign-in, between runs and with no worker
+  /// behind the call, so the gateway can't hold it to anyone's scope: it is
+  /// held here instead, before the call is tried or saved.
+  /// - An admin may watch with any installed tool; they set up the tools.
+  /// - Anyone else only with a call that reads, on a tool one of `workerIds`
+  ///   has and inside that worker's scope. No `workerIds`: the workers the
+  ///   caller manages.
+  /// - `proposed`: a call a worker came up with after reading outside text
+  ///   is held to the second rule whoever asked.
+  watchRefusal(caller: OrgCaller, watch: { server: string; tool: string }, opts: { workerIds?: readonly string[]; proposed?: boolean } = {}): string | null {
+    const policy = this.policy();
+    if (isAdmin(policy, caller) && !opts.proposed) return null;
+    const full = `mcp__${mcpServerKey(watch.server)}__${watch.tool}`;
+    if (!isReadOnlyMcpTool(full)) return `A watch can only use a call that reads, and ${watch.tool} looks like it changes something. Pick a search or list call, or ask an admin.`;
+    const roster = this.deps.workers.roster();
+    const ids = opts.workerIds ?? roster.filter((w) => canManage(policy, roster, w.id, caller)).map((w) => w.id);
+    for (const id of ids) {
+      const tool = this.summaryFor(caller, id)?.tools.find((t) => t.name === watch.server && t.ok);
+      if (tool && (!tool.scope || inToolScope({ [watch.server]: tool.scope }, full))) return null;
+    }
+    return `None of ${opts.workerIds?.length === 1 ? 'this worker’s' : 'your workers’'} tools let it make that call: give the worker ${watch.server} on Setup → Tools, with ${watch.tool} in its scope, or ask an admin.`;
+  }
+
+  /// The workers on a team, by id; none for a team that's gone.
+  teamWorkerIds(teamId: string): string[] {
+    const team = this.deps.teams?.list().teams.find((t) => t.id === teamId && !t.disbanded);
+    return team ? team.members.map((m) => m.workerId) : [];
+  }
+
+  async testWatch(caller: OrgCaller, watch: NonNullable<WorkerTrigger['watch']>, opts: { workerId?: string; workerIds?: readonly string[] } = {}): Promise<Result<{ items: Array<{ id: string; title: string; url?: string }> }>> {
     const s = this.triggerSvc();
     if (!s) return { ok: false, error: 'Triggers run on the org server.' };
     if (!canHire(this.policy(), caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only people who manage workers can test triggers.' };
+    if (!watch.server || !watch.tool) return { ok: false, error: 'Pick the tool to check, and what to call.' };
+    if (opts.workerId && !isAdmin(this.policy(), caller) && !canManage(this.policy(), this.deps.workers.roster(), opts.workerId, caller)) return { ok: false, error: 'Only the worker’s manager can test its triggers.' };
+    const refused = this.watchRefusal(caller, watch, { workerIds: opts.workerId ? [opts.workerId] : opts.workerIds });
+    if (refused) return { ok: false, error: refused };
     const res = await s.test(watch);
     return res.ok ? { ok: true, items: res.items.slice(0, 25).map((i) => ({ id: i.id, title: i.title, ...(i.url ? { url: i.url } : {}) })) } : res;
   }

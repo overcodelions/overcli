@@ -51,6 +51,10 @@ describe('process routes', () => {
     runningNow: () => [{ workerId: 'w-owen', workerName: 'Owen', run: { runId: 'r1', title: 'Weekly site audit', startedAt: 1, step: { index: 2, total: 3, name: 'crawl-pages' }, finished: ['plan'], state: 'working' } }],
     teamTasks: () => [],
     teams: () => [{ id: 't-product', name: 'Product' }],
+    teamWorkerIds: (teamId: string) => (teamId === 't-product' ? ['w-lena'] : []),
+    // The real check is OrgService's (orgService.triggers.test.ts): here, that
+    // the route asks it about the process's workers, and keeps what it refuses out.
+    watchRefusal: (_c: OrgCaller, w: { tool: string }, opts: { workerIds?: string[] }) => (opts.workerIds?.includes('w-lena') && w.tool === 'search' ? null : 'A watch can only use a call that reads.'),
     spendView: (c: OrgCaller, opts: { all?: boolean }) => ({ ok: true, who: c.name, all: !!opts.all }),
     stopTeamWork: (c: OrgCaller, id: string) => ({ ok: true, who: c.name, id }),
     library: (_c: OrgCaller, opts: { documents?: boolean; kind?: string; since?: number }) => [{ documents: !!opts.documents, kind: opts.kind ?? null, ...(opts.since != null ? { since: opts.since } : {}) }],
@@ -221,6 +225,8 @@ describe('process routes', () => {
     expect(await call(PAT, 'POST', `/api/processes/${id}/schedules`, { cadence: { kind: 'cron', expr: 'not cron' }, title: 'X', brief: 'Y here' })).toMatchObject({ ok: false });
     const seen = await call(PAT, 'GET', `/api/processes/${id}`);
     expect(seen.schedules[0].when).toBe('On the first day of each quarter at 09:00');
+    expect(await call(PAT, 'POST', `/api/processes/${id}/intake`, { kind: 'watch', watch: { server: 'tracker', tool: 'delete_issue', args: {}, everyMinutes: 15 } })).toMatchObject({ ok: false, error: 'A watch can only use a call that reads.' });
+    expect(triggers.some((t) => t.watch?.tool === 'delete_issue')).toBe(false);
     const watched = await call(PAT, 'POST', `/api/processes/${id}/intake`, { kind: 'watch', watch: { server: 'tracker', tool: 'search', args: { q: 'type = Bug' }, everyMinutes: 15 } });
     expect(watched.intake.find((t: { kind: string }) => t.kind === 'watch')).toMatchObject({ watch: { server: 'tracker', tool: 'search', everyMinutes: 15 } });
   });

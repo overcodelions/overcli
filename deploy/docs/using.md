@@ -60,7 +60,7 @@ Your org's server address, signed in through a Slack link, company sign-in, or t
 
 - **Inbox:** questions and approvals waiting on you, what came in, and a box to ask anything.
 - **Library:** everything workers delivered, searchable, with links (PRs, docs) and a "useful?" rating. Rating matters: workers read it.
-- **Workers:** each worker's page has its conversation, triggers, job and settings.
+- **Workers:** each worker's page has its conversation, activity, files, job, performance and setup.
 - **Teams:** give a team a task, and follow its plan and progress.
 - **Hire:** the roles your org has approved, or describe a new one.
 

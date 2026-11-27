@@ -61,6 +61,10 @@ export interface ThreadRun {
   changes?: RunChange[];
   /// What the repo's CI said about what it pushed (ciWatch.ts), when watched.
   ci?: RunCi;
+  /// A running run whose step asked its worker a question that isn't answered
+  /// yet: the worker is working it out (in its own queue), and asks its
+  /// manager only if it can't. "Running" alone hid a run stuck there for hours.
+  asking?: { question: string; since: number };
 }
 
 /// The CI verdict on a run's pushed branch, as a person needs it: passed;
@@ -71,6 +75,8 @@ export interface RunCi {
   /// The watcher's own first line: why, in a sentence.
   note: string;
   failing: Array<{ name: string; url?: string }>;
+  /// How many checks it listed, passed or not.
+  checks: number;
 }
 
 /// The watcher's note (ciWatch.ts writes it as ci.md on the run) read back as
@@ -93,7 +99,8 @@ export function ciOf(body: string): RunCi | undefined {
         : failing.length
           ? 'fixing'
           : 'unknown';
-  return { state, note, failing };
+  const checks = lines.filter((l) => /^- (passed|FAILED|running): /.test(l)).length;
+  return { state, note, failing, checks };
 }
 
 export interface ThreadItem {
@@ -228,7 +235,9 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
   // The lander attaches its note after the run ends, so it is always the
   // newest file; what the run itself wrote is the result, the note a footnote.
   const landedFile = r.artifacts?.[LANDED_ARTIFACT];
-  const artifact = Object.values(r.artifacts ?? {}).filter((a) => a.name !== LANDED_ARTIFACT).sort((a, b) => b.producedAt - a.producedAt)[0] ?? landedFile;
+  // The CI watcher's note is attached after the run, so it would be the
+  // newest file: it's the build's verdict (ci, below), not what the run found.
+  const artifact = Object.values(r.artifacts ?? {}).filter((a) => a.name !== LANDED_ARTIFACT && a.name !== 'ci.md').sort((a, b) => b.producedAt - a.producedAt)[0] ?? landedFile;
   const landed = landedFile && artifact !== landedFile ? summarize(landedFile.body, 160) : undefined;
   const pullRequests = landedFile ? pullRequestsIn(landedFile.body ?? '') : [];
   const endedAt = ended ? Math.max(r.createdAt, ...r.attempts.map((a) => a.endedAt ?? a.startedAt)) : undefined;
@@ -242,7 +251,9 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
   // The CI watcher's note (ciWatch.ts CI_ARTIFACT), named here to keep this file pure.
   const ciFile = r.artifacts?.['ci.md'];
   const ci = ciFile ? ciOf(ciFile.body ?? '') : undefined;
+  const asking = s.kind === 'running' ? [...(r.workerExchanges ?? [])].reverse().find((x) => x.stepId === s.currentStepId && x.status === 'asking') : undefined;
   return {
+    ...(asking ? { asking: { question: summarize(asking.question, 600), since: asking.askedAt } } : {}),
     runId: r.id,
     title,
     state,
@@ -513,7 +524,9 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
       const total = runs.length || queued.length || waiting.length;
       progress.push(
         live.length || queued.length
-          ? { label: r0 ? `Running · step ${r0.step.index} of ${r0.step.total}` : 'Starting', state: 'now', ...(r0 ? { at: r0.startedAt } : {}) }
+          ? r0?.asking
+            ? { label: `${name} is answering its question`, state: 'now', at: r0.asking.since, detail: `Its ${r0.step.name.toLowerCase()} step asked: “${r0.asking.question}” ${name} answers it, or asks you if it can’t.` }
+            : { label: r0 ? `Running · step ${r0.step.index} of ${r0.step.total}` : 'Starting', state: 'now', ...(r0 ? { at: r0.startedAt } : {}) }
           : need.length
             ? { label: need[0].state === 'question' ? 'Has a question' : 'Wants your OK', state: 'need' }
             : stopped.length

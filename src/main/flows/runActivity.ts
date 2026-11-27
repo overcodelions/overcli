@@ -32,6 +32,15 @@ const clip = (s: string, n: number) => {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 
+/// What a step said, as a person reads it: a question to its worker is said
+/// as one ("Asked: …"), without the tags the runtime reads it by.
+export function readable(text: string): string {
+  const q = /<worker_question\b[^>]*>([\s\S]*?)(?:<\/worker_question\s*>|$)/i.exec(text);
+  if (!q) return text;
+  const rest = text.replace(q[0], '').trim();
+  return [rest, `Asked: ${q[1].trim()}`].filter(Boolean).join(' ');
+}
+
 /// One tool call in a few words. Paths lose everything but their last parts;
 /// nothing a tool was given is shown whole.
 export function describeTool(name: string, inputJSON: string): string {
@@ -97,6 +106,9 @@ export class RunActivity {
   private byRun = new Map<string, RunActivityItem[]>();
   private madeDir = false;
   private convRun = new Map<string, string>();
+  /// Calls waiting on their result, by tool-use id, so a failure can say
+  /// which call it was.
+  private calls = new Map<string, { text: string; tool: string }>();
   /// Each run's appends, chained so they land in order and can be awaited.
   private writes = new Map<string, Promise<void>>();
 
@@ -169,10 +181,26 @@ export class RunActivity {
       const k = ev.kind;
       const at = ev.timestamp || Date.now();
       if (k.type === 'assistant' && !k.info.isPartial) {
-        if (k.info.text.trim()) this.push(runId, { at, kind: 'said', text: clip(k.info.text, 400) });
-        for (const t of k.info.toolUses) this.push(runId, { at, kind: 'tool', text: describeTool(t.name, t.inputJSON), tool: t.name });
+        if (k.info.text.trim()) this.push(runId, { at, kind: 'said', text: clip(readable(k.info.text), 400) });
+        for (const t of k.info.toolUses) {
+          const text = describeTool(t.name, t.inputJSON);
+          this.push(runId, { at, kind: 'tool', text, tool: t.name });
+          if (t.id) {
+            this.calls.set(t.id, { text, tool: t.name });
+            if (this.calls.size > 2000) this.calls.delete(this.calls.keys().next().value as string);
+          }
+        }
       } else if (k.type === 'toolResult') {
-        for (const r of k.results) if (r.isError && !SHELL_REFUSAL.test(r.content)) this.push(runId, { at, kind: 'error', text: clip(r.content, 200) });
+        for (const r of k.results) {
+          const call = r.id ? this.calls.get(r.id) : undefined;
+          if (r.id) this.calls.delete(r.id);
+          if (!r.isError || SHELL_REFUSAL.test(r.content)) continue;
+          // Which call failed, and enough of what came back to see why: an
+          // API's status and message, not just "error".
+          this.push(runId, call
+            ? { at, kind: 'error', text: `${call.text} failed: ${clip(r.content, 600)}`, tool: call.tool }
+            : { at, kind: 'error', text: clip(r.content, 600) });
+        }
       } else if (k.type === 'permissionRequest' && k.info.decided === 'deny') {
         this.push(runId, { at, kind: 'denied', text: refusedText(k.info.toolName, k.info.toolInput), tool: k.info.toolName });
       }

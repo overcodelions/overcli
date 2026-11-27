@@ -270,7 +270,7 @@ One server serves one Slack app. A company that runs one per department lists th
 
 ## Triggers: workers that act on business events
 
-A schedule runs a worker at set times. A trigger runs it the moment work shows up: a bug filed, a deal moved, a message in a channel. Set triggers on a worker's **Triggers** tab, or from Claude with `create_trigger`. Each one says three things:
+A schedule runs a worker at set times. A trigger runs it the moment work shows up: a bug filed, a deal moved, a message in a channel. Set triggers on a worker's **Setup** tab, under **When it works**, or from Claude with `create_trigger`. Each one says three things:
 
 1. **What sets it off.**
    - **Watch:** every few minutes, overgo calls one of the server's tools directly, with no model and no cost per check (for example a Jira search). It acts once on each item it hasn't seen. The first check only records what's already there, so turning a trigger on never floods the worker with the backlog. It works inside a VPC, because nothing has to reach the server. **Try it now** shows what it would see before you save.
@@ -279,11 +279,11 @@ A schedule runs a worker at set times. A trigger runs it the moment work shows u
 2. **What it does with each one,** in plain words. The worker gets the event itself (the ticket, the PR, the message) with your instructions. On probation it proposes what it would do and waits; once trusted, it acts.
 3. **Where the result goes:** a Slack channel, the thread the event came from, or the worker delivers it itself with its tools ("comment your triage on the ticket", "open a PR").
 
-Every event, and what came of it, is kept in the **Library**: what set it off, the result and its links, where it went, how long it took, and whether people found it useful. A worker's Triggers tab shows what its events came to this month: items handled, typical time, cost per item and the share rated useful. A daily limit on each trigger keeps cost in check.
+Every event, and what came of it, is kept in the **Library**: what set it off, the result and its links, where it went, how long it took, and whether people found it useful. A worker's Setup tab, under **When it works**, shows what its events came to this month: items handled, typical time, cost per item and the share rated useful. A daily limit on each trigger keeps cost in check.
 
 ## Schedules
 
-A worker runs when someone asks it, or on a schedule. A hire takes the schedule its job description implies ("a summary every Monday morning"), and the offer and the worker's Settings let its manager change it: every day, weekdays, once a week, or every few hours inside working hours. The worker's page shows the next run and has **Run now**.
+A worker runs when someone asks it, or on a schedule. A hire takes the schedule its job description implies ("a summary every Monday morning"), and the offer and the worker's Setup tab (**When it works**) let its manager change it: every day, weekdays, once a week, or every few hours inside working hours. The worker's page shows the next run and has **Run now**.
 
 Schedules run in the org's `timezone` from `org.json` (the container's `TZ`, if set, wins). Changing it while the server runs takes effect within five minutes. The server has to be running for a schedule to fire; a run missed while it was down is not made up.
 

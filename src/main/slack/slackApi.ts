@@ -5,7 +5,7 @@
 // call returns a result rather than throwing — the bridge sits on the run
 // observer path, and a Slack outage must never take a worker's run down.
 
-import { scrubOutboundFile, scrubOutboundText } from '../secretScrub';
+import { notePosted, scrubOutboundFile, scrubOutboundText } from '../secretScrub';
 import { slackIcon } from '../../shared/flows/avatars';
 
 export const SLACK_API_BASE = 'https://slack.com/api';
@@ -41,12 +41,13 @@ export async function slackCall<T extends object>(
       },
       // Every message, update and form goes through here: credentials are
       // scrubbed out of its text by the org's rule (secretScrub.ts).
-      body: JSON.stringify(scrubOutboundText(body)),
+      body: JSON.stringify(scrubOutboundText(body, method)),
       signal: controller.signal,
     });
     if (!res.ok) return { ok: false, error: `Slack ${method} returned HTTP ${res.status}.` };
     const json = (await res.json()) as { ok?: boolean; error?: string } & T;
     if (!json.ok) return { ok: false, error: `Slack ${method}: ${json.error ?? 'unknown error'}` };
+    if (method === 'chat.postMessage') notePosted(body, json as { channel?: unknown; ts?: unknown });
     return { ok: true, data: json };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';

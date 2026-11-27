@@ -6,7 +6,7 @@ const note = (...lines: string[]) => ['# CI on feature/ACME-1-fix (acme-web)', '
 describe('the CI verdict on a run, from the watcher’s note', () => {
   it('reads a build handed to the manager, with the checks that failed', () => {
     expect(ciOf(note("Still failing: the fix added no new commit. Handed to its manager.", '', '- FAILED: Pipeline - pullrequests (https://example.com/acme/acme-web/pipelines/results/35)')))
-      .toEqual({ state: 'failed', note: 'Still failing: the fix added no new commit. Handed to its manager.', failing: [{ name: 'Pipeline - pullrequests', url: 'https://example.com/acme/acme-web/pipelines/results/35' }] });
+      .toEqual({ state: 'failed', note: 'Still failing: the fix added no new commit. Handed to its manager.', failing: [{ name: 'Pipeline - pullrequests', url: 'https://example.com/acme/acme-web/pipelines/results/35' }], checks: 1 });
   });
 
   it('reads a pass, one being fixed, and one nobody could judge', () => {

@@ -4,6 +4,26 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **Carry on a paused run.** A run paused on a failed step can be sent back to the step it hands failures to (with a note), retried, or skipped, from the run page or `POST /api/runs/:id/resume`.
+- **Follow up on an ask.** `ask_worker` takes `followUpOn` to carry on from an earlier question, and `my_asks` lists the questions you sent and their replies.
+- **Work rows lead with the ticket key.** The console's work list starts each row with its Jira, Linear or GitHub key, coloured per project, drops a "From X:" prefix from ask titles, and searches keys and who asked. The detail header links the key to the ticket.
+- **What a worker's run changed, and whose turn it is.** On an org server a worker's runs keep what they changed outside the server: each call that doesn't only read and came back without an error, as a few words, with secrets scrubbed and never the call's arguments. A thread opens with an outcome card: what happened, what changed, the build's verdict, and a "your turn" panel with the action it needs. Desktop and CLI runs keep nothing.
+- **Pull request wakes carry new review comments.** The server reads them with its own sign-in and hands the new ones, clipped, to the worker, so a worker without the host's tool can still act on them.
+- **A failed tool call says which call it was,** with the API's status and message, in the run's activity.
+
+### Changed
+- **The worker screens are six tabs: Conversation, Activity, Files, Job, Performance and Setup.** Access and Settings moved into Setup's six steps, Tuning is now Performance, Runs and Journal are now Activity, and Triggers are under Setup → When it works. Old links land where their content went. The docs follow.
+- **A written document a worker sends to Slack is attached as well as opened from its button,** for people who can't press the button.
+- **On the first start after upgrading, the server reads back what the last 30 days of worker runs changed** from their transcripts. It runs in the background, at most 200 runs a start, and a run with no transcript left is not looked for again.
+- **A paused member only holds a team back when they still have a piece to run.** Carrying on past a failed piece, retrying a stage, or retrying one piece checks only the members whose pieces would run.
+
+### Security
+- **A watch trigger may only make calls its worker may make.** Watch polls and "Try it now" run on the tool gateway's server key, which nothing scoped (#1257). Anyone but an admin now needs a call that only reads, on a tool the worker (or, for a process's intake, one of its workers) has, inside that worker's scope. This applies to saving and changing a trigger, trying one, and process intake. A watch a worker proposes after reading a ticket is held to the same rule whoever asked.
+
+### Fixed
+- **The "your turn" card keeps a reply's one-tap choices** when the ask also handed off work before replying. It had said "Nothing needed from you".
+
 ## [0.27.4] - 2026-11-25
 
 ### Fixed
@@ -46,6 +66,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Remote-tool sign-ins survive a server restart with the tool gateway on.** The first renewal check ran before the gateway was open and took its relay address for a reinstalled tool, so it forgot the sign-in. Now a sign-in whose address can't be checked yet is left alone and picked up a minute later, and each forgotten sign-in is logged with the reason. Sign-ins already lost on 0.26.5 or 0.27.0 need one more sign-in after upgrading. (#1237)
 
 ## [0.27.0] - 2026-11-21
+
+Merged as #1234.
 
 ### Added
 - **Ephemeral workers.** A new `sensitiveTools` org rule names tools that may return customer data. A worker holding one keeps nothing after its conversation ends (2 hours idle or 24 hours at most): housekeeping purges its session transcripts, runs and run activity, work log, batches, asks, journal and files, and writes a metadata-only audit line. Emails, card numbers and phone numbers are scrubbed from its Slack posts and text attachments, and its deliverables are never filed into a project. Nothing is purged until you pick a tool. (#1228)

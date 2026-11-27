@@ -568,3 +568,66 @@ describe('the documents teams delivered, in the Library', () => {
     expect(h.svc.libraryItem(sam, 'document:real:pack/brief-offline.md').ok).toBe(false);
   });
 });
+
+describe('what a watch may call on the server’s own sign-in', () => {
+  const ADMIN = 'U0ADMIN';
+  const admin: OrgCaller = { slackUserId: ADMIN, name: 'Ada', admin: false };
+  const setup = (worker: Partial<Worker> = {}) => {
+    const w = { ...triage, mcpServers: ['tracker'], ...worker };
+    const other = { ...triage, id: 'billing', name: 'Billing', mcpServers: ['ledger'], manager: { name: 'Sam', slackUserId: 'U0ACMESAM' } };
+    const roster = [w, other];
+    const t = fakeTriggers();
+    const tested: string[] = [];
+    Object.assign(t.svc, {
+      test: async (watch: { server: string; tool: string }) => {
+        tested.push(`${watch.server}.${watch.tool}`);
+        return { ok: true, items: [{ id: '1', title: 'One' }] };
+      },
+    });
+    const h = harness(t, {
+      workers: { roster: () => roster, get: (id: string) => roster.find((x) => x.id === id) ?? null, save: (x: Worker) => ({ ok: true, worker: x }), setEnabled: () => ({ ok: true }), remove: () => ({ ok: true }), runErrand: async () => ({ ok: false, error: 'no' }), journalFor: () => [], spentThisMonth: () => new Map(), workerNames: () => roster.map((x) => x.name) } as never,
+      policy: () => ({ ...DEFAULT_ORG_POLICY, hirers: '*', admins: [ADMIN] }),
+    });
+    return { ...h, tested };
+  };
+  const watch = (server: string, tool: string) => ({ server, tool, args: {}, everyMinutes: 15 });
+
+  it('lets a hirer try a read call on a tool their worker has', async () => {
+    const h = setup();
+    expect(await h.svc.testWatch(pat, watch('tracker', 'search_issues'), { workerId: 'triage' })).toMatchObject({ ok: true });
+    expect(await h.svc.testWatch(pat, watch('tracker', 'search_issues'))).toMatchObject({ ok: true });
+    expect(h.tested).toEqual(['tracker.search_issues', 'tracker.search_issues']);
+  });
+
+  it('refuses a hirer a write call, another team’s tool, or a worker they don’t manage', async () => {
+    const h = setup();
+    expect(await h.svc.testWatch(pat, watch('tracker', 'delete_issue'), { workerId: 'triage' })).toMatchObject({ ok: false, error: expect.stringContaining('only use a call that reads') });
+    expect(await h.svc.testWatch(pat, watch('ledger', 'list_invoices'))).toMatchObject({ ok: false, error: expect.stringContaining('tools let it make that call') });
+    expect(await h.svc.testWatch(pat, watch('ledger', 'list_invoices'), { workerId: 'billing' })).toMatchObject({ ok: false, error: expect.stringContaining('manager') });
+    expect(h.tested).toEqual([]);
+  });
+
+  it('holds a call to the worker’s scope on that tool', async () => {
+    const h = setup({ toolScopes: { tracker: { mode: 'only', calls: ['get_issue'] } } });
+    expect(await h.svc.testWatch(pat, watch('tracker', 'search_issues'), { workerId: 'triage' })).toMatchObject({ ok: false });
+    expect(await h.svc.testWatch(pat, watch('tracker', 'get_issue'), { workerId: 'triage' })).toMatchObject({ ok: true });
+  });
+
+  it('lets an admin watch with any installed tool', async () => {
+    const h = setup();
+    expect(await h.svc.testWatch(admin, watch('ledger', 'export_invoices'))).toMatchObject({ ok: true });
+  });
+
+  it('refuses to save or change a watch on a call the worker may not make', () => {
+    const h = setup();
+    const base = { name: 'Queue', kind: 'watch' as const, instructions: 'Triage each new ticket that comes in.', deliver: [], maxPerDay: 5 };
+    expect(h.svc.createTrigger(pat, 'Triage', { ...base, watch: watch('tracker', 'delete_issue') })).toMatchObject({ ok: false, error: expect.stringContaining('only use a call that reads') });
+    expect(h.svc.createTrigger(pat, 'Triage', { ...base, watch: watch('ledger', 'list_invoices') })).toMatchObject({ ok: false });
+    expect(h.triggers.all).toHaveLength(0);
+    expect(h.svc.createTrigger(pat, 'Triage', { ...base, watch: watch('tracker', 'search_issues') })).toMatchObject({ ok: true });
+    const id = h.triggers.all[0].id;
+    expect(h.svc.updateTrigger(pat, id, { watch: watch('tracker', 'delete_issue') })).toMatchObject({ ok: false });
+    expect(h.triggers.all[0].watch?.tool).toBe('search_issues');
+    expect(h.svc.updateTrigger(pat, id, { watch: { ...watch('tracker', 'search_issues'), everyMinutes: 30 } })).toMatchObject({ ok: true });
+  });
+});

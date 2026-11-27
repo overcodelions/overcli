@@ -1327,6 +1327,7 @@ a.wl-key:hover { text-decoration: underline; }
 .oc-badge { align-self: flex-start; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--tone-soft); color: var(--tone); }
 .oc-headline { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.35; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .oc-chip-about .oc-kind { color: var(--muted); }
+.wl-row.wl-child .wl-title::before { content: '↳ '; color: var(--faint); }
 .oc-done { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; color: var(--muted); }
 .oc-done svg { color: var(--ok); }
 .oc-ci.passed .oc-kind { color: var(--ok); }
@@ -3202,6 +3203,15 @@ export const CONSOLE_JS = String.raw`
   // Markdown a worker writes, drawn as elements: paragraphs, headings, lists,
   // quotes, rules, code, bold, italic and links. Built with nodes and text,
   // never markup, so nothing a worker writes can run in the page.
+  /// A link to show: its site and the end of its path, without the query.
+  function shortUrl(u) {
+    var m = /^https?:\/\/([^/?#]+)([^?#]*)/.exec(String(u || ''));
+    if (!m) return u;
+    var host = m[1].replace(/^www\./, ''), parts = m[2].split('/').filter(Boolean);
+    var tail = parts.length > 2 ? '…/' + parts.slice(-2).join('/') : parts.join('/');
+    var out = host + (tail ? '/' + tail : '');
+    return out.length > 60 ? out.slice(0, 59) + '…' : out;
+  }
   function md(src) {
     var root = h('div', { class: 'prose' });
     var lines = String(src || '').replace(/\r/g, '').split('\n');
@@ -3262,8 +3272,10 @@ export const CONSOLE_JS = String.raw`
       if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
       if (m[1] || m[2]) el.appendChild(h('strong', { text: m[1] || m[2] }));
       else if (m[3]) el.appendChild(h('code', { text: m[3] }));
-      else if (m[4]) el.appendChild(h('a', { href: m[5], target: '_blank', rel: 'noopener noreferrer', text: m[4] }));
-      else if (m[6]) el.appendChild(h('a', { href: m[6], target: '_blank', rel: 'noopener noreferrer', text: m[6] }));
+      // A bare link, or one whose words are its address, reads as its site
+      // and page, not a line of query string; the whole address is its title.
+      else if (m[4]) el.appendChild(h('a', { href: m[5], target: '_blank', rel: 'noopener noreferrer', title: m[5], text: m[4] === m[5] ? shortUrl(m[5]) : m[4] }));
+      else if (m[6]) el.appendChild(h('a', { href: m[6], target: '_blank', rel: 'noopener noreferrer', title: m[6], text: shortUrl(m[6]) }));
       else if (m[7]) el.appendChild(h('em', { text: m[7] }));
       last = re.lastIndex;
     }
@@ -3932,11 +3944,35 @@ export const CONSOLE_JS = String.raw`
     document.title = me.org + ' — overgo';
     // Hiring is narrow once it's questions or an offer; the brief has the
     // ideas beside it.
+    var mine = ++renderSeq, route = hashFor(), sameRoute = route === shownRoute, y = window.scrollY;
+    // The same page again, after a save or a pause: draw it off screen and
+    // swap only what's inside <main>. The top bar and nav stay, nothing
+    // flashes to Loading, the scroll stays put, and what was opened (a run's
+    // tool calls, a section) stays open.
+    var onScreen = app.querySelector('.frame > main.main');
+    if (sameRoute && onScreen && onScreen.dataset.viewAs === String(state.viewAs || '')) {
+      var view0 = viewFor();
+      var swap = function (nodes) {
+        if (mine !== renderSeq || !onScreen.isConnected) return;
+        var opened = {};
+        onScreen.querySelectorAll('details[open] > summary').forEach(function (s) { opened[s.textContent] = true; });
+        var page = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') });
+        append(page, nodes);
+        page.querySelectorAll('details > summary').forEach(function (s) { if (opened[s.textContent]) s.parentNode.open = true; });
+        onScreen.replaceChildren.apply(onScreen, [state.viewAs ? viewAsBar() : null, page].filter(Boolean));
+        window.scrollTo(0, y);
+        syncChromeRow();
+        refreshCounts();
+      };
+      view0().then(swap).catch(function (e) { swap([h('div', { class: 'msg err', text: String(e.message || e) })]); });
+      return;
+    }
     var main = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') }, thinking('Loading…'));
+    var mainBox = h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main);
+    mainBox.dataset.viewAs = String(state.viewAs || '');
     var frame = h('div', { class: 'frame' },
       h('div', { class: 'chrome' }, topBar(me), chromeRow()),
-      h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main));
-    var mine = ++renderSeq, route = hashFor(), sameRoute = route === shownRoute, y = window.scrollY;
+      mainBox);
     var up = false;
     var putUp = function () {
       if (up || mine !== renderSeq) return;
@@ -3951,10 +3987,15 @@ export const CONSOLE_JS = String.raw`
     // Nothing on screen yet: up at once, Loading and all. Otherwise only
     // if the next page is slow, so the wait still shows.
     if (!app.querySelector('.frame')) putUp(); else setTimeout(putUp, 400);
-    if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
-    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
+    var view = viewFor();
     view().then(function (node) { if (mine !== renderSeq) return; main.textContent = ''; append(main, node); putUp(); syncChromeRow(); })
       .catch(function (e) { if (mine !== renderSeq) return; main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); putUp(); syncChromeRow(); });
+  }
+
+  /// The page for the current tab.
+  function viewFor() {
+    if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
+    return { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
   }
 
   // ---- shared pieces ---------------------------------------------------
@@ -6645,6 +6686,23 @@ export const CONSOLE_JS = String.raw`
     var KIND_WORD = { comment: 'Comment', status: 'Status', fields: 'Fields', created: 'Created', removed: 'Removed', message: 'Message', pullRequest: 'Pull request', other: 'Change', pr: 'Pull request' };
     var PR_SAID = { open: 'opened', draft: 'opened as a draft', updated: 'new commits pushed', existing: 'already open, left alone', unopened: 'branch pushed, not opened yet', linked: 'what this is about, not changed' };
     var andJoin = function (xs) { return xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]; };
+    /// Whose turn it is comes from its newest message, as the reply box's
+    /// one-tap answers do: an early answer's choices, already replied to,
+    /// asked nothing of you once a later answer said there was nothing to do.
+    /// Its choices stand until a run starts after its reply: the work an ask
+    /// hands off starts before the reply comes back, and isn't acting on it.
+    var turnOf = function (t, runs) {
+      var follow = t.followUps || [];
+      var newest = follow.length ? follow[follow.length - 1] : t;
+      var since = (newest.reply && newest.reply.at) || newest.at;
+      var acted = runs.some(function (r) { return r.startedAt && since && r.startedAt > since; });
+      var choices = acted || newest.stage === 'deciding' ? [] : newest.choices || [];
+      return {
+        choices: choices,
+        asksYou: newest.stage === 'needsYou' || choices.length > 0 || runs.some(function (r) { return r.state === 'question'; }),
+        deciding: t.stage === 'deciding' || newest.stage === 'deciding',
+      };
+    };
     var outcome = function (t) {
       var runs = [];
       [t].concat(t.followUps || []).forEach(function (x) { runs = runs.concat(x.runs || []); });
@@ -6653,9 +6711,10 @@ export const CONSOLE_JS = String.raw`
       var bad = t.stage === 'failed' || t.stage === 'stopped';
       var waiting = t.proposal && t.proposal.waiting ? t.proposal.items.filter(function (i) { return i.status === 'waiting'; }) : [];
       var waitingOk = t.stage === 'waiting' || waiting.length > 0;
-      var choices = t.choices || [];
-      var asksYou = t.stage === 'needsYou' || choices.length > 0;
-      var deciding = t.stage === 'deciding';
+      var turnNow = turnOf(t, runs);
+      var choices = turnNow.choices;
+      var asksYou = turnNow.asksYou;
+      var deciding = turnNow.deciding;
       // What the repo's CI said about what it pushed, from its newest watched run:
       // failed and handed back is the manager's to fix; failing and sent back
       // to the worker is still in its hands.
@@ -6696,7 +6755,7 @@ export const CONSOLE_JS = String.raw`
         var it = g.target && prev && prev.target === g.target ? 'it' : (g.target || 'it');
         var to = lastDetail(g);
         if (g.kind === 'comment') return (g.n > 1 ? 'left ' + g.n + ' comments on ' : 'commented on ') + it;
-        if (g.kind === 'status') return to && !/^transition \d+$/.test(to) ? 'moved ' + it + ' to ' + to : 'changed the status of ' + it;
+        if (g.kind === 'status') return to && !/^transition \d+$/.test(to) ? 'moved ' + it + ' to ' + to : it === 'it' ? 'changed its status' : 'changed the status of ' + it;
         if (g.kind === 'fields') { var n = /^(\d+) field/.exec(to); return 'set ' + (n ? plural(Number(n[1]), 'field', 'fields') : 'fields') + ' on ' + it; }
         if (g.kind === 'created') return 'created ' + (g.target || (to ? '“' + to + '”' : 'something new'));
         if (g.kind === 'removed') return 'removed something' + (g.target ? ' on ' + it : '');
@@ -6714,7 +6773,8 @@ export const CONSOLE_JS = String.raw`
         : ciBad ? 'The build is failing on ' + (pushedPr ? prLabel(pushedPr) : 'its branch')
         : ciFixing ? 'Fixing the failing build on ' + (pushedPr ? prLabel(pushedPr) : 'its branch')
         : !bad && phrases.length ? cap1(andJoin(phrases.slice(0, 3))) + (phrases.length > 3 ? ', and more' : '')
-        : t.headline || badge;
+        // Its own first line, without the tags and labels a report starts with.
+        : String(t.headline || '').replace(/<\/?[a-z][\w-]*>/gi, ' ').replace(/^\s*(Result|Summary|Answer)\s*:\s*/i, '').replace(/\s+/g, ' ').trim() || badge;
       var started = runs.length ? Math.min.apply(null, runs.map(function (r) { return r.startedAt; })) : 0;
       var ended = runs.length && !live ? Math.max.apply(null, runs.map(function (r) { return r.endedAt || r.startedAt; })) : 0;
       var pushed = prs.some(function (p) { return p.state === 'open' || p.state === 'draft' || p.state === 'updated'; });
@@ -6741,13 +6801,16 @@ export const CONSOLE_JS = String.raw`
       // The build, beside what it changed: passed, being fixed, or handed back.
       var failUrl = ci && (ci.failing || []).map(function (c) { return c.url; }).filter(Boolean)[0];
       if (ci && !waitingOk && ci.state !== 'unknown') {
-        var ciIn = [h('span', { class: 'oc-kind', text: 'Build' }), h('b', { class: 'oc-ct', text: ci.failing && ci.failing[0] ? ci.failing[0].name : 'CI' }),
-          h('span', { class: 'oc-cd', text: ci.state === 'passed' ? 'passed' : ci.state === 'failed' ? 'failing · handed to you' : 'failing · ' + w.name + ' is fixing it' })];
+        var ciIn = [h('span', { class: 'oc-kind', text: 'Build' }),
+          h('b', { class: 'oc-ct', text: ci.state === 'passed' ? (ci.checks ? (ci.checks === 1 ? 'Its check passed' : 'All ' + ci.checks + ' checks passed') : 'Checks passed') : (ci.failing && ci.failing[0] ? ci.failing[0].name : 'A check failed') }),
+          h('span', { class: 'oc-cd', text: (ci.state === 'passed' ? 'on ' : ci.state === 'failed' ? 'failing, handed to you · ' : 'failing, ' + w.name + ' is fixing it · ') + (pushedPr ? prLabel(pushedPr) : 'its branch') })];
         chips.push(failUrl ? h('a', { class: 'oc-chip oc-ci ' + ci.state, href: failUrl, target: '_blank', rel: 'noopener', title: 'Open the build' }, ciIn) : h('div', { class: 'oc-chip oc-ci ' + ci.state }, ciIn));
       }
       var changesBlock = chips.length ? h('div', { class: 'oc-changes' }, h('span', { class: 'label', text: chipsLabel }), h('div', { class: 'oc-chips' }, chips))
         // Only when every run was watched: one from before changes were kept says nothing either way.
-        : runs.length && !live && !waitingOk && runs.every(function (r) { return r.changes; }) ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'Nothing outside the server changed.' }) : null;
+        : null;
+      // Said with "nothing needed" in one line when there's nothing else to say.
+      var nothingChanged = !chips.length && runs.length && !live && !waitingOk && runs.every(function (r) { return r.changes; });
       var aboutBlock = about.length ? h('div', { class: 'oc-changes' }, h('span', { class: 'label', text: 'What it’s about' }),
         h('div', { class: 'oc-chips' }, about.map(function (g) {
           return h('a', { class: 'oc-chip oc-chip-about', href: g.url, target: '_blank', rel: 'noopener', title: 'Open ' + g.target },
@@ -6807,7 +6870,8 @@ export const CONSOLE_JS = String.raw`
           review.slice(0, 2).map(function (p) { return h('a', { class: 'btn go', href: p.url, target: '_blank', rel: 'noopener', text: 'Open ' + prLabel(p) + ' ↗' }); }).concat([followUp]))
         : null;
       // Done, and nothing asked of you: a line, not a panel with nothing to press.
-      var doneLine = panel ? null : h('p', { class: 'oc-done' }, icon('check', 14), h('span', { text: 'Nothing needed from you.' }),
+      var doneLine = panel ? (nothingChanged ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'Nothing changed outside the server.' }) : null)
+        : h('p', { class: 'oc-done' }, icon('check', 14), h('span', { text: (nothingChanged ? 'Nothing changed outside the server · ' : '') + 'Nothing needed from you.' }),
         w.enabled ? h('button', { type: 'button', class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Ask a follow-up', onclick: focusReply }) : null);
 
       // The path it took: the thread's own stops, then whose turn it is, said
@@ -6819,13 +6883,16 @@ export const CONSOLE_JS = String.raw`
         : bad ? { label: 'Your turn', sub: 'carry on or retry', state: 'need', detail: 'The work stopped. Carry on, retry or leave it.' }
         : tone === 'now' ? { label: 'You', sub: 'only if needed', state: 'next', detail: 'Nothing needed yet. You’ll hear if it gets stuck.' }
         : review.length ? { label: 'Your turn', sub: review.length === 1 ? 'review the PR' : 'review ' + review.length + ' PRs', state: 'info', detail: 'The work is done. The pull request it opened waits for a person to review it.' } : null;
-      var path = (t.progress && t.progress.length ? t.progress : [{ label: whoFor(t), state: 'done', at: t.at }]).concat(you ? [you] : []);
+      // The server's step names, in the words the rest of the card uses.
+      var path = (t.progress && t.progress.length ? t.progress : [{ label: whoFor(t), state: 'done', at: t.at }]).map(function (p) {
+        return p.label === 'Answer' ? Object.assign({}, p, { label: 'Reported back', detail: p.detail || 'It wrote up what it found, below.' }) : p;
+      }).concat(you ? [you] : []);
       var CLS = { done: 'ok', now: 'now', need: 'need', failed: 'bad', next: 'todo', skipped: 'todo', info: 'info' };
       var firstOpen = -1;
       path.forEach(function (p, i) { if (firstOpen < 0 && (p.state === 'now' || p.state === 'need' || p.state === 'failed')) firstOpen = i; });
-      // Nothing held up: open on its last step of its own, not on you.
-      if (firstOpen < 0 && you) firstOpen = path.length - 2;
-      var at = outcomeStop[t.id] != null && outcomeStop[t.id] < path.length ? outcomeStop[t.id] : firstOpen >= 0 ? firstOpen : path.length - 1;
+      // Open on the stop that's moving or held up; with nothing held up, on
+      // none: a finished path is a row of ticks, a click away from detail.
+      var at = outcomeStop[t.id] != null && outcomeStop[t.id] < path.length ? outcomeStop[t.id] : firstOpen;
       var about = h('div', { class: 'oc-about', 'aria-live': 'polite' });
       var stops = h('ol', { class: 'oc-path', 'aria-label': 'How it got there' });
       var drawPath = function () {
@@ -6837,6 +6904,8 @@ export const CONSOLE_JS = String.raw`
               h('span', { class: 'oc-mark', 'aria-hidden': 'true' }, cls === 'ok' ? icon('check', 12) : cls === 'bad' ? icon('x', 12) : cls === 'need' ? '!' : ''),
               h('span', { class: 'oc-st' }, h('b', { text: p.label }), p.sub ? h('span', { text: p.sub }) : p.at ? h('span', { text: clock(p.at) }) : null)));
         }));
+        about.hidden = at < 0;
+        if (at < 0) return;
         var p = path[at];
         about.replaceChildren(h('b', { text: p.label }), h('span', { text: p.detail || (p.at ? when(p.at) : (CLS[p.state] === 'todo' ? 'Not yet.' : '')) }));
       };
@@ -6850,7 +6919,7 @@ export const CONSOLE_JS = String.raw`
               h('div', { class: 'oc-words' }, h('p', { class: 'oc-headline', text: headline }), sub ? h('span', { class: 'oc-sub', text: sub }) : null)),
             changesBlock, aboutBlock, doneLine),
           panel),
-        path.length > 1 ? h('section', { class: 'oc-way', 'aria-label': 'How it got there' }, h('span', { class: 'label', text: 'How it got there' }), stops, about) : null];
+        path.length > 1 ? h('section', { class: 'oc-way', 'aria-label': 'How it got there' }, h('span', { class: 'label', text: 'How it got there' }), stops, about, runCalls(t.runs)) : null];
     };
     var outcomeMark = function (t) {
       var said = [t.headline].concat(t.runs.map(function (r) { return (r.summary || '') + ' ' + (r.landed || ''); })).join(' ');
@@ -6906,11 +6975,22 @@ export const CONSOLE_JS = String.raw`
       });
       // Only the kinds it has; a filter left on one that has emptied goes back to All.
       if (filter !== 'all' && !counts[filter]) { filter = 'all'; state.wlFilter = 'all'; }
+      // What each filter keeps, on hover: "Follow-ups" says nothing on its own.
+      var CHIP_SAYS = {
+        all: 'Everything ' + w.name + ' has worked on, newest first.',
+        needs: 'Waiting on a person: an OK, an answer, or a failed build handed back.',
+        prs: 'Work that opened a pull request, pushed to one, or is about one.',
+        triggers: 'Set off by a trigger: something new in a tool, Slack, or another system.',
+        followUps: 'Work the server started after a push: fixing a failing build, answering review comments, updating the ticket.',
+        mine: 'What you asked ' + w.name + ' yourself.',
+        team: 'Pieces of a team’s task.',
+        scheduled: 'Its own rounds, on its schedule or from Run now.',
+      };
       var shownChips = [['all', 'All'], ['needs', 'Needs you'], ['prs', 'Pull requests'], ['triggers', 'Triggers'], ['followUps', 'Follow-ups'], ['mine', 'Asked by me'], ['team', 'Team work'], ['scheduled', 'Scheduled']].filter(function (c) { return c[0] === 'all' || counts[c[0]]; });
       // All on its own filters nothing.
       chips.hidden = shownChips.length < 2;
       chips.replaceChildren.apply(chips, shownChips.map(function (c) {
-        return h('button', { class: 'chip small' + (c[0] === 'needs' ? ' need' : ''), 'aria-pressed': filter === c[0] ? 'true' : 'false', text: c[1] + ' · ' + counts[c[0]], onclick: function () { filter = c[0]; state.wlFilter = c[0]; drawList(); } });
+        return h('button', { class: 'chip small' + (c[0] === 'needs' ? ' need' : ''), 'aria-pressed': filter === c[0] ? 'true' : 'false', title: CHIP_SAYS[c[0]] || null, text: c[1] + ' · ' + counts[c[0]], onclick: function () { filter = c[0]; state.wlFilter = c[0]; drawList(); } });
       }));
       var shown = data.threads.filter(function (t) { return inFilter(t) && matches(t); });
       var keepScroll = list.scrollTop;
@@ -6928,10 +7008,11 @@ export const CONSOLE_JS = String.raw`
         // Open while one of them is the one picked; picking the entry opens it.
         var open = same.some(function (x) { return x.id === sel; });
         var first = row(t);
-        first.children[2].prepend(h('span', { class: 'wl-runs', text: plural(same.length, 'run', 'runs') }));
+        // Separate pieces of work on the same ticket, not runs: said as how many more.
+        first.children[2].prepend(h('span', { class: 'wl-runs', text: '+' + (same.length - 1) + ' more', title: plural(same.length - 1, 'more piece', 'more pieces') + ' of work on ' + k + '. Open this one to see ' + (same.length === 2 ? 'it' : 'them') + ' under it.' }));
         first.classList.add('wl-grouped');
         nodes.push(first);
-        if (open) same.slice(1).forEach(function (x) { var r = row(x); r.classList.add('wl-child'); nodes.push(r); });
+        if (open) same.slice(1).forEach(function (x) { var r = row(x); r.classList.add('wl-child'); r.title = 'More work on ' + k + ', ' + (x.source === 'followUp' ? 'started by the server after a push' : 'started separately') + '.'; nodes.push(r); });
       });
       if (!nodes.length) nodes.push(h('p', { class: 'muted', style: 'padding:24px 16px;text-align:center', text: data.threads.length ? 'Nothing matches.' : 'Nothing yet. Ask ' + w.name + ' something, or press Run now.' }));
       if (data.nextBefore) nodes.push(more);
@@ -6979,13 +7060,12 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'wl-detail-head' },
           h('div', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' },
             h('span', { class: 'row', style: 'gap:8px;flex:1;min-width:0;font-size:12.5px' },
-              h('span', { class: 'badge ' + (STAGE_BADGE[t.stage] || [''])[0], text: (STAGE_BADGE[t.stage] || ['', t.stage])[1] }),
+              // Where it stands, and its pull requests, are the card's below.
               h('span', { class: 'faint' }, t.team ? ['For ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: t.team.name, onclick: function () { go('team', { teamId: t.team.id }); } })] : whoFor(t), ' · ' + when(t.at) + (t.costUSD ? ' · ' + money(t.costUSD) : ''))),
-            pills,
             liveRun && data.youManage ? stopRunButton(liveRun.runId, w) : null,
             liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null,
             // Its logs, for whoever may stop it: how each step ended and why.
-            one && one.runId && data.youManage ? h('button', { class: 'btn small quiet', text: 'Logs', onclick: function () { runLogs(one.runId, w.name + ' · ' + one.title); } }) : null),
+            one && one.runId && data.youManage ? h('button', { class: 'btn small quiet', text: 'Step logs', title: 'How each step of its run went, and why it ended as it did: for when something looks wrong.', onclick: function () { runLogs(one.runId, w.name + ' · ' + one.title); } }) : null),
           h('h2', { class: 'wl-detail-title' }, hk ? keyPill(hk, tp && /^https?:\/\//.test(tp.link) ? tp.link : null) : null, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
           source,
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
@@ -9018,7 +9098,7 @@ export const CONSOLE_JS = String.raw`
       tried.textContent = '';
       if (!w) { tried.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
       var restore = busy(test, 'Asking the tool…');
-      api('POST', '/api/triggers/test', { watch: w }).then(function (x) {
+      api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake/test', { watch: w }).then(function (x) {
         restore();
         if (x.ok === false) { tried.appendChild(msg(x)); return; }
         append(tried, [h('p', { class: 'faint', style: 'margin:0', text: 'It sees ' + plural(x.items.length, 'item', 'items') + ' now. These are skipped; each new one after goes in.' }),
@@ -14524,6 +14604,47 @@ export const CONSOLE_JS = String.raw`
   function fileSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
   var TEXT_FILE = /\.(md|markdown|txt|csv|tsv|json|ya?ml|xml|svg|tsx?|jsx?|css|py|sql|sh|log)$/i;
 
+  /// Every tool a thread's runs called, and any that failed or was refused,
+  /// with what came back: so "the tool refused" can be checked without the
+  /// Logs reader. Loaded when opened; a thread with no runs shows nothing.
+  function runCalls(runs) {
+    var ids = (runs || []).map(function (r) { return r.runId; }).filter(Boolean);
+    if (!ids.length) return null;
+    var list = h('div', { class: 'stack', style: 'gap:4px;margin-top:6px' }, h('p', { class: 'faint', style: 'margin:0;font-size:12.5px', text: 'Loading…' }));
+    var box = h('details', { class: 'oc-calls' }, h('summary', { class: 'faint', style: 'cursor:pointer;font-size:12.5px;width:max-content', text: 'Tool calls' }), list);
+    var loaded = false;
+    box.addEventListener('toggle', function () {
+      if (!box.open || loaded) return;
+      loaded = true;
+      Promise.all(ids.map(function (id) { return api('GET', '/api/runs/' + encodeURIComponent(id) + '/steps'); })).then(function (all) {
+        var seen = {};
+        var rows = [];
+        all.forEach(function (x) {
+          if (!x || x.ok === false) return;
+          x.steps.forEach(function (s) {
+            s.activity.forEach(function (a) {
+              if (a.kind === 'said') return;
+              var key = a.at + '|' + a.kind + '|' + a.text;
+              if (seen[key]) return;
+              seen[key] = true;
+              rows.push(a);
+            });
+          });
+        });
+        rows.sort(function (a, b) { return a.at - b.at; });
+        var failed = rows.filter(function (a) { return a.kind === 'error' || a.kind === 'denied'; }).length;
+        box.firstChild.textContent = 'Tool calls · ' + rows.length + (failed ? ' · ' + failed + ' failed or refused' : '');
+        list.replaceChildren.apply(list, rows.length ? rows.map(function (a) {
+          var bad = a.kind === 'error' || a.kind === 'denied';
+          return h('div', { class: 'row', style: 'gap:8px;align-items:baseline;font-size:12.5px' + (bad ? ';color:var(--bad)' : '') },
+            h('span', { class: 'faint', style: 'flex:none', text: clock(a.at) }),
+            h('span', { class: a.kind === 'tool' ? 'mono' : '', style: 'min-width:0;overflow-wrap:anywhere', text: (a.kind === 'error' ? 'Error: ' : '') + a.text }));
+        }) : [h('p', { class: 'faint', style: 'margin:0;font-size:12.5px', text: 'No tool calls recorded for this work.' })]);
+      }, function () { loaded = false; });
+    });
+    return box;
+  }
+
   /// The files a run wrote besides its report: the HTML it rendered, the
   /// data behind it. Asked for once per run, since a thread redraws often,
   /// and drawn as buttons that open each in the side panel. A run that wrote
@@ -16753,8 +16874,23 @@ export const CONSOLE_JS = String.raw`
           t.kind === 'watch' && t.enabled ? h('button', { class: 'btn small', text: 'Check now', onclick: act('/api/triggers/' + encodeURIComponent(t.id) + '/check', {}, 'Checked.') }) : null,
           onEdit ? h('button', { class: 'btn small', text: 'Edit', onclick: onEdit }) : null,
           onCopy ? h('button', { class: 'btn small quiet', text: 'Duplicate', title: 'A new trigger filled in from this one', onclick: onCopy }) : null,
-          h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: act('/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }) }),
-          h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () { if (window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) act('/api/triggers/' + encodeURIComponent(t.id) + '/remove', {})(); } })) : null),
+          h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: function (e) {
+            // Only this row changes: redrawn where it is, nothing else fetched.
+            var restore = busy(e.target, t.enabled ? 'Pausing…' : 'Turning on…');
+            api('POST', '/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }).then(function (x) {
+              if (x.ok === false) { restore(); out.textContent = ''; out.appendChild(msg(x)); return; }
+              // Changed on the same object, so Edit and Duplicate see it too.
+              t.enabled = !t.enabled;
+              row.replaceWith(triggerRow(t, canEdit, onEdit, onCopy));
+            }, restore);
+          } }),
+          h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () {
+            if (!window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) return;
+            api('POST', '/api/triggers/' + encodeURIComponent(t.id) + '/remove', {}).then(function (x) {
+              if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+              row.remove();
+            });
+          } })) : null),
       h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + (t.notifyOnly ? 'says what changed' : (t.startsOnItsOwn ? 'starts on its own: ' : '') + t.instructions.split('\n')[0].slice(0, 140)) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
       tracked,
       h('span', { class: 'faint', text: [t.handledTotal + ' handled', t.handledToday + ' today of ' + t.maxPerDay, t.lastFiredAt ? 'last ' + ago(t.lastFiredAt) : 'not set off yet', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null, t.kind === 'watch' && t.seeded ? (t.lastFiredAt ? 'has seen ' + plural(t.seenCount || 0, 'item', 'items') : 'watching for new ones — ' + plural(t.seenCount || 0, 'item', 'items') + ' already there skipped') : null].filter(Boolean).join(' · ') }),
@@ -16812,7 +16948,7 @@ export const CONSOLE_JS = String.raw`
       var a = parseArgs();
       if (a === null) { testOut.textContent = ''; testOut.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
       var restore = busy(test, 'Asking the tool…');
-      api('POST', '/api/triggers/test', { watch: { server: server.value, tool: call.value, args: a, everyMinutes: 15, itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() } }).then(function (x) {
+      api('POST', '/api/triggers/test', { workerId: w.id, watch: { server: server.value, tool: call.value, args: a, everyMinutes: 15, itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() } }).then(function (x) {
         restore(); testOut.textContent = '';
         if (x.ok === false) { testOut.appendChild(msg(x)); return; }
         append(testOut, seenNow(x.items));
@@ -17399,7 +17535,7 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'row', style: 'gap:10px;align-items:center' }, go_, out));
         go_.onclick = function () {
           // A flow change: its manager drafts and tries it on the worker's Tuning tab.
-          if (s.action && s.action.kind === 'tuneFlow') { state.tuneAsk = { workerId: s.action.workerId, text: s.action.ask }; go('worker', { workerId: s.action.workerId, workerTab: 'tuning' }); return; }
+          if (s.action && s.action.kind === 'tuneFlow') { state.tuneAsk = { workerId: s.action.workerId, text: s.action.ask, title: s.title, why: s.why }; go('worker', { workerId: s.action.workerId, workerTab: 'tuning' }); return; }
           var restore = busy(go_, 'Applying…');
           api('POST', '/api/admin/tuning/apply', { id: s.id }).then(function (x) {
             restore(); out.textContent = '';
@@ -19794,8 +19930,15 @@ export const CONSOLE_JS = String.raw`
     var post = function (p, body) { return api('POST', path + p, body); };
     var data = null, shown = null;
     var complaint = h('textarea', { 'aria-label': 'What’s wrong', placeholder: 'The more you say, the better: “the answers are too technical for a sales rep”, “it marks things BLOCKED when it could have tried”. Leave it blank and it looks for what would help most.', style: 'min-height:112px;font-size:13.5px' });
-    // Sent here from Setup → Tuning with what to change already said.
-    if (state.tuneAsk && state.tuneAsk.workerId === w.id) { complaint.value = state.tuneAsk.text; state.tuneAsk = null; }
+    // Sent here from Setup → Tuning with what to change already said. Kept
+    // until the review starts, so a redraw of the page doesn't lose it, and
+    // shown with why, so it's clear what the box was filled in with.
+    var asked = !(opts && opts.only) && state.tuneAsk && state.tuneAsk.workerId === w.id ? state.tuneAsk : null;
+    if (asked) complaint.value = asked.text;
+    var fromOrg = asked ? h('div', { class: 'msg warn', style: 'display:flex;flex-direction:column;gap:4px' },
+      h('b', { text: 'From Setup → Tuning: ' + (asked.title || 'a suggested change') }),
+      asked.why ? h('span', { style: 'font-size:13px', text: asked.why }) : null,
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'What to change is filled in below. Review its work to draft the change and try it on a past run.' })) : null;
     var go = h('button', { class: 'btn go', text: 'Review its work' });
     // Enter reviews, as the conversation box sends. Shift or Cmd+Enter is a new line.
     // Only with something written: a blank box's review is the button's to start.
@@ -20201,6 +20344,8 @@ export const CONSOLE_JS = String.raw`
     };
 
     go.onclick = function () {
+      if (asked && state.tuneAsk === asked) state.tuneAsk = null;
+      if (fromOrg) fromOrg.remove();
       var restore = busy(go, 'Reading its work…');
       results.replaceChildren(thinking('Reading its recent runs and answers. This can take a minute or two.'));
       post('/review', { complaint: complaint.value }).then(function (x) {
@@ -20229,9 +20374,11 @@ export const CONSOLE_JS = String.raw`
       return only;
     }
     load();
+    // Arrived with a suggestion: bring the box into view and ready to send.
+    if (asked) setTimeout(function () { if (complaint.isConnected) { complaint.scrollIntoView({ block: 'center' }); complaint.focus(); } }, 0);
     return h('div', { class: 'stack', style: 'gap:20px' }, card('tuboard', 'How it’s doing', null, [board]), h('div', { class: 'tu-grid' },
       h('div', { class: 'stack', style: 'gap:18px;min-width:0' },
-        card('tuwrong', 'What’s wrong?', null, [h('div', { class: 'stack', style: 'gap:10px' }, complaint, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' }, go, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Enter to review · Shift or ⌘+Enter for a new line' })))]),
+        card('tuwrong', 'What’s wrong?', null, [h('div', { class: 'stack', style: 'gap:10px' }, fromOrg, complaint, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' }, go, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Enter to review · Shift or ⌘+Enter for a new line' })))]),
         card('tusaid', 'What people said', null, [said], true),
         card('tupast', 'Reviews', null, [past], true),
         card('tuwatch', 'Watch for trouble', null, [h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;align-items:flex-start;font-size:13.5px' }, watch, h('span', { text: 'When its runs keep hitting trouble, overgo reviews them, tries a fix on a past job and tells you in Slack. At most once a week, and only runs from after it started watching count. It never applies a change by itself.' })), watchOff])),
@@ -20329,18 +20476,23 @@ export const CONSOLE_JS = String.raw`
         api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/learn', {}).then(function (x) { restore(); if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); });
       } }) : null;
     };
-    var body;
+    // Its buttons go in the card's header bar, where they're seen whatever
+    // the notes' length; under them nobody found them.
+    var body, actions = null;
+    var bar = function (xs) { return h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end' }, xs); };
     if (k && k.status === 'learning') {
       body = [h('p', { class: 'row', style: 'margin:0;gap:8px;font-size:13.5px' }, h('span', { class: 'livedot' }), 'Going through its tools, read only. A few minutes.')];
     } else if (!k || !k.body) {
-      body = [h('p', { class: 'faint', style: 'font-size:13.5px', text: (k && k.error ? 'Its last try didn’t finish: ' + k.error + ' ' : '') + 'It hasn’t been through its tools yet. Learning takes one read-only run: it finds the projects, statuses, people and places its job uses, and reads its notes before every run after.' }),
-        learn('Learn its tools')];
+      body = [h('p', { class: 'faint', style: 'font-size:13.5px;margin:0', text: (k && k.error ? 'Its last try didn’t finish: ' + k.error + ' ' : '') + 'It hasn’t been through its tools yet. Learning takes one read-only run: it finds the projects, statuses, people and places its job uses, and reads its notes before every run after.' })];
+      actions = w.youManage ? bar([learn('Learn its tools')]) : null;
     } else {
-      var text = h('div', { style: 'white-space:pre-wrap;font-size:13px;line-height:1.55;max-height:320px;overflow:auto', text: k.body });
+      // Its notes are Markdown: drawn as such (md never inserts markup), at
+      // full height, since they are this page's whole content.
+      var text = h('div', { class: 'knows-body', style: 'font-size:13.5px;line-height:1.6;max-width:110ch;overflow-wrap:anywhere' }, md(k.body));
       var refresh = w.youManage ? h('select', { 'aria-label': 'Refresh', style: 'width:auto;font-size:12.5px' },
         h('option', { value: 'weekly', text: 'Refresh weekly', selected: k.refresh !== 'off' }), h('option', { value: 'off', text: 'Don’t refresh', selected: k.refresh === 'off' })) : null;
       if (refresh) refresh.onchange = function () { api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/knowledge', { refresh: refresh.value }); };
-      var edit = w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Correct it', onclick: function () {
+      var edit = w.youManage ? h('button', { class: 'btn small', text: 'Edit', onclick: function () {
         var ta = h('textarea', { style: 'min-height:260px;font-size:13px' }); ta.value = k.body;
         var save = h('button', { class: 'btn small go', text: 'Save' });
         save.onclick = function () {
@@ -20350,10 +20502,10 @@ export const CONSOLE_JS = String.raw`
         text.replaceWith(h('div', { class: 'stack', style: 'gap:6px' }, ta, h('div', { class: 'row', style: 'gap:8px' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { render(); } }))));
         ta.focus();
       } }) : null;
-      body = [h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: 'From its tools ' + when(k.updatedAt) + (k.editedBy ? ', corrected by ' + k.editedBy : '') + '. It reads this before every run.' + (k.error ? ' Its last refresh didn’t finish: ' + k.error : '') }),
-        text, h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, learn('Learn again'), edit, refresh)];
+      body = [h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: 'From its tools ' + when(k.updatedAt) + (k.editedBy ? ', edited by ' + k.editedBy : '') + '. It reads this before every run.' + (k.error ? ' Its last refresh didn’t finish: ' + k.error : '') }), text];
+      actions = w.youManage ? bar([edit, learn('Learn again'), refresh]) : null;
     }
-    return card('knows', 'What it knows', null, body.concat([out]));
+    return card('knows', 'What it knows', actions, h('div', { class: 'stack', style: 'gap:12px;align-items:stretch' }, body.concat([out])));
   }
 
   // A worker's setup over time, newest first, with Restore.

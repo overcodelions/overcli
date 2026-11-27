@@ -39,7 +39,7 @@ Set these in `deploy/.env`, the task definition, or the shell. Secrets can also 
 | Variable | Meaning |
 |---|---|
 | `OVERGO_AWSWORKER_ROLE` | The IAM role ARN every worker uses for AWS, its shell and its tools. Unset: workers have no AWS access. Never the role the server runs as. Set it here or on Setup → Secrets. See [Workers' AWS access](security.md#workers-aws-access). |
-| `OVERGO_AWSWORKER_ROLE_<NAME>` | More roles, such as `_QA` or `_DEVOPS`, for workers set to `<NAME>` on their Access tab. |
+| `OVERGO_AWSWORKER_ROLE_<NAME>` | More roles, such as `_QA` or `_DEVOPS`, for workers set to `<NAME>` on their Setup tab (Where it works → Cloud role). |
 | `OVERCLI_WORKER_CLOUD` | `host` gives workers the server's own AWS role, as before worker roles. Unsafe outside a laptop trial; the server warns at every start. |
 
 ### Slack and sign-in

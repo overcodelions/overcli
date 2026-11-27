@@ -38,6 +38,7 @@ import { nodeHost } from '../main/hostNode';
 import { activeWorkerUser, enableWorkerUser, reprobeWorkerSecrets } from '../main/org/workerUser';
 import { guardChildCaps } from '../main/org/childCaps';
 import os from 'node:os';
+import { log } from '../main/diagnostics';
 import { SECRETS_ENV, SecretsService, createSecretStore, parseSecretsSpec, type SecretStore } from '../main/org/secrets';
 import { autonomousWithoutGrant } from '../main/org/orgService';
 import { draftProcessFromImage } from '../main/org/processDraft';
@@ -217,24 +218,26 @@ export function startDaemon(
   // back once from their steps' session transcripts, shortly after start.
   engines.flowRuntime.keepRunChanges = true;
   setTimeout(() => {
-    try {
+    void (async () => {
       const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
       const files = new Map<string, string>();
-      for (const dir of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+      for (const dir of fs.existsSync(root) ? await fs.promises.readdir(root) : []) {
         let names: string[] = [];
-        try { names = fs.readdirSync(path.join(root, dir)); } catch { continue; }
+        try { names = await fs.promises.readdir(path.join(root, dir)); } catch { continue; }
         for (const n of names) if (n.endsWith('.jsonl')) files.set(n.slice(0, -6), path.join(root, dir, n));
       }
-      const read = (id: string): string[] | null => {
+      const read = async (id: string): Promise<string[] | null> => {
         const f = files.get(id);
         if (!f) return null;
-        try { return fs.readFileSync(f, 'utf8').split('\n'); } catch { return null; }
+        try { return (await fs.promises.readFile(f, 'utf8')).split('\n'); } catch { return null; }
       };
-      const done = engines.flowRuntime.backfillChanges(read, Date.now() - 30 * 24 * 60 * 60_000);
-      if (done.runs) console.log(`[overcli] read back what ${done.runs} past run(s) changed: ${done.changes} change(s).`);
-    } catch (e) {
-      console.log(`[overcli] couldn't read back past runs' changes: ${e instanceof Error ? e.message : String(e)}`);
-    }
+      const done = await engines.flowRuntime.backfillChanges(read, Date.now() - 30 * 24 * 60 * 60_000);
+      if (done.runs) log('info', 'serve', `Read back what ${done.runs} past run(s) changed: ${done.changes} change(s).${done.left ? ` ${done.left} more on the next start.` : ''}`);
+    })().catch((e: unknown) => {
+      const why = `Couldn't read back past runs' changes: ${e instanceof Error ? e.message : String(e)}`;
+      log('warn', 'serve', why);
+      process.stderr.write(`[overcli] warning: ${why}\n`);
+    });
   }, 10_000).unref?.();
 
   // Schedules fire in the process's local time. A container runs in UTC, so

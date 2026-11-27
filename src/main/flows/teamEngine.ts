@@ -559,12 +559,8 @@ export class TeamEngine {
     const workers = this.deps.workers();
     const invalid = validateTeam(team, workers);
     if (invalid) return { ok: false, error: invalid };
-    const paused = team.members
-      .map((m) => workers.find((w) => w.id === m.workerId))
-      .filter((w): w is Worker => !!w && !w.enabled);
-    if (paused.length > 0) {
-      return { ok: false, error: `${paused.map((w) => w.name).join(', ')} ${paused.length === 1 ? 'is' : 'are'} paused. Resume them or take them off the team.` };
-    }
+    const benched = this.benched(team, 'start', workers);
+    if (benched) return { ok: false, error: benched };
 
     const workIn = projectPath === undefined ? team.projectPath : projectPath || undefined;
     if (workIn && this.deps.projects && !this.deps.projects().some((p) => p.path === workIn)) {
@@ -622,6 +618,10 @@ export class TeamEngine {
     const workers = this.deps.workers();
     const invalid = validateTeam(team, workers);
     if (invalid) return { ok: false, error: invalid };
+    // Every member learns its part: one paused would fail its piece and
+    // leave the task waiting on a retry that can't work either.
+    const benched = this.benched(team, 'start', workers);
+    if (benched) return { ok: false, error: benched };
     const going = [...this.tasks.values()].find((t) => t.teamId === teamId && t.kind === 'learn' && isTaskActive(t.status));
     if (going) return { ok: false, error: `${team.name} is already learning.` };
     const active = [...this.tasks.values()].find((t) => t.teamId === teamId && blocksNewTask(t));
@@ -740,6 +740,34 @@ export class TeamEngine {
     }
     const why = task.status === 'cancelled' ? 'You stopped it.' : task.error ?? 'It wrote nothing.';
     this.saveKnowledge(team, prior?.body ? { ...prior, status: 'ready', error: `The last refresh didn't finish: ${why}` } : { status: 'failed', taskId: task.id, error: why });
+  }
+
+  /// A team with a paused member is on the bench: nothing it's asked starts
+  /// or carries on until that member is back, rather than starting and
+  /// failing the paused member's piece. Null when every member can work.
+  /// `only`: the members whose pieces would run; a paused member with
+  /// nothing left to do doesn't hold the rest back.
+  private benched(team: Team | undefined, what: 'start' | 'carry on', workers: Worker[] = this.deps.workers(), only?: ReadonlySet<string>): string | null {
+    if (!team) return null;
+    const paused = team.members
+      .filter((m) => !only || only.has(m.workerId))
+      .map((m) => workers.find((w) => w.id === m.workerId))
+      .filter((w): w is Worker => !!w && !w.enabled);
+    if (!paused.length) return null;
+    const one = paused.length === 1;
+    const names = paused.map((w) => w.name);
+    const list = names.length < 3 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    return `${team.name} is on the bench: ${list} ${one ? 'is' : 'are'} paused, so this can't ${what}. Resume ${one ? names[0] : 'them'} or take ${one ? names[0] : 'them'} off the team, then try again.`;
+  }
+
+  /// The members with a piece still to run in a task's stages from `from`
+  /// on; with `failedToo`, the failed pieces a retry would run again.
+  private stillToRun(task: TeamTask, from: number, failedToo = false): Set<string> {
+    const ids = new Set<string>();
+    for (const stage of task.stages.slice(from)) {
+      for (const a of stage.assignments) if (!isPieceSettled(a.status) || (failedToo && a.status === 'failed')) ids.add(a.workerId);
+    }
+    return ids;
   }
 
   /// The team's next queued task, started once nothing else holds the team.
@@ -941,6 +969,8 @@ export class TeamEngine {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'That task no longer exists.' };
     if (task.status !== 'proposed') return { ok: false, error: 'There is no plan waiting for approval.' };
+    const benched = this.benched(this.teams.get(task.teamId), 'start');
+    if (benched) return { ok: false, error: benched };
     if (this.teamAtWork(task)) {
       task.resumes = 'approved';
       task.status = 'queued';
@@ -1061,6 +1091,11 @@ export class TeamEngine {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'That task no longer exists.' };
     if (task.status !== 'waiting' || !task.waiting) return { ok: false, error: 'This task is not waiting on you.' };
+    // Past a failure the stage that failed is left behind, its failed
+    // members' pieces with it: only the pieces after it have to run.
+    const from = task.waiting.reason === 'failed' ? task.stageIndex + 1 : task.stageIndex;
+    const benched = this.benched(this.teams.get(task.teamId), 'carry on', undefined, this.stillToRun(task, from));
+    if (benched) return { ok: false, error: benched };
     const stage = task.stages[task.stageIndex];
     switch (task.waiting.reason) {
       case 'checkpoint':
@@ -1118,7 +1153,12 @@ export class TeamEngine {
   retry(taskId: UUID): Result {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'That task no longer exists.' };
-    if (task.status === 'failed' && task.stages.length === 0) {
+    // A plan made again is for the whole team; a stage run again, for the
+    // members whose pieces run again and the ones after.
+    const replan = task.status === 'failed' && task.stages.length === 0;
+    const benched = this.benched(this.teams.get(task.teamId), 'carry on', undefined, replan ? undefined : this.stillToRun(task, task.stageIndex, true));
+    if (benched) return { ok: false, error: benched };
+    if (replan) {
       task.status = 'planning';
       task.error = undefined;
       this.persist(task);
@@ -1178,6 +1218,8 @@ export class TeamEngine {
     const a = stage?.assignments.find((x) => x.workerId === workerId);
     if (!stage || !a || !isMemberStage(stage.kind)) return { ok: false, error: 'That member has no piece in the current stage.' };
     if (a.status !== 'failed') return { ok: false, error: `${a.workerName}'s piece hasn't failed.` };
+    const benched = this.benched(this.teams.get(task.teamId), 'carry on', undefined, new Set([workerId]));
+    if (benched) return { ok: false, error: benched };
     if (task.status !== 'running' && !(task.status === 'waiting' && task.waiting?.reason === 'failed')) return { ok: false, error: 'This task isn’t running.' };
     a.status = 'pending';
     a.error = undefined;

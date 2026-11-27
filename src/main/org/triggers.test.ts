@@ -893,7 +893,7 @@ describe('slack triggers', () => {
     expect(h.posts).toEqual([]);
   });
 
-  it.each(['Passed the export through the new parser: ACME-10.', 'Smoke run on staging:\npass', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.', 'Pass: all 12 smoke checks are green on staging.'])('still posts "%s"', async (reply) => {
+  it.each(['Passed the export through the new parser: ACME-10.', 'Smoke run on staging:\npass', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.', 'Pass: all 12 smoke checks are green on staging.', 'Smoke run on staging:\n✅ PASS', 'Checked the three exports:\n- PASS', 'Ran the suite.\n> PASS'])('still posts "%s"', async (reply) => {
     const h = harness({ reply });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
     if (!made.ok) throw new Error(made.error);

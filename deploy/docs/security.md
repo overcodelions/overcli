@@ -16,7 +16,7 @@ What workers can and can't do on an org server, and where each control is.
 
 A worker's own limits always win. `--permissions auto-approve` can't grant a worker outside actions its trust level doesn't allow.
 
-**Exceptions a manager or admin makes,** all on the worker's Access tab and recorded in its history:
+**Exceptions a manager or admin makes,** all on the worker's Setup tab under **How much it does alone**, and recorded in its history:
 
 - **Always allow** on an approval lets that one step of that flow run without asking from then on. A manager can take it off at any time.
 - **Run straight through its flows' checkpoints** skips the pauses a flow's author wrote in (`pause_before`). Only an admin can switch it on. Outside actions still ask, as the trust level says.
@@ -98,7 +98,7 @@ What it doesn't cover yet:
 
 Workers never use the role the server is hosted with (the EC2 instance role or the ECS task role). That role reads the org's secrets; a worker gets a role of its own.
 
-- **A role per worker.** Set `OVERGO_AWSWORKER_ROLE` on Setup → Secrets to an IAM role ARN: every worker uses it. Add more as `OVERGO_AWSWORKER_ROLE_<NAME>` (`_QA`, `_DEVOPS`) and set a worker to that name on its Access tab, so QA reads logs and DevOps reads the whole account. Only an admin sets a worker's role. With no role set, a worker has no AWS access at all. The role must trust the server's role, and should be read-only.
+- **A role per worker.** Set `OVERGO_AWSWORKER_ROLE` on Setup → Secrets to an IAM role ARN: every worker uses it. Add more as `OVERGO_AWSWORKER_ROLE_<NAME>` (`_QA`, `_DEVOPS`) and set a worker to that name on its Setup tab (**Where it works** → **Cloud role**), so QA reads logs and DevOps reads the whole account. Only an admin sets a worker's role. With no role set, a worker has no AWS access at all. The role must trust the server's role, and should be read-only.
 - **How it's handed out.** The server assumes the worker's role for each run and serves the credentials on loopback, through the container credentials endpoint the AWS CLI and SDKs already use, behind a token that names the run. A request is judged when it arrives, so a worker moved to another role, or retired, gets the change on its next call. Sessions last an hour and renew on their own. The session is named after the worker (`overgo-<name>`), so CloudTrail says which worker made each call.
 - **The server's role is refused.** A setting that names the role the server runs as is never handed out, whatever it says.
 - **The server's identity is taken out of a worker's environment:** its keys, profile, web identity and container credentials variables. The SDKs are told not to ask the metadata service, and `~/.aws/config` and `~/.aws/credentials` are swapped for an empty file, so no profile on the box leads back to the server's role. Claude's file tools can't read `~/.aws`.

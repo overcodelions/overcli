@@ -135,7 +135,7 @@ Workers never use the instance or task role: that one reads the org's secrets. E
     ```
 
 3. **Set its ARN** on Setup → Secrets as `OVERGO_AWSWORKER_ROLE`. Every worker uses it.
-4. **For different access per worker,** make more roles and set each as `OVERGO_AWSWORKER_ROLE_<NAME>`, say `_QA` with `CloudWatchLogsReadOnlyAccess`, `_ENGINEERING` with CloudWatch and X-Ray read, and `_DEVOPS` with `ReadOnlyAccess`. An admin then picks the role on each worker's Access tab. **No AWS access** is one of the choices.
+4. **For different access per worker,** make more roles and set each as `OVERGO_AWSWORKER_ROLE_<NAME>`, say `_QA` with `CloudWatchLogsReadOnlyAccess`, `_ENGINEERING` with CloudWatch and X-Ray read, and `_DEVOPS` with `ReadOnlyAccess`. An admin then picks the role on each worker's Setup tab, under **Where it works** → **Cloud role**. **No AWS access** is one of the choices.
 
 Deny each worker role the org's secrets (`secretsmanager:*` on `overcli/<org>/*`) so a broad read-only policy can't reach them. The one-click stack makes the default role, with that deny, and with **Example read-only worker roles** set to yes, the QA, ENGINEERING and DEVOPS roles too, their ARNs already set.
 

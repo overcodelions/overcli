@@ -16,7 +16,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { collectKnownSecretValues, redactPersonalData, redactSecrets, scrubOutbound, scrubOutboundFile, scrubOutboundText, setOutboundScrub, shannonEntropy } from './secretScrub';
+import { collectKnownSecretValues, notePosted, redactPersonalData, redactSecrets, scrubOutbound, scrubOutboundFile, scrubOutboundText, setOutboundScrub, shannonEntropy } from './secretScrub';
 
 const AKIA = 'AKIAIOSFODNN7EXAMPLE';
 const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
@@ -280,6 +280,14 @@ describe('redactPersonalData', () => {
     expect(r.redactedCount).toBe(3);
   });
 
+  it('reads a long run with no @ in it once, and still finds an address after it', () => {
+    const run = 'a'.repeat(200_000);
+    const started = Date.now();
+    expect(redactPersonalData(run).text).toBe(run);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(redactPersonalData(`${run} jo@acme.example.com`).text).toBe(`${run} [REDACTED:email]`);
+  });
+
   it('leaves ids, timestamps, dates and non-Luhn digit runs alone', () => {
     const text = 'run 1732112345678 at 2026-11-20 12:00, order 1234 5678 9012 3456, v0.26.6, port 8080';
     expect(redactPersonalData(text).text).toBe(text);
@@ -300,6 +308,14 @@ describe('personal data in outbound messages', () => {
     const bytes = Buffer.from('jo@acme.example.com');
     expect(scrubOutboundFile('a.csv', bytes, { channel: 'C1', threadTs: '1.1' }).toString()).toBe('[REDACTED:email]');
     expect(scrubOutboundFile('a.csv', bytes, { channel: 'C1', threadTs: '2.2' }).toString()).toBe('jo@acme.example.com');
+  });
+
+  it('scrubs an edit of a message posted as an ephemeral worker’s, and only that one', () => {
+    setOutboundScrub({ enabled: () => false, known: () => [], personal: (ctx) => ctx.username === 'Logan' });
+    notePosted({ channel: 'C1', thread_ts: '1.1', username: 'Logan', text: 'Working on it' }, { channel: 'C1', ts: '1.5' });
+    notePosted({ channel: 'C1', thread_ts: '1.1', username: 'Wiki', text: 'Me too' }, { channel: 'C1', ts: '1.6' });
+    expect(scrubOutboundText({ channel: 'C1', ts: '1.5', text: 'mail jo@acme.example.com' }, 'chat.update').text).toBe('mail [REDACTED:email]');
+    expect(scrubOutboundText({ channel: 'C1', ts: '1.6', text: 'mail jo@acme.example.com' }, 'chat.update').text).toBe('mail jo@acme.example.com');
   });
 
   it('scrubs when it cannot tell whose message it is', () => {

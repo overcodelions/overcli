@@ -3056,13 +3056,33 @@ export class FlowRuntimeImpl {
   /// read back from their steps' session transcripts, within each run's own
   /// time. Only finished worker runs started after since that have none yet; one
   /// whose transcripts are gone stays unknown, and is tried again next time.
-  backfillChanges(transcript: (sessionId: string) => string[] | null, since: number): { runs: number; changes: number } {
+  /// Read back what past worker runs changed from their session transcripts,
+  /// for runs since `since` with no record yet. Async, one run at a time and
+  /// yielding between them, so a first start after upgrading doesn't hold
+  /// the event loop (Slack, the control plane, live runs) while it reads.
+  /// At most `limit` runs a call; the rest wait for the next start. A run
+  /// with no transcript left is recorded as having changed nothing, so it
+  /// isn't looked for again on every start.
+  async backfillChanges(
+    transcript: (sessionId: string) => Promise<string[] | null>,
+    since: number,
+    opts: { limit?: number; yieldEach?: () => Promise<void> } = {},
+  ): Promise<{ runs: number; changes: number; left: number }> {
+    const limit = opts.limit ?? 200;
+    const pause = opts.yieldEach ?? (() => new Promise<void>((r) => setImmediate(r)));
+    const due = [...this.runs.values()].filter((run) => run.workerId && !run.trial && !run.changed && run.createdAt >= since && run.state.kind !== 'running');
     let runs = 0, changes = 0;
-    for (const run of this.runs.values()) {
-      if (!run.workerId || run.trial || run.changed || run.createdAt < since || run.state.kind === 'running') continue;
+    for (const run of due.slice(0, limit)) {
+      await pause();
+      // Changed while this waited: a live run records its own.
+      if (run.changed || run.state.kind === 'running' || this.runs.get(run.id) !== run) continue;
       const ids = [...new Set(Object.values(run.sessionIdsByParticipant ?? {}))];
-      const found = ids.map((id) => transcript(id)).filter((l): l is string[] => !!l);
-      if (!found.length) continue;
+      const found: string[][] = [];
+      for (const id of ids) {
+        const lines = await transcript(id);
+        if (lines) found.push(lines);
+      }
+      if (run.changed) continue;
       const end = Math.max(run.createdAt, ...run.attempts.map((a) => a.endedAt ?? a.startedAt ?? run.createdAt)) + 60_000;
       const list = found
         .flatMap((lines) => changesFromTranscript(lines, run.createdAt - 1000, end, isReadOnlyMcpTool))
@@ -3074,7 +3094,7 @@ export class FlowRuntimeImpl {
       runs++;
       changes += list.length;
     }
-    return { runs, changes };
+    return { runs, changes, left: Math.max(0, due.length - limit) };
   }
 
   /// Note that the run's executing step is still alive. Any event on one

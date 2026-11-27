@@ -275,10 +275,15 @@ export function scrubOutbound(text: string): string {
 /// Every `text` field in a Slack payload (blocks nest them), scrubbed. Only
 /// `text`: an avatar URL or a button's value is not prose, and a long data
 /// URL would read as a credential.
-export function scrubOutboundText<T>(value: T): T {
+///
+/// `method`: the Slack method it's for. An edit (`chat.update`) names the
+/// message, not its thread, and carries no name to post under, so an
+/// ephemeral worker's message is known by having been posted as one
+/// (`notePosted`).
+export function scrubOutboundText<T>(value: T, method?: string): T {
   if (!outbound) return value;
   const secrets = outbound.enabled();
-  const personal = isPersonal(contextOf(value));
+  const personal = (method === 'chat.update' && personalPosts.has(postKey(value) ?? '')) || isPersonal(contextOf(value));
   if (!secrets && !personal) return value;
   const clean = (t: string) => {
     const once = secrets ? scrubOutbound(t) : t;
@@ -305,6 +310,26 @@ export function scrubOutboundFile(filename: string, bytes: Buffer, ctx: Outbound
   const once = secrets ? scrubOutbound(text) : text;
   const clean = personal ? redactPersonalData(once).text : once;
   return clean === text ? bytes : Buffer.from(clean, 'utf8');
+}
+
+/// Messages posted as an ephemeral worker's, by channel and ts, so an edit
+/// of one is scrubbed as the message was. The newest few thousand.
+const personalPosts = new Set<string>();
+const MAX_PERSONAL_POSTS = 5000;
+
+function postKey(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  return typeof v.channel === 'string' && typeof v.ts === 'string' ? `${v.channel}:${v.ts}` : null;
+}
+
+/// A message Slack took (`chat.postMessage`'s body and the `channel` and
+/// `ts` it answered with): remembered when it was an ephemeral worker's.
+export function notePosted(body: unknown, posted: { channel?: unknown; ts?: unknown }): void {
+  if (!outbound || typeof posted.channel !== 'string' || typeof posted.ts !== 'string') return;
+  if (!isPersonal(contextOf(body))) return;
+  personalPosts.add(`${posted.channel}:${posted.ts}`);
+  if (personalPosts.size > MAX_PERSONAL_POSTS) personalPosts.delete(personalPosts.values().next().value!);
 }
 
 function isPersonal(ctx: OutboundContext): boolean {
@@ -348,7 +373,10 @@ function luhn(digits: string): boolean {
 /// Same shape and invariant as `RULES` (the value is a suffix of the match).
 /// Order matters: a card number would otherwise read as a phone number.
 const PERSONAL_RULES: Rule[] = [
-  { kind: 'email', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, group: 0 },
+  // Starts only where a run of address characters starts, and the part
+  // before the @ is at most 64 long (RFC 5321): a long run with no @ in it
+  // (a minified line, a hash) is read once, not once per character.
+  { kind: 'email', re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, group: 0 },
   {
     kind: 'card-number',
     re: /(^|[^\d])(\d(?:[ -]?\d){12,18})(?!\d)/g,

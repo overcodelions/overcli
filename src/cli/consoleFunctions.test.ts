@@ -502,3 +502,27 @@ describe('the best worker for an ask', () => {
     expect(fit('', crew)).toEqual([]);
   });
 });
+
+describe('whose turn a thread is at', () => {
+  const a = CONSOLE_JS.indexOf('    var turnOf = function');
+  const b = CONSOLE_JS.indexOf('    var outcome = function', a);
+  if (a < 0 || b < 0) throw new Error('moved: turnOf');
+  type Run = { startedAt?: number; state?: string };
+  type Msg = { at: number; stage?: string; choices?: string[]; reply?: { at: number }; followUps?: Msg[] };
+  const turnOf = new Function(`${CONSOLE_JS.slice(a, b)}; return turnOf;`)() as (t: Msg, runs: Run[]) => { choices: string[]; asksYou: boolean; deciding: boolean };
+
+  it('keeps the reply’s choices when the ask also handed off work before replying', () => {
+    const t = { at: 100, stage: 'answered', choices: ['Open the PR', 'Leave it'], reply: { at: 500 } };
+    expect(turnOf(t, [{ startedAt: 200, state: 'done' }])).toEqual({ choices: ['Open the PR', 'Leave it'], asksYou: true, deciding: false });
+  });
+
+  it('drops them once a run starts after the reply', () => {
+    const t = { at: 100, stage: 'answered', choices: ['Open the PR'], reply: { at: 500 } };
+    expect(turnOf(t, [{ startedAt: 200 }, { startedAt: 600, state: 'working' }])).toMatchObject({ choices: [], asksYou: false });
+  });
+
+  it('reads the newest follow-up, and a question from a run still asks you', () => {
+    const t = { at: 100, choices: ['Old'], reply: { at: 150 }, followUps: [{ at: 300, stage: 'deciding', choices: ['New'] }] };
+    expect(turnOf(t, [{ startedAt: 200, state: 'question' }])).toEqual({ choices: [], asksYou: true, deciding: true });
+  });
+});

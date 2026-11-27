@@ -8,7 +8,7 @@ The worker's questions and approvals come to you as Slack DMs, and also wait in 
 
 - **A question:** reply in the DM thread. Your answer goes to the worker and it carries on.
 - **An approval** (before it pushes, posts, sends, or writes to another system): press **Approve** or **Reject**. The card says what the step does ("runs git push", "uses jira: add comment"), what it's told to do, and what it read first. Once it's settled, the card still says what it was for. Reading the web doesn't ask, unless your org's rules say it should.
-- **Always allow** on an approval card (in Slack and on the console) approves the step and lets that step of that flow run without asking from then on. Take it back on the worker's [Access](#access) tab.
+- **Always allow** on an approval card (in Slack and on the console) approves the step and lets that step of that flow run without asking from then on. Take it back on the worker's **Setup** tab, under [How much it does alone](#access).
 - **Proposals** from a scheduled run on probation: a list of what it wants to do. Pick which go ahead.
 
 **What doesn't ask.** A step whose tools only read (a search, a ticket lookup, its own files) runs without an approval, even when its instructions mention writing something. So do read-only shell commands on its own folders, such as `git log`, `git show`, `git blame`, `git grep`, `git shortlog`, `rg` and `grep`, also after a `cd` into the repo (`cd api && git log`).
@@ -17,7 +17,7 @@ A question climbs the **reports-to** chain before it reaches a person. If the wo
 
 ## Trust
 
-The worker's **Access** tab shows this as **How much it does alone**:
+The worker's **Setup** tab shows this as the **How much it does alone** step:
 
 | Level | What it does on its own |
 |---|---|
@@ -30,7 +30,7 @@ The worker's **Access** tab shows this as **How much it does alone**:
 
 ## Work from others
 
-Trust is how much a worker does without a check. It applies to what **you** ask, and to anyone it counts as you. Being allowed to ask a worker (**Who can ask it**, under [Settings](#settings)) doesn't make someone's asks start on their own: what they ask is a proposal, and it waits for an approver.
+Trust is how much a worker does without a check. It applies to what **you** ask, and to anyone it counts as you. Being allowed to ask a worker (**Who can ask it**, under [Setup](#setup)) doesn't make someone's asks start on their own: what they ask is a proposal, and it waits for an approver.
 
 | Who asks | Asks before work | Trusted | On its own |
 |---|---|---|---|
@@ -52,15 +52,15 @@ Groups are the org's people teams, read as they are now: someone who joins a gro
 
 ## Access
 
-The worker's **Access** tab is what it may use and how much it does without asking. The sidebar of its page shows a short version (its trust, its tools and their scope, any standing approvals) with **Manage →** to open the tab.
+The worker's **Setup** tab is what it may use and how much it does without asking. It's six steps, each with a one-line summary of what it's set to: what it may use is under **Where it works**, and how much it does without asking under **How much it does alone**.
 
-- **Tools:** each tool it has, with its **Scope**: the org's default, everything, read only, or only the calls you tick. Calls outside a tool's scope are refused, even with your OK. A scope wider than the org's default needs an admin. **Take it off** removes a tool.
+- **Tools** (Where it works): each tool it has, with its **Scope**: the org's default, everything, read only, or only the calls you tick. Calls outside a tool's scope are refused, even with your OK. A scope wider than the org's default needs an admin. **Take it off** removes a tool.
 - **+ Give it a tool:** pick an installed tool, or **Something not listed…**, and say what it's for. A tool your org clears for any hire is given at once. Anything else goes to the admins, and waits under the list as "waiting on an admin" until one decides; you hear in Slack. From Slack: `/worker Ada tools` lists its tools, and `/worker Ada tools add zendesk: to read tickets` gives or asks.
 - **How much it does alone:** the trust ladder above.
-- **Work from others:** a line saying who it starts work for straight away and who approves the rest, with a link to where they're changed, beside **Who can ask it**. See [Work from others](#work-from-others).
-- **Team pull requests** (admins): whether it pushes fixes onto pull requests other people opened, and whose. See [The team's pull requests](#the-teams-pull-requests).
-- **Always allowed:** the steps you said it may always run, from **Always allow** on an approval. **Take off** and it asks again.
-- **Checkpoints:** some flows stop before a step so someone looks first ("Continue to push?"). An admin can switch on **Run straight through its flows' checkpoints**. Anything that acts outside the server still asks, unless its trust says otherwise.
+- **Work from others** (Who it works with): a line saying who it starts work for straight away and who approves the rest, beside **Who can ask it**. See [Work from others](#work-from-others).
+- **Team pull requests** (How much it does alone, admins): whether it pushes fixes onto pull requests other people opened, and whose. See [The team's pull requests](#the-teams-pull-requests).
+- **Always allowed** (How much it does alone): the steps you said it may always run, from **Always allow** on an approval. **Take off** and it asks again.
+- **Checkpoints** (How much it does alone): some flows stop before a step so someone looks first ("Continue to push?"). An admin can switch on **Run straight through its flows' checkpoints**. Anything that acts outside the server still asks, unless its trust says otherwise.
 
 ## Watching it work
 
@@ -85,10 +85,10 @@ A run cut short by a server restart (an upgrade, say) carries on by itself when 
 On the worker's page:
 
 - **Schedule:** "weekdays at 9", "every 4 hours". The next run is shown, and **Run now** runs it immediately.
-- **Triggers** (the Triggers tab): work that starts when something happens.
+- **Triggers** (Setup → **When it works**): work that starts when something happens. A trigger opens in a side panel.
   - **Watch:** checks a tool every 5–60 minutes, such as a Jira search or a CRM view, and acts once on each new item. The first check only notes what's already there. **Try it now** shows what it sees before you save.
     - **Don't know the query?** Describe what to catch in plain words and press **Draft it**. The worker looks up the real names in the tool, tries a search, and fills in the form with what it would find, usually in a minute or two. It counts as a run, and nothing is saved until you save. The tool has to be installed on Setup → Tools, and the call has to be one that only reads.
-    - **Or a change to an item:** set it off by a change to one field, such as a ticket's status, rather than a new item. Turn on **Only items I track**, and put `{{ids}}` in the tool's arguments, for example `"jql": "key in ({{ids}})"`. Add tickets on the Triggers tab, or in Slack with `@overgo Watcher, track ACME-412`, `stop tracking ACME-412`, or `/worker Watcher track ACME-412`. With **Just tell me what changed**, you get "ACME-412 moved from In review to Done" and a link, with no worker turn, so a quiet day costs nothing.
+    - **Or a change to an item:** set it off by a change to one field, such as a ticket's status, rather than a new item. Turn on **Only items I track**, and put `{{ids}}` in the tool's arguments, for example `"jql": "key in ({{ids}})"`. Add tickets on the trigger, or in Slack with `@overgo Watcher, track ACME-412`, `stop tracking ACME-412`, or `/worker Watcher track ACME-412`. With **Just tell me what changed**, you get "ACME-412 moved from In review to Done" and a link, with no worker turn, so a quiet day costs nothing.
     - **Inside a VPC:** a watch checks outward, so nothing needs to reach the server. It only needs outbound access to the tool's API.
   - **Webhook:** a secret address for GitHub, Jira automation or Zapier to post to.
     The sender posts from the internet, so it can't reach a console that only answers inside your network, even on an https address. When the console's address only resolves to private addresses, the form says so and offers a watch instead, which only calls out.
@@ -98,7 +98,7 @@ On the worker's page:
     - **Test mode** (Slack triggers): each answer comes to you by DM first, with **Post it to the thread** and **Don't post**, and you hear what it stayed quiet on too. Reply under an answer to change it ("shorter", "link the docs", "leave this one"): the new version comes back with the same buttons. Nothing reaches the channel until you post it. Turn it off once you trust it.
 
   Each trigger has instructions (what to do with each item), a destination (a channel, a DM to you, the thread it came from, or "comment on the ticket"), and a daily limit. The first time a trigger hits its limit in a day, you get a DM saying what it skipped, with **Try the skipped ones now**. What it skips doesn't count towards the limit, so raising it takes effect at once.
-- **The value strip** on the Triggers tab shows items handled this month, typical time, cost per item, and the share people rated useful.
+- **The value strip** above the triggers on Setup → **When it works** shows items handled this month, typical time, cost per item, and the share people rated useful.
 
 ## Code
 
@@ -112,7 +112,7 @@ A team's code works the same way: when a team task in a repo or workspace is don
 
 ### The team's pull requests
 
-A worker can look after pull requests other people opened: fix a build that went red, resolve a conflict with the main branch, and fix small review comments, each as a new commit on that same pull request. An admin switches this on per worker, on the [Access](#access) tab under **Team pull requests**: **Push fixes to the team's open pull requests**. Without it, a worker only adds to pull requests it opened itself. The **PR Fixer** starter role is made for this, and hiring from it switches it on.
+A worker can look after pull requests other people opened: fix a build that went red, resolve a conflict with the main branch, and fix small review comments, each as a new commit on that same pull request. An admin switches this on per worker, on its **Setup** tab, under **How much it does alone** → **Team pull requests**: **Push fixes to the team's open pull requests**. Without it, a worker only adds to pull requests it opened itself. The **PR Fixer** starter role is made for this, and hiring from it switches it on.
 
 **Whose pull requests.** Two lists beside the switch, names as Bitbucket or GitHub shows them, comma separated:
 
@@ -139,7 +139,7 @@ It waits until the pull request **settles**: no build still running and nothing 
 
 **Limits.** Review comments wake it at most three times per pull request while it's open: an AI reviewer that re-reads every push can always find one more thing, and past three the rest of the review is a person's. A conflict or a red build still wakes it then, at most three times a day per pull request. It never approves, merges or declines a pull request, and never pushes to the main branch.
 
-**After a restart.** A run cut off mid-step is paused and waits for **Continue** on its Runs tab, and work queued behind it is cancelled. Pull requests the watcher already handed over aren't handed over again, so restart when the worker is idle.
+**After a restart.** A run cut off mid-step is paused and waits for **Carry on now** on its thread, on the Conversation tab, and work queued behind it is cancelled. Pull requests the watcher already handed over aren't handed over again, so restart when the worker is idle.
 
 ## The job and what it knows
 
@@ -147,7 +147,7 @@ It waits until the pull request **settles**: no build still running and nothing 
 
 In Slack, `/worker Ada edit` opens a form with the job, **Or say what should change**, **How much it does alone** (only an admin can pick **On its own**), when it runs, its budget, who can ask it, and **Slack conversations at once**. Admins also see a box to run straight through its flows' checkpoints. A change said in words comes back as a DM with the rewritten job: **Use this** or **Keep the old one**.
 
-**What it knows** (a card beside the job) is its onboarding: one read-only run through its own tools, finding the projects, statuses, people and places its job uses. It reads these notes before every run.
+**What it knows** (a page on the Job tab) is its onboarding: one read-only run through its own tools, finding the projects, statuses, people and places its job uses. It reads these notes before every run.
 
 - **When it happens:** by itself when it's hired with tools, or when you press **Learn its tools**. In Slack: `/worker Ada learn`. It takes a few minutes.
 - **Learn again** goes through its tools again. **Correct it** lets you edit the notes yourself.
@@ -155,12 +155,14 @@ In Slack, `/worker Ada edit` opens a form with the job, **Or say what should cha
 
 Every worker also reads your org's **handbook**, which an admin keeps on Setup → Handbook, after its own job.
 
-**Models** (a card on the Job tab) moves the worker onto newer models once your server knows them (a newer release of the server image brings newer models). It lists the model it plans with and each of its flows, with the newer model in the same line: Sonnet 5 → Sonnet 5.5, never Sonnet → Opus. Tick what to move and press **Upgrade the ones ticked**; its next run uses them. Nothing moves on its own.
+**Models** (a page on the Job tab) moves the worker onto newer models once your server knows them (a newer release of the server image brings newer models). It lists the model it plans with and each of its flows, with the newer model in the same line: Sonnet 5 → Sonnet 5.5, never Sonnet → Opus. Tick what to move and press **Upgrade the ones ticked**; its next run uses them. Nothing moves on its own.
 
 - **A flow other workers use** moves for them too, so the card says who. If one of them isn't yours, their manager or an admin moves it.
 - **"Here: … runs as …"** means that model's CLI isn't signed in on this server, so the step runs on one that is, at the same tier. Sign that CLI in (Admin page) to run it as written.
 
-## Settings
+## Setup
+
+The rest of the worker's **Setup** tab, step by step: **Basics**, **Where it works**, **Who it works with**, **When it works**, **How much it does alone**, and **Review**. Changes save as you make them.
 
 - **Picture:** its face on the console and on what it posts in Slack.
 - **When it runs:** its schedule, or only when someone asks.
@@ -177,7 +179,7 @@ Every worker also reads your org's **handbook**, which an admin keeps on Setup �
 - **Hand a step to your desktop:** with this on, a run it does for something you asked yourself can hand a step it can't do on the server (a browser session, a design) to your overcli desktop app (`ask_desktop`). It goes to you, or the nearest manager up the chain with a Slack account, never to anyone else, and never from a run a trigger, its own schedule or someone else started. **Allow** opens a local chat and nothing runs until you send it; **Send back** gives the worker your result in the run's thread; **Decline** or **Give up** tells it why. A worker has at most 5 open at once. One nobody picks up lapses after 24 hours, one picked up and never finished after 3 days, and finished ones are cleared after 14 days. If the worker can't take your result (it's paused, say), the task stays open with your text still in it, so you can send it again.
 - **Pause** stops everything it would start, without losing its journal.
 
-Tools, trust, standing approvals and checkpoints are on the [Access](#access) tab.
+Tools, trust, standing approvals and checkpoints are covered under [Access](#access).
 
 ## Your week
 
