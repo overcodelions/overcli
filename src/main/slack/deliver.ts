@@ -165,6 +165,36 @@ export function slackMarkup(text: string, opts: { showUrls?: boolean } = {}): st
   return toSlack(escapeMrkdwn(text), opts);
 }
 
+/// A path on the server, which nobody in Slack can open: "~/.overcli/…/plan.html",
+/// "/data/worker-files/<id>/note.md", "Workers/Hugo/2026-10-19 report/".
+/// Web addresses are left alone.
+const SERVER_ROOT = /^(?:~\/|\/(?:Users|home|private|tmp|var|data|srv|opt|root|mnt|app|workspace|Volumes)\/|(?:Workers|team-files|worker-files|coordinators|pack|files)\/)/;
+const BARE_PATH = /(?<![\w:/`])(?:~\/|\/(?:Users|home|private|tmp|var|data|srv|opt|root|mnt|app|workspace|Volumes)\/)[^\s`)]+?(?=[.,;]?(?:\s|$|\)))/g;
+
+/// A path said as the document's own name, or nothing when it is a folder.
+function saidAs(p: string): string {
+  const name = p.trim().replace(/\/+$/, '').split('/').pop() ?? '';
+  return /\.[a-z0-9]{1,5}$/i.test(name) ? `_${name}_` : '';
+}
+
+/// Each server path said as the document's name, or dropped when it is a
+/// folder. Code blocks are left as written.
+export function withoutPaths(text: string): string {
+  return text
+    .split(/(```[\s\S]*?```)/g)
+    .map((part) =>
+      part.startsWith('```')
+        ? part
+        : part
+            .replace(/`([^`\n]+)`/g, (m, inner: string) => (SERVER_ROOT.test(inner.trim()) ? saidAs(inner) : m))
+            .replace(BARE_PATH, saidAs)
+            .replace(/\(\s*\)/g, '')
+            .replace(/[ \t]+([.,;])/g, '$1')
+            .replace(/ {2,}/g, ' '),
+    )
+    .join('');
+}
+
 /// Files a reply names by absolute path, in the order named. Whether each
 /// may be sent is the reader's call (`DeliverIo.workerFile`).
 export function pathsInReply(text: string): string[] {
@@ -231,9 +261,10 @@ export function finishedText(workerName: string, p: ErrandProgress, library: str
 ///
 /// `as`: post it as the worker itself, under its name and picture.
 ///
-/// `hold`: a written document (Markdown, text) isn't attached, and the line
-/// pointing at it goes: Slack unfolds it whole under the answer it repeats.
-/// Returned, for a button that opens it instead.
+/// `hold`: a written document (Markdown, text) is returned too, for a button
+/// that opens it in a pop-up. It is still attached: someone who can't press
+/// a button (an assistant posting for a person, a guest from another
+/// workspace) had no way to it but asking the worker to paste it.
 export async function deliverText(io: DeliverIo, channel: string, threadTs: string, workerName: string, text: string, filename: string, workerId?: string, as?: PostAs, hold = false): Promise<Array<{ path: string; name: string }>> {
   const found = workerId && io.workerFile
     ? pathsInReply(text).slice(0, MAX_UPLOADS).flatMap((p) => {
@@ -242,7 +273,7 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
       })
     : [];
   const held = hold ? found.filter((f) => WRITTEN.test(f.name)) : [];
-  const files = found.filter((f) => !held.includes(f));
+  const files = [...found];
   let body = text.trim() || 'Done.';
   // A folder is a package, not a write-up of the answer: it goes up whole,
   // whatever `hold` says about a single document.
@@ -264,17 +295,10 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
       if (sendable.length) body = folderAttached(body, folder);
     }
   }
-  for (const f of held) {
-    body = body
-      .split('\n')
-      // "Full write-up: <path>" says nothing once the file isn't there; a
-      // sentence that only mentions it in passing keeps its name.
-      .map((l) => (!l.includes(f.path) ? l : l.split(f.path).join('').trim().length < 40 ? null : l.split(f.path).join(f.name)))
-      .filter((l): l is string => l !== null)
-      .join('\n')
-      .trim();
-  }
   for (const f of files) body = body.split(f.path).join(`${f.name} (attached)`);
+  // Whatever it names that couldn't go up (another worker's file, one since
+  // moved, a folder outside its own) is a path nobody in Slack can open.
+  body = withoutPaths(body);
   const lead = as ? '' : `*${workerName}:* `;
   const people = io.people?.() ?? [];
   const mark = (s: string) => tagPeople(slackMarkup(s), people);

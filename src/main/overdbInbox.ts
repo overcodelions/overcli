@@ -225,6 +225,8 @@ export class ConnectionsInbox {
           // Everything after it is waiting on the same thing.
           return;
         } else {
+          // The server answered, so it isn't what anything waits on now.
+          this.waitingOn = null;
           this.reject(name, res.error);
         }
       } finally {

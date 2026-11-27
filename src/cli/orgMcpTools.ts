@@ -105,14 +105,37 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     {
       description:
         "Send a worker an errand or a question. It plans from its job description and journal and replies; it may also start " +
-        'work, which it reports. If it is not done within about 50 seconds you get an askId instead: call check_question with it.',
+        'work, which it reports. If it is not done within about 50 seconds you get an askId instead: call check_question with it. ' +
+        'Before asking again about something you already asked, call my_asks: the answer may already be there. ' +
+        'To carry on from an earlier question (more detail, a correction, a next step), pass its askId as followUpOn: ' +
+        'the worker sees what was asked and what it answered, so you need not repeat it.',
       inputSchema: {
-        worker: z.string().describe('Worker name or id.'),
+        worker: z.string().optional().describe('Worker name or id. May be left out with followUpOn: the same worker answers.'),
         message: z.string().min(1).describe('What you want, in plain words.'),
+        followUpOn: z.string().optional().describe('askId of an earlier question this carries on from (from ask_worker or my_asks).'),
       },
     },
-    async ({ worker, message }) => {
-      const started = org.startAsk(caller, worker, message, 'mcp');
+    async ({ worker, message, followUpOn }) => {
+      let target = worker;
+      let replyTo: string | undefined;
+      let conversation: string | undefined;
+      if (followUpOn) {
+        const prior = org.askStatus(caller, followUpOn);
+        if (!prior.ok) return out(prior);
+        const { ask } = prior;
+        if (ask.status === 'working') {
+          return json({ askId: ask.id, status: 'working', note: `${ask.workerName} is still on that question. Call check_question with this askId; follow up once it has answered.` });
+        }
+        const named = target ? org.getWorker(caller, target) : undefined;
+        if (named?.ok && named.worker.id !== ask.workerId) {
+          return failure(`That question was for ${ask.workerName}. Leave worker out, or ask ${target} afresh.`);
+        }
+        target = ask.workerId;
+        replyTo = `ask:${ask.id}`;
+        conversation = ask.conversation;
+      }
+      if (!target) return failure('Say which worker, or pass followUpOn.');
+      const started = org.startAsk(caller, target, message, 'mcp', undefined, replyTo, conversation);
       if (!started.ok) return out(started);
       // Answer inside the client's patience, or say where to look later.
       const later = new Promise<'later'>((resolve) => setTimeout(() => resolve('later'), ASK_WAIT_MS).unref?.());
@@ -279,6 +302,35 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       inputSchema: { askId: z.string() },
     },
     async ({ askId }) => out(org.askStatus(caller, askId)),
+  );
+
+  tool(
+    'my_asks',
+    {
+      description:
+        "Questions you've sent workers, newest first, with each one's askId, status and reply. Use it to pick up an " +
+        "answer you asked for earlier (\"anything back from Ada?\") instead of asking again, or to find an askId for followUpOn.",
+      inputSchema: {
+        worker: z.string().optional().describe('Only questions to this worker.'),
+        limit: z.number().int().min(1).max(50).optional().describe('How many. Default 10.'),
+      },
+    },
+    async ({ worker, limit }) => {
+      const res = org.myAsks(caller, { ...(worker ? { worker } : {}), ...(limit ? { limit } : {}) });
+      if (!res.ok) return out(res);
+      return json({
+        asks: res.asks.map((a) => ({
+          askId: a.id,
+          worker: a.workerName,
+          asked: a.text,
+          at: new Date(a.at).toISOString(),
+          status: a.status,
+          ...(a.reply ? { reply: a.reply } : {}),
+          ...(a.error ? { error: a.error } : {}),
+          ...(a.replyTo?.startsWith('ask:') ? { followUpOn: a.replyTo.slice(4) } : {}),
+        })),
+      });
+    },
   );
 
   tool(
@@ -854,7 +906,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
 const READ_ONLY = new Set([
   'worker_tuning', 'worker_flows', 'draft_flow_change', 'flow_trial',
   'whoami', 'list_workers', 'get_worker', 'org_chart', 'list_waiting', 'list_hires', 'today', 'list_work',
-  'list_roles', 'list_teams', 'list_team_tasks', 'find_people', 'list_runs', 'get_run', 'pr_watch', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'list_tools', 'list_triggers', 'library', 'list_repos', 'list_secrets',
+  'list_roles', 'list_teams', 'list_team_tasks', 'find_people', 'list_runs', 'get_run', 'pr_watch', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'my_asks', 'list_tools', 'list_triggers', 'library', 'list_repos', 'list_secrets',
 ]);
 
 function annotationsFor(name: string): Record<string, boolean> {

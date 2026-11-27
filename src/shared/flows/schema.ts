@@ -11,6 +11,7 @@
 
 import { isSamePath } from '../pathScope';
 import type { Backend, ModelUsage, PermissionMode, PersonaKey, UUID } from '../types';
+import type { RunChange } from './runChanges';
 
 /// Built-in role presets surface as a friendly picker in the builder UI and
 /// resolve to default system prompts at run time (see ./roles.ts). `'custom'`
@@ -449,6 +450,12 @@ export interface FlowRun {
   /// and kept in `trialHeld` for its manager to read. See `trialAllowsMcp`.
   trial?: boolean;
   trialHeld?: Array<{ tool: string; input: string }>;
+  /// What a worker run changed outside the server, on an org server: each
+  /// call of a tool that doesn't only read, once it came back without an
+  /// error, said in a few words (runChanges.ts), the newest 40. Never the
+  /// call's arguments: only what kind of change, on what, and a short detail
+  /// with secrets scrubbed. Empty: watched, and nothing changed.
+  changed?: RunChange[];
   /// Tools a worker run asked for and was refused because its step does not
   /// list them, in the order first asked. What the person adds to the
   /// worker's flow for the work to go through next time.

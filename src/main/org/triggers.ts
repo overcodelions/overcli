@@ -230,7 +230,9 @@ const PASS_RE = /^\W*(?:[Pp][Aa][Ss][Ss]\b(?:\W*$|\W*?\s*[—–-]\s)|(?:PASS|pa
 /// A worker that explains itself before passing ("This is only thanks, so
 /// nothing needs answering.\n\nPASS") still passed: a bare PASS on the last
 /// line, in capitals, means nothing is posted. Its reasoning never is.
-const LAST_LINE_PASS_RE = /(?:^|\n)\W*PASS\W*$/;
+/// Bare means at most bold, italics or code around it and a full stop: a
+/// status line ending a real answer ("Smoke run:\n✅ PASS", "- PASS") posts.
+const LAST_LINE_PASS_RE = /(?:^|\n)[ \t]*([*_`]{0,3})PASS\.?\1\.?[ \t]*$/;
 const passes = (reply: string): boolean => PASS_RE.test(reply) || LAST_LINE_PASS_RE.test(reply.trim());
 const MENTION_REFUSED = "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message.";
 

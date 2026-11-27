@@ -87,7 +87,7 @@ Things only the server console manages:
 - **Triggers** — wake a worker when something changes in a tool, when another system posts to a webhook, or when something happens in Slack.
 - **Tools** — install MCP tools once; secrets are never shown back, and a sign-in check confirms which account they act as.
 - **Repos** — connected once and cloned on the server. Workers push branches, never the default branch; a person opens the PR.
-- **Access** — each worker's tools and their scope, how much it does alone, standing approvals and checkpoints, on its **Access** tab. Managers give cleared tools at once and ask an admin for the rest.
+- **Access** — each worker's tools and their scope, how much it does alone, standing approvals and checkpoints, on its **Setup** tab (**Where it works** and **How much it does alone**). Managers give cleared tools at once and ask an admin for the rest.
 - **What it knows** — a worker goes through its tools once, read only, and reads its notes before every run. Admins also keep a **Handbook** every worker reads.
 - **History** — every change to a worker's job, tools, trust and settings, with **Restore**.
 - **Tool health** — a tool whose key expired or whose API was retired alerts the admins in Slack, and the Monday digest tells managers and admins how the week went.

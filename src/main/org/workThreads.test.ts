@@ -37,6 +37,20 @@ describe('work threads', () => {
     expect(nowLine(t, 'Marta')?.sentence).toBe('Marta is working out how to answer “what does acme charge?”.');
   });
 
+  it('says a run is waiting on its worker’s answer to its own question, not just running', () => {
+    const exchange = { id: 'x1', stepId: 's1', participantId: 'p', askedAt: 1_700, question: 'This step has no Bitbucket tool. Paste the comments, or give it access?', status: 'asking' as const };
+    const threads = buildThreads(input({ batches: [batch('b1', 1_500, [{ id: 'c1', status: 'running', runId: 'r1' }], 'errand', 'Fix the review comments')], runs: [run('r1', { kind: 'running', currentStepId: 's1' } as FlowRun['state'], 1_600, { workerExchanges: [exchange] })] }));
+    const r = threads[0].runs[0];
+    expect(r.asking).toEqual({ question: exchange.question, since: 1_700 });
+    const stop = threads[0].progress.find((p) => p.state === 'now');
+    expect(stop?.label).toBe('Marta is answering its question');
+    expect(stop?.detail).toContain('asked: “This step has no Bitbucket tool.');
+    // Answered: running again, as before.
+    const answered = buildThreads(input({ batches: [batch('b1', 1_500, [{ id: 'c1', status: 'running', runId: 'r1' }], 'errand', 'Fix the review comments')], runs: [run('r1', { kind: 'running', currentStepId: 's1' } as FlowRun['state'], 1_600, { workerExchanges: [{ ...exchange, status: 'answered' }] })] }));
+    expect(answered[0].runs[0].asking).toBeUndefined();
+    expect(answered[0].progress.find((p) => p.state === 'now')?.label).toMatch(/^Running · step/);
+  });
+
   it('keeps work a question handed off before its reply came back on that question, not as an errand of its own', () => {
     const errand = 'what does acme charge?\n\nYour reply is posted back in that Slack thread for you, so answer here.';
     const threads = buildThreads(input({ asks: [ask({ status: 'working', via: 'slack' })], batches: [batch('b1', 1_500, [{ id: 'c1', status: 'running', runId: 'r1' }], 'errand', errand)], runs: [run('r1', { kind: 'running', currentStepId: 's1' } as FlowRun['state'], 1_600)] }));

@@ -1214,7 +1214,7 @@ table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wk-budget > span { display: block; height: 100%; background: var(--go); }
 .wk-budget.need > span { background: var(--need); }
 .wl { display: flex; flex-wrap: wrap; gap: 16px; align-items: stretch; }
-.wl-left { flex: 1 1 300px; max-width: 400px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
+.wl-left { position: relative; flex: 0 0 var(--wl-w, 380px); max-width: 70%; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
 .wl-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .chip.small { min-height: 28px; font-size: 12.5px; padding: 0 10px; }
 .wl-list { overflow-y: auto; flex: 1; }
@@ -1225,6 +1225,38 @@ table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wl-row.on { background: var(--go-soft); border-left-color: var(--go); }
 .wl-row.quiet .wl-title { color: var(--muted); font-weight: 400; }
 .wl-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wl-key { display: inline-block; margin-right: 7px; padding: 0 6px; border-radius: 5px; font: 600 11.5px/18px ui-monospace, SFMono-Regular, Menlo, monospace; vertical-align: 1px; white-space: nowrap; text-decoration: none; background: hsl(var(--wh) 50% 50% / var(--chip-bg-a)); color: hsl(var(--wh) 65% var(--chip-ink-l)); }
+a.wl-key:hover { text-decoration: underline; }
+.wl-detail-title .wl-key { font-size: 0.7em; line-height: 1.6; vertical-align: 0.15em; }
+.wl-intro { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); font-size: 13px; }
+.wl-intro ol { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 8px; flex: 1; min-width: 0; color: var(--muted); counter-reset: wli; }
+.wl-intro li { counter-increment: wli; }
+.wl-intro li::before { content: counter(wli); display: inline-block; width: 18px; height: 18px; margin-right: 6px; border-radius: 50%; background: var(--go-soft); color: var(--go); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.wl-intro li + li::before { margin-left: 4px; }
+.wl-ways { align-self: flex-start; font-size: 12.5px; color: var(--muted); }
+.wz { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+.wz-rail { flex: 0 1 290px; min-width: 240px; display: flex; flex-direction: column; gap: 4px; position: sticky; top: calc(var(--chrome-h) + var(--wk-head, 190px) + 16px); }
+.wz-step { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start; width: 100%; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.wz-step:hover { background: var(--panel-2); }
+.wz-step[aria-current="step"] { background: var(--go-soft); }
+.wz-n { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: var(--panel-2); border: 1px solid var(--line-2); color: var(--muted); }
+.wz-step[aria-current="step"] .wz-n { background: var(--go); border-color: var(--go); color: var(--go-ink); }
+.wz-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wz-t b { font-size: 14px; font-weight: 600; }
+.wz-sum { font-size: 12.5px; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.fl-work { cursor: default; }
+.fl-work:hover { background: transparent; }
+.fl-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.fl-file { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel-2); color: var(--ink); font: inherit; font-size: 12.5px; cursor: pointer; }
+.fl-file:hover { border-color: var(--go); color: var(--go); }
+.wz-main { flex: 999 1 560px; min-width: 0; gap: 16px; }
+.wz-title { margin: 0; font-size: 20px; font-weight: 600; }
+.wz-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--line); }
+.wz-facts { margin: 0; display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 8px 16px; font-size: 13.5px; }
+.wz-fact { display: contents; }
+.wz-fact dt { color: var(--muted); }
+.wz-fact dd { margin: 0; }
+@media (max-width: 720px) { .wz-rail { position: static; flex-basis: 100%; } .wz-facts { grid-template-columns: 1fr; } }
 .wl-sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wl-meta { font-size: 12px; color: var(--faint); white-space: nowrap; text-align: right; }
 .wl-meta.bad { color: var(--bad); } .wl-meta.need { color: var(--need); }
@@ -1280,7 +1312,90 @@ table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wl-detail-in { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
 .wl-detail-body .watch-list.boxed { max-height: 46vh; }
 .wl-detail-body .wc-out { max-height: none; }
-@media (max-width: 960px) { .wl-left { max-width: none; height: auto; max-height: 50vh; } .wl-detail-in { height: auto; } }
+@media (max-width: 960px) { .wl-left { flex-basis: 100%; max-width: none; height: auto; max-height: 50vh; } .wl-detail-in { height: auto; } .wl-grip { display: none; } }
+.wl-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 2; touch-action: none; }
+.wl-grip:hover, .wl-grip.on, .wl-grip:focus-visible { background: var(--go-soft); box-shadow: inset -2px 0 0 var(--go); outline: none; }
+.oc { --tone: var(--ok); --tone-soft: var(--ok-soft); display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px; padding: 18px; margin: 12px 14px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); box-shadow: inset 0 3px 0 var(--tone); background: var(--panel); }
+.oc-now { --tone: var(--go); --tone-soft: var(--go-soft); }
+.oc-need { --tone: var(--need); --tone-soft: var(--need-soft); }
+.oc-bad { --tone: var(--bad); --tone-soft: var(--bad-soft); }
+.oc-main { flex: 999 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.oc-head { display: flex; gap: 14px; align-items: flex-start; }
+.oc-icon { flex: none; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--tone); color: var(--bg); font-size: 20px; }
+.oc-now .oc-icon { background: var(--tone-soft); }
+.oc-words { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.oc-badge { align-self: flex-start; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--tone-soft); color: var(--tone); }
+.oc-headline { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.35; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.oc-chip-about .oc-kind { color: var(--muted); }
+.wl-row.wl-child .wl-title::before { content: '↳ '; color: var(--faint); }
+.oc-done { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; color: var(--muted); }
+.oc-done svg { color: var(--ok); }
+.oc-ci.passed .oc-kind { color: var(--ok); }
+.oc-ci.failed { border-color: color-mix(in srgb, var(--need) 45%, transparent); }
+.oc-ci.failed .oc-kind { color: var(--need); }
+.oc-ci.fixing .oc-kind { color: var(--go); }
+.oc-sub { font-size: 13px; color: var(--muted); }
+.oc-changes { display: flex; flex-direction: column; gap: 8px; }
+.oc-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.oc-chip { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); min-width: 0; color: var(--ink); text-decoration: none; }
+a.oc-chip:hover { border-color: var(--go); }
+.oc-kind { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--tone); }
+.oc-ct { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-cd { font-size: 12px; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
+.oc-turn { --t: var(--ok); --ts: var(--ok-soft); flex: 1 1 240px; max-width: 340px; display: flex; flex-direction: column; gap: 6px; padding: 16px; border-radius: 12px; background: var(--ts); border: 1px solid color-mix(in srgb, var(--t) 40%, transparent); }
+.oc-turn.need { --t: var(--need); --ts: var(--need-soft); }
+.oc-turn.bad { --t: var(--bad); --ts: var(--bad-soft); }
+.oc-turn.info { --t: var(--info); --ts: var(--info-soft); }
+.oc-turn.now { --t: var(--muted); --ts: var(--panel-2); }
+.oc-turn-l { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--t); }
+.oc-turn-t { font-size: 15.5px; }
+.oc-turn p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.oc-turn-b { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.oc-turn-b .btn { justify-content: flex-start; text-align: left; }
+.oc-turn-b .btn.go { background: var(--t); border-color: var(--t); color: var(--bg); }
+.oc-way { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.oc-path { list-style: none; margin: 0; padding: 0; display: flex; gap: 4px; overflow-x: auto; }
+.oc-stop { flex: 1 1 0; min-width: 96px; display: flex; }
+.oc-stop > button { all: unset; box-sizing: border-box; cursor: pointer; flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 10px; border-radius: 10px; min-width: 0; position: relative; }
+.oc-stop > button:hover { background: var(--panel-2); }
+.oc-stop > button:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
+.oc-stop > button[aria-pressed="true"] { box-shadow: inset 0 -2px 0 var(--go); }
+.oc-stop.info .oc-mark { background: var(--info); }
+.oc-stop.to-info > button::after { background: repeating-linear-gradient(90deg, var(--info) 0 6px, transparent 6px 11px); }
+.oc-stop.info .oc-st b { color: var(--info); }
+.oc-mark { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: var(--ok); color: var(--bg); position: relative; z-index: 1; }
+.oc-stop.now .oc-mark { background: var(--go); animation: oc-pulse 1.6s infinite; }
+.oc-stop.need .oc-mark { background: var(--need); }
+.oc-stop.bad .oc-mark { background: var(--bad); }
+.oc-stop.todo .oc-mark { background: transparent; border: 1.5px dashed var(--line-2); }
+.oc-stop[class*=" to-"] > button::after { content: ''; position: absolute; top: 19px; left: 38px; right: -2px; height: 2px; background: var(--ok); }
+.oc-stop.to-todo > button::after { background: repeating-linear-gradient(90deg, var(--line-2) 0 6px, transparent 6px 11px); }
+.oc-stop.to-now > button::after { background: var(--go); }
+.oc-stop.to-need > button::after { background: var(--need); }
+.oc-stop.to-bad > button::after { background: var(--bad); }
+.oc-st { display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; line-height: 1.35; min-width: 0; }
+.oc-st b { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.oc-stop.need .oc-st b { color: var(--need); }
+.oc-stop.bad .oc-st b { color: var(--bad); }
+.oc-stop.todo .oc-st b { color: var(--muted); }
+.oc-st span { color: var(--muted); }
+.oc-about { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 10px; background: var(--panel-2); font-size: 13px; line-height: 1.5; }
+.oc-about b { white-space: nowrap; }
+.oc-about span { color: var(--muted); }
+@keyframes oc-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--go) 55%, transparent); } 70% { box-shadow: 0 0 0 8px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .oc-stop.now .oc-mark { animation: none; } }
+.wz-step[aria-current="page"] { background: var(--go-soft); }
+.jd-changes { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); }
+.jd-row { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13.5px; }
+.jd-row > summary { cursor: pointer; }
+.jd-diff { margin-top: 6px; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: 360px; background: var(--field); }
+.jd-l { display: flex; gap: 8px; padding: 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.jd-l.add { background: var(--ok-soft); }
+.jd-l.del { background: var(--bad-soft); text-decoration: line-through; text-decoration-color: var(--bad-line); }
+.jd-op { flex: none; width: 10px; color: var(--muted); text-decoration: none; }
+.jd-gap { padding: 0 10px; color: var(--faint); }
+.wz-dot { width: 10px; height: 10px; margin: 5px 7px; border: 0; }
+.wz-step[aria-current="page"] .wz-dot { background: var(--go); }
 .wl-detail-head { padding: 16px 20px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--line); }
 .wl-detail-title { margin: 0; font-size: 19px; font-weight: 600; }
 .wl-detail-body { padding: 4px 6px 16px; overflow-y: auto; flex: 1; }
@@ -1384,6 +1499,8 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .trig-note .trig-note-lead { color: var(--ink); font-size: 13.5px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .trig-note .trig-note-lead[hidden] { display: none; }
 .trig-foot { position: sticky; bottom: 0; z-index: 2; background: var(--bg); padding-bottom: 14px; }
+.reader .trig-foot { background: var(--panel); bottom: -40px; padding-bottom: 18px; }
+.reader .sgroup { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .msg.need { background: var(--need-soft); color: var(--need); }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .choice { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); text-align: left; cursor: pointer; }
@@ -3086,6 +3203,15 @@ export const CONSOLE_JS = String.raw`
   // Markdown a worker writes, drawn as elements: paragraphs, headings, lists,
   // quotes, rules, code, bold, italic and links. Built with nodes and text,
   // never markup, so nothing a worker writes can run in the page.
+  /// A link to show: its site and the end of its path, without the query.
+  function shortUrl(u) {
+    var m = /^https?:\/\/([^/?#]+)([^?#]*)/.exec(String(u || ''));
+    if (!m) return u;
+    var host = m[1].replace(/^www\./, ''), parts = m[2].split('/').filter(Boolean);
+    var tail = parts.length > 2 ? '…/' + parts.slice(-2).join('/') : parts.join('/');
+    var out = host + (tail ? '/' + tail : '');
+    return out.length > 60 ? out.slice(0, 59) + '…' : out;
+  }
   function md(src) {
     var root = h('div', { class: 'prose' });
     var lines = String(src || '').replace(/\r/g, '').split('\n');
@@ -3146,8 +3272,10 @@ export const CONSOLE_JS = String.raw`
       if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
       if (m[1] || m[2]) el.appendChild(h('strong', { text: m[1] || m[2] }));
       else if (m[3]) el.appendChild(h('code', { text: m[3] }));
-      else if (m[4]) el.appendChild(h('a', { href: m[5], target: '_blank', rel: 'noopener noreferrer', text: m[4] }));
-      else if (m[6]) el.appendChild(h('a', { href: m[6], target: '_blank', rel: 'noopener noreferrer', text: m[6] }));
+      // A bare link, or one whose words are its address, reads as its site
+      // and page, not a line of query string; the whole address is its title.
+      else if (m[4]) el.appendChild(h('a', { href: m[5], target: '_blank', rel: 'noopener noreferrer', title: m[5], text: m[4] === m[5] ? shortUrl(m[5]) : m[4] }));
+      else if (m[6]) el.appendChild(h('a', { href: m[6], target: '_blank', rel: 'noopener noreferrer', title: m[6], text: shortUrl(m[6]) }));
       else if (m[7]) el.appendChild(h('em', { text: m[7] }));
       last = re.lastIndex;
     }
@@ -3425,14 +3553,20 @@ export const CONSOLE_JS = String.raw`
     return navMenu(h('button', { class: 'org crumb-link org-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-current': on ? 'page' : null, title: 'Setup, People and Activity', 'aria-label': me.org + ': Setup, People and Activity' },
       h('span', { class: 'org-name', text: me.org }), items.map(navBadges), icon('chevron', 14)), items, 'org-wrap');
   }
-  /// In two groups: what it has done (Work), and how it's set up (Setup).
-  var WORKER_TABS = [['talk', 'Conversation', 'inbox', 'Work'], ['runs', 'Runs', 'clock', 'Work'], ['files', 'Files', 'doc', 'Work'], ['journal', 'Journal', 'library', 'Work'],
-    ['job', 'Job', 'list', 'Setup'], ['triggers', 'Triggers', 'bolt', 'Setup'], ['tuning', 'Tuning', 'bolt', 'Setup'], ['reach', 'How to reach', 'arrow', 'Setup'], ['settings', 'Settings', 'gear', 'Setup']];
+  /// In two groups, each tab answering one question. Work: what is it doing,
+  /// and what does it need from me? Setup: what is it, and what may it do?
+  /// Job is the one place that changes how it works; Performance only shows
+  /// how it's doing.
+  var WORKER_TABS = [['talk', 'Conversation', 'inbox', 'Work'], ['activity', 'Activity', 'clock', 'Work'], ['files', 'Files', 'doc', 'Work'],
+    ['job', 'Job', 'list', 'Setup'], ['performance', 'Performance', 'bolt', 'Setup'], ['setup', 'Setup', 'gear', 'Setup']];
+  /// Where the tabs it used to have went, so old links and bookmarks land on
+  /// the same things: [tab, its view or step].
+  var WORKER_TAB_MOVED = { runs: ['activity', 'table'], journal: ['activity', 'story'], tuning: ['performance'], triggers: ['setup', 'when'], reach: ['setup', 'who'], settings: ['setup'], access: ['setup', 'where'] };
   function workerChrome(w, counts, current, pick, last) {
     // Another worker's page, opened while this one was loading.
     if (!last && state.workerId !== w.id) return;
     setChrome([['Workers', function () { go('workers'); }], [w.name, last ? function () { openWorker(w.id); } : null]].concat(last ? [[last]] : []),
-      WORKER_TABS.filter(function (t) { return t[0] !== 'tuning' || w.youManage; }).map(function (t) { return { id: t[0], label: t[1], icon: HAS_ICON(t[2]) ? t[2] : null, count: (counts || {})[t[0]], group: t[3] }; }),
+      WORKER_TABS.filter(function (t) { return t[0] !== 'performance' || w.youManage; }).map(function (t) { return { id: t[0], label: t[1], icon: HAS_ICON(t[2]) ? t[2] : null, count: (counts || {})[t[0]], group: t[3] }; }),
       current, pick, w.name);
   }
 
@@ -3810,11 +3944,35 @@ export const CONSOLE_JS = String.raw`
     document.title = me.org + ' — overgo';
     // Hiring is narrow once it's questions or an offer; the brief has the
     // ideas beside it.
+    var mine = ++renderSeq, route = hashFor(), sameRoute = route === shownRoute, y = window.scrollY;
+    // The same page again, after a save or a pause: draw it off screen and
+    // swap only what's inside <main>. The top bar and nav stay, nothing
+    // flashes to Loading, the scroll stays put, and what was opened (a run's
+    // tool calls, a section) stays open.
+    var onScreen = app.querySelector('.frame > main.main');
+    if (sameRoute && onScreen && onScreen.dataset.viewAs === String(state.viewAs || '')) {
+      var view0 = viewFor();
+      var swap = function (nodes) {
+        if (mine !== renderSeq || !onScreen.isConnected) return;
+        var opened = {};
+        onScreen.querySelectorAll('details[open] > summary').forEach(function (s) { opened[s.textContent] = true; });
+        var page = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') });
+        append(page, nodes);
+        page.querySelectorAll('details > summary').forEach(function (s) { if (opened[s.textContent]) s.parentNode.open = true; });
+        onScreen.replaceChildren.apply(onScreen, [state.viewAs ? viewAsBar() : null, page].filter(Boolean));
+        window.scrollTo(0, y);
+        syncChromeRow();
+        refreshCounts();
+      };
+      view0().then(swap).catch(function (e) { swap([h('div', { class: 'msg err', text: String(e.message || e) })]); });
+      return;
+    }
     var main = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') }, thinking('Loading…'));
+    var mainBox = h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main);
+    mainBox.dataset.viewAs = String(state.viewAs || '');
     var frame = h('div', { class: 'frame' },
       h('div', { class: 'chrome' }, topBar(me), chromeRow()),
-      h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main));
-    var mine = ++renderSeq, route = hashFor(), sameRoute = route === shownRoute, y = window.scrollY;
+      mainBox);
     var up = false;
     var putUp = function () {
       if (up || mine !== renderSeq) return;
@@ -3829,10 +3987,15 @@ export const CONSOLE_JS = String.raw`
     // Nothing on screen yet: up at once, Loading and all. Otherwise only
     // if the next page is slow, so the wait still shows.
     if (!app.querySelector('.frame')) putUp(); else setTimeout(putUp, 400);
-    if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
-    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
+    var view = viewFor();
     view().then(function (node) { if (mine !== renderSeq) return; main.textContent = ''; append(main, node); putUp(); syncChromeRow(); })
       .catch(function (e) { if (mine !== renderSeq) return; main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); putUp(); syncChromeRow(); });
+  }
+
+  /// The page for the current tab.
+  function viewFor() {
+    if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
+    return { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
   }
 
   // ---- shared pieces ---------------------------------------------------
@@ -5889,7 +6052,9 @@ export const CONSOLE_JS = String.raw`
       // Once it has an answer and nothing is still moving, the answer leads
       // and how it got there follows; while it works, the steps lead.
       var settled = t.runs.some(function (r) { return r.state === 'done'; }) && !t.runs.some(function (r) { return r.state === 'working' || r.state === 'paused' || r.state === 'question' || r.state === 'approval'; });
-      if (settled) return [found, note, h('section', { class: 't-how', 'aria-label': 'How it got there' }, h('span', { class: 't-kind', text: 'How it got there' }), threadTimeline(t, w, ctx))];
+      // The path in brief is at the thread's top; this is every step, with
+      // what each did, folded for whoever wants it.
+      if (settled) return [found, note, h('details', { class: 't-how' }, h('summary', { class: 't-kind', style: 'cursor:pointer', text: 'Every step, in detail' }), threadTimeline(t, w, ctx))];
       return [threadTimeline(t, w, ctx), found, note];
     }
     return [
@@ -6003,6 +6168,30 @@ export const CONSOLE_JS = String.raw`
     if (p.kind === 'workspace') return p.name + (p.repos && p.repos.length ? ' (' + p.repos.join(', ') + ')' : '');
     return (p.kind === 'repo' ? 'Repo ' : 'Folder ') + p.name;
   }
+  /// Two versions of a text, line by line: the changed lines with one line
+  /// around each, the rest folded to "…". Added in green, removed struck out
+  /// in red, each said in words for a screen reader.
+  function diffLines(before, after) {
+    var ops = lineDiff(before, after);
+    if (!ops.some(function (o) { return o.op !== '='; })) return h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'No change.' });
+    var near = function (i) { return [i - 1, i, i + 1].some(function (j) { return ops[j] && ops[j].op !== '='; }); };
+    var out = h('div', { class: 'jd-diff', role: 'group', 'aria-label': 'Changed lines' });
+    var gap = false;
+    ops.forEach(function (o, i) {
+      if (!near(i)) { if (!gap) out.appendChild(h('div', { class: 'jd-gap', 'aria-hidden': 'true', text: '…' })); gap = true; return; }
+      gap = false;
+      out.appendChild(h('div', { class: 'jd-l' + (o.op === '+' ? ' add' : o.op === '-' ? ' del' : ''), 'aria-label': (o.op === '+' ? 'Added: ' : o.op === '-' ? 'Removed: ' : '') + o.text },
+        h('span', { class: 'jd-op', 'aria-hidden': 'true', text: o.op === '=' ? '' : o.op === '+' ? '+' : '−' }), h('span', { text: o.text || ' ' })));
+    });
+    return out;
+  }
+  /// A worker's place in a few words: a workspace by its name and how many
+  /// repos it holds, not every repo in it.
+  function placeShort(p) {
+    if (!p) return 'No repo';
+    if (p.kind === 'workspace') return 'Workspace ' + p.name + (p.repos && p.repos.length ? ' · ' + p.repos.length + (p.repos.length === 1 ? ' repo' : ' repos') : '');
+    return (p.kind === 'repo' ? 'Repo ' : 'Folder ') + p.name;
+  }
   /// A request a trigger set off, taken apart: the instructions, what set it
   /// off and the item, so a title names the item rather than the plumbing
   /// (the preface, the untrusted-data fence). Null when it isn't one.
@@ -6019,6 +6208,60 @@ export const CONSOLE_JS = String.raw`
   /// The note overcli puts in front of a trigger's ask, which no one typed.
   function stripPreface(prompt) { return plainSlack(prompt).replace(/^\(Set off by a trigger[^)]*\)\s*/, ''); }
   function plainSlack(s) { return String(s || '').replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, '$2').replace(/<((?:https?|mailto):[^>]+)>/g, '$1'); }
+  /// The ticket or issue some text names, as a short key: a Jira or Linear
+  /// key (ACME-7311, ENG-412), or a GitHub issue or pull request as repo#123.
+  /// '' when it names none. Words shaped like a key (UTF-8) are not one.
+  var NOT_KEYS = /^(UTF|ISO|SHA|RFC|HTTP|HTTPS|TLS|SSL|UTC|GMT|MD|AES|RSA|CVE|PEP|COVID)$/;
+  function keyIn(text) {
+    var s = String(text || ''), m, re = /\b([A-Z][A-Z0-9]{1,9})-(\d+)\b/g;
+    while ((m = re.exec(s))) if (!NOT_KEYS.test(m[1])) return m[0];
+    m = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:issues|pull)\/(\d+)/.exec(s);
+    if (m) return m[1] + '#' + m[2];
+    m = /(?:^|[\s(])(?:[A-Za-z][\w.-]*\/)?([A-Za-z][\w.-]*)#(\d+)\b/.exec(s);
+    return m ? m[1] + '#' + m[2] : '';
+  }
+  /// A title with its key taken off the front, since the key shows beside it.
+  function keyless(title, key) {
+    if (!key || title.indexOf(key) !== 0) return title;
+    var rest = title.slice(key.length).replace(/^[\s:\u2013\u2014·-]+/, '');
+    return rest || title;
+  }
+  /// An ask with the "From Priya Shah in #support:" someone put in front of
+  /// it: who asked is on the line under the title already.
+  function unFrom(text) { return String(text || '').replace(/^From [^:\n.,!?]{1,80}:\s*/, ''); }
+  /// What changed between two texts, line by line, as kept (=), added (+)
+  /// and removed (-) lines in order: the longest run of lines both share is
+  /// kept, the rest is what changed. Past a size where that gets slow, every
+  /// line is said as removed and then added.
+  function lineDiff(a, b) {
+    var x = String(a || '').split('\n'), y = String(b || '').split('\n');
+    var n = x.length, m = y.length, i, j, out = [];
+    if (n * m > 400000) return x.map(function (t) { return { op: '-', text: t }; }).concat(y.map(function (t) { return { op: '+', text: t }; }));
+    var L = [];
+    for (i = n; i >= 0; i--) { L[i] = []; for (j = m; j >= 0; j--) L[i][j] = i === n || j === m ? 0 : x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]); }
+    i = 0; j = 0;
+    while (i < n && j < m) {
+      if (x[i] === y[j]) { out.push({ op: '=', text: x[i] }); i++; j++; }
+      else if (L[i + 1][j] >= L[i][j + 1]) { out.push({ op: '-', text: x[i] }); i++; }
+      else { out.push({ op: '+', text: y[j] }); j++; }
+    }
+    while (i < n) out.push({ op: '-', text: x[i++] });
+    while (j < m) out.push({ op: '+', text: y[j++] });
+    return out;
+  }
+  /// The server waking a worker about pull requests it saw change: the first
+  /// one and what changed, as a title ("acme-web#596: conflicts with master
+  /// (and 2 more)"). '' when the text isn't such a wake. Started on its
+  /// manager's behalf, it would otherwise read "You asked" and be titled with
+  /// the server's own preamble.
+  function wakeTitle(prompt) {
+    var p = String(prompt || '').replace(/^\(Set off by a trigger[^)]*\)\s*/, '');
+    if (p.indexOf('Open pull requests changed since you last looked.') !== 0) return '';
+    var re = /- ([\w.-]+) PR #(\d+) "[^\n]*?" \([^)\n]*\)[^:\n]*: ([^\n]+)/g, m, all = [];
+    while ((m = re.exec(p))) all.push(m);
+    if (!all.length) return 'Pull requests the server saw change';
+    return all[0][1] + '#' + all[0][2] + ': ' + all[0][3].trim() + (all.length > 1 ? ' (and ' + (all.length - 1) + ' more)' : '');
+  }
 
   /// Set by the bar above the tabs: hides it while the thread it tells of is
   /// the one open on the right, which says the same.
@@ -6369,8 +6612,13 @@ export const CONSOLE_JS = String.raw`
       var deciding = cur.stage === 'deciding' || (cur.followUps || []).some(function (f) { return f.stage === 'deciding'; });
       input.placeholder = deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply about this, or ask a follow-up…';
     };
+    // Slack, Claude and a script reach it too: said where you're asking, not
+    // on a tab of its own.
+    var ways = h('button', { type: 'button', class: 'linkish wl-ways', text: 'Other ways to ask ' + w.name, onclick: function () {
+      openReader('Other ways to ask ' + w.name, 'Its answers land here whichever way you ask.', function (put) { put([reachView('worker', w.name, VIS[w.visibility || 'private'])]); }, null);
+    } });
     var composer = w.enabled
-      ? h('div', { class: 'wl-compose' }, to, cb.el, out)
+      ? h('div', { class: 'wl-compose' }, to, cb.el, out, ways)
       : h('div', { class: 'wl-compose' }, h('p', { class: 'muted', style: 'margin:0', text: w.name + ' is paused. Resume it to ask it things.' }));
     drawComposer();
 
@@ -6390,26 +6638,34 @@ export const CONSOLE_JS = String.raw`
     more.onclick = function () { var l = liveFor(w.id); l.limit = (l.limit || 20) + 30; moreDone = busy(more, 'Loading…'); livePoke(w.id, 0); };
 
     var titleOf = function (t) {
+      var wake = t.source === 'ask' ? wakeTitle(t.prompt) : '';
+      if (wake) return wake;
       // A title, not the whole request: the rest is in the thread.
       if (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp') {
         var tp = triggerParts(t.prompt);
         if (tp && (tp.key || tp.title)) return (tp.key ? tp.key + ' · ' : '') + (tp.title || tp.trigger);
         if (t.runs.length === 1 && t.source !== 'ask') return t.runs[0].title.replace(/^\[[^\]]+\]\s*/, '');
-        var p = stripPreface(t.prompt); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p;
+        var p = unFrom(stripPreface(t.prompt)); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p;
       }
       if (t.runs.length) return t.runs[0].title;
       return t.source === 'runNow' ? 'Run now' : 'Scheduled check';
     };
-    /// The ticket a thread is about (ACME-7311), from what set it off or its
-    /// title; '' when it names none.
+    /// The ticket a thread is about (ACME-7311, ENG-412, web#123), from what
+    /// set it off, its link, its title, or what was asked; '' when it names none.
     var ticketKey = function (t) {
       var tp = t.prompt ? triggerParts(t.prompt) : null;
       if (tp && tp.key) return tp.key;
-      var m = /\b([A-Z][A-Z0-9]+-\d+)\b/.exec(titleOf(t));
-      return m ? m[1] : '';
+      var asked = !tp && (t.source === 'ask' || t.source === 'colleague' || t.source === 'followUp');
+      return keyIn(tp && tp.link) || keyIn(titleOf(t)) || (asked ? keyIn(stripPreface(t.prompt)) : '') || keyIn(t.runs.length ? t.runs[0].title : '');
+    };
+    /// A key as a pill, one colour per project or repo.
+    var keyPill = function (k, link) {
+      var attrs = { class: 'wl-key', style: '--wh:' + hue(k.replace(/[-#]\d+$/, '')), text: k };
+      return link ? h('a', Object.assign(attrs, { href: link, target: '_blank', rel: 'noopener', title: 'Open ' + k })) : h('span', attrs);
     };
     var whoFor = function (t) {
       if (t.team) return 'For ' + t.team.name;
+      if (t.source === 'ask' && wakeTitle(t.prompt)) return 'The server saw a change';
       if (t.source === 'ask') return t.by && t.by !== me ? t.by + ' asked' : 'You asked';
       if (t.source === 'trigger') return 'A trigger';
       if (t.source === 'runNow') return 'Run now';
@@ -6421,6 +6677,250 @@ export const CONSOLE_JS = String.raw`
     /// What a thread came to, as a mark: a pull request, a comment, a report,
     /// nothing changed. The stage alone was a green dot on nearly every row.
     var threadPrs = prsOf;
+    /// The top of an open thread, readable without knowing how workers run:
+    /// what happened in a sentence, what it changed outside the server, whose
+    /// turn it is with the buttons for it, and the path it took, a stop at a
+    /// time. The changes are the calls its runs made that came back without
+    /// an error (runChanges.ts), and what landing its branches did.
+    var outcomeStop = {};
+    var KIND_WORD = { comment: 'Comment', status: 'Status', fields: 'Fields', created: 'Created', removed: 'Removed', message: 'Message', pullRequest: 'Pull request', other: 'Change', pr: 'Pull request' };
+    var PR_SAID = { open: 'opened', draft: 'opened as a draft', updated: 'new commits pushed', existing: 'already open, left alone', unopened: 'branch pushed, not opened yet', linked: 'what this is about, not changed' };
+    var andJoin = function (xs) { return xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]; };
+    /// Whose turn it is comes from its newest message, as the reply box's
+    /// one-tap answers do: an early answer's choices, already replied to,
+    /// asked nothing of you once a later answer said there was nothing to do.
+    /// Its choices stand until a run starts after its reply: the work an ask
+    /// hands off starts before the reply comes back, and isn't acting on it.
+    var turnOf = function (t, runs) {
+      var follow = t.followUps || [];
+      var newest = follow.length ? follow[follow.length - 1] : t;
+      var since = (newest.reply && newest.reply.at) || newest.at;
+      var acted = runs.some(function (r) { return r.startedAt && since && r.startedAt > since; });
+      var choices = acted || newest.stage === 'deciding' ? [] : newest.choices || [];
+      return {
+        choices: choices,
+        asksYou: newest.stage === 'needsYou' || choices.length > 0 || runs.some(function (r) { return r.state === 'question'; }),
+        deciding: t.stage === 'deciding' || newest.stage === 'deciding',
+      };
+    };
+    var outcome = function (t) {
+      var runs = [];
+      [t].concat(t.followUps || []).forEach(function (x) { runs = runs.concat(x.runs || []); });
+      var live = runs.filter(function (r) { return r.state === 'working'; })[0];
+      var prs = threadPrs(t);
+      var bad = t.stage === 'failed' || t.stage === 'stopped';
+      var waiting = t.proposal && t.proposal.waiting ? t.proposal.items.filter(function (i) { return i.status === 'waiting'; }) : [];
+      var waitingOk = t.stage === 'waiting' || waiting.length > 0;
+      var turnNow = turnOf(t, runs);
+      var choices = turnNow.choices;
+      var asksYou = turnNow.asksYou;
+      var deciding = turnNow.deciding;
+      // What the repo's CI said about what it pushed, from its newest watched run:
+      // failed and handed back is the manager's to fix; failing and sent back
+      // to the worker is still in its hands.
+      var ciRun = runs.filter(function (r) { return r.ci; }).slice(-1)[0];
+      var ci = ciRun ? ciRun.ci : null;
+      var ciBad = !!ci && ci.state === 'failed' && !live;
+      var ciFixing = !!ci && ci.state === 'fixing' && !live;
+      var pushedPr = prs.filter(function (p) { return p.state === 'open' || p.state === 'draft' || p.state === 'updated'; })[0];
+      var tone = live || deciding || ciFixing ? 'now' : waitingOk || asksYou || ciBad ? 'need' : bad ? 'bad' : 'ok';
+      var badge = tone === 'now' ? (live ? 'Working' : ciFixing ? 'Fixing the build' : 'Deciding') : tone === 'need' ? (waitingOk ? 'Needs your OK' : 'Needs you') : tone === 'bad' ? (t.stage === 'stopped' ? 'Stopped' : 'Failed') : t.stage === 'answered' ? 'Answered' : t.stage === 'nothing' ? 'Nothing to do' : 'Done';
+
+      // What changed: its calls, one card per kind and thing, then its PRs.
+      var groups = [], byKey = {};
+      runs.forEach(function (r) {
+        (r.changes || []).forEach(function (c) {
+          var k = c.kind + '|' + (c.target || c.server);
+          var g = byKey[k];
+          if (!g) groups.push(g = byKey[k] = { kind: c.kind, target: c.target, server: c.server, details: [], n: 0 });
+          g.n++;
+          if (c.detail && g.details.indexOf(c.detail) < 0) g.details.push(c.detail);
+        });
+      });
+      // A pull request it opened or pushed to is a change; one the ticket or
+      // the ask only names (linked), or that was open already, is what the
+      // work is about: said apart, and never "your turn".
+      var about = [];
+      prs.forEach(function (p) { (p.state === 'linked' || p.state === 'existing' ? about : groups).push({ kind: 'pr', target: prLabel(p), url: p.url, state: p.state, details: [], n: 1 }); });
+      // A pull request it commented on is already a card: that card links to
+      // it, rather than the same PR twice.
+      var flat = function (s) { return String(s || '').replace(/\s+/g, '').toLowerCase(); };
+      about = about.filter(function (a) {
+        var same = groups.filter(function (g) { return g.kind !== 'pr' && flat(g.target) === flat(a.target); });
+        same.forEach(function (g) { g.url = g.url || a.url; });
+        return !same.length;
+      });
+      var lastDetail = function (g) { return g.details[g.details.length - 1] || ''; };
+      var phrase = function (g, prev) {
+        var it = g.target && prev && prev.target === g.target ? 'it' : (g.target || 'it');
+        var to = lastDetail(g);
+        if (g.kind === 'comment') return (g.n > 1 ? 'left ' + g.n + ' comments on ' : 'commented on ') + it;
+        if (g.kind === 'status') return to && !/^transition \d+$/.test(to) ? 'moved ' + it + ' to ' + to : it === 'it' ? 'changed its status' : 'changed the status of ' + it;
+        if (g.kind === 'fields') { var n = /^(\d+) field/.exec(to); return 'set ' + (n ? plural(Number(n[1]), 'field', 'fields') : 'fields') + ' on ' + it; }
+        if (g.kind === 'created') return 'created ' + (g.target || (to ? '“' + to + '”' : 'something new'));
+        if (g.kind === 'removed') return 'removed something' + (g.target ? ' on ' + it : '');
+        if (g.kind === 'message') return 'posted a message' + (g.target ? ' in ' + g.target : '');
+        if (g.kind === 'pullRequest') return (to || 'acted on') + ' ' + it;
+        if (g.kind === 'pr') return g.state === 'open' || g.state === 'draft' ? 'opened ' + g.target : g.state === 'updated' ? 'pushed to ' + g.target : null;
+        return 'made a change' + (g.target ? ' on ' + g.target : ' in ' + g.server);
+      };
+      var phrases = [];
+      groups.forEach(function (g, i) { var p = phrase(g, groups[i - 1]); if (p) phrases.push(p); });
+      var cap1 = function (s) { return s.charAt(0).toUpperCase() + s.slice(1); };
+      var headline = live ? 'Working on it' + (live.step && live.step.total ? ': step ' + live.step.index + ' of ' + live.step.total + (live.step.name ? ', ' + live.step.name.toLowerCase().replace(/[-_]+/g, ' ') : '') : '')
+        : deciding ? 'Working out what to do'
+        : waitingOk ? (waiting.length ? 'Wants to ' + waiting[0].title.charAt(0).toLowerCase() + waiting[0].title.slice(1) + (waiting.length > 1 ? ', and ' + (waiting.length - 1) + ' more' : '') : 'Waiting for an OK to start')
+        : ciBad ? 'The build is failing on ' + (pushedPr ? prLabel(pushedPr) : 'its branch')
+        : ciFixing ? 'Fixing the failing build on ' + (pushedPr ? prLabel(pushedPr) : 'its branch')
+        : !bad && phrases.length ? cap1(andJoin(phrases.slice(0, 3))) + (phrases.length > 3 ? ', and more' : '')
+        // Its own first line, without the tags and labels a report starts with.
+        : String(t.headline || '').replace(/<\/?[a-z][\w-]*>/gi, ' ').replace(/^\s*(Result|Summary|Answer)\s*:\s*/i, '').replace(/\s+/g, ' ').trim() || badge;
+      var started = runs.length ? Math.min.apply(null, runs.map(function (r) { return r.startedAt; })) : 0;
+      var ended = runs.length && !live ? Math.max.apply(null, runs.map(function (r) { return r.endedAt || r.startedAt; })) : 0;
+      var pushed = prs.some(function (p) { return p.state === 'open' || p.state === 'draft' || p.state === 'updated'; });
+      var sub = [
+        ended && ended > started ? (bad ? 'stopped after ' : 'took ') + secs(ended - started) : live ? 'started ' + when(started) : '',
+        t.costUSD ? money(t.costUSD) + (live ? ' so far' : '') : '',
+        runs.length ? plural(runs.length, 'run', 'runs') : '',
+        runs.length && !live && !pushed && runs.some(function (r) { return /nothing to push|no repo changed/i.test(r.landed || ''); }) ? 'no code changed' : '',
+      ].filter(Boolean).join(' · ');
+
+      var chipsLabel = waitingOk ? 'It wants to' : live ? 'Changed so far' : bad ? 'Changed before it stopped' : 'What changed';
+      var chips = waitingOk ? waiting.map(function (i) { return h('div', { class: 'oc-chip' }, h('span', { class: 'oc-kind', text: 'Proposed' }), h('b', { text: i.title }), i.detail ? h('span', { class: 'oc-cd', text: i.detail }) : null); })
+        : groups.map(function (g) {
+          var text = g.kind === 'comment' ? (g.n > 1 ? g.n + ' comments on ' : 'On ') + (g.target || g.server)
+            : g.kind === 'status' ? (g.target || g.server) + (lastDetail(g) && !/^transition \d+$/.test(lastDetail(g)) ? ' → ' + lastDetail(g) : '')
+            : g.target || g.server;
+          // A tracker that only gives a transition number names no status: say what happened.
+          var detail = g.kind === 'pr' ? PR_SAID[g.state] || '' : g.kind === 'comment' ? (lastDetail(g) ? '“' + lastDetail(g) + '”' : '')
+            : g.kind === 'status' ? (lastDetail(g) && !/^transition \d+$/.test(lastDetail(g)) ? '' : 'status changed')
+            : g.details.slice(0, 2).join(' · ') || (g.kind === 'fields' ? 'fields updated' : '');
+          var inner = [h('span', { class: 'oc-kind', text: KIND_WORD[g.kind] || 'Change' }), h('b', { class: 'oc-ct', text: text }), detail ? h('span', { class: 'oc-cd', text: detail }) : null];
+          return g.url ? h('a', { class: 'oc-chip', href: g.url, target: '_blank', rel: 'noopener', title: 'Open ' + text }, inner) : h('div', { class: 'oc-chip' }, inner);
+        });
+      // The build, beside what it changed: passed, being fixed, or handed back.
+      var failUrl = ci && (ci.failing || []).map(function (c) { return c.url; }).filter(Boolean)[0];
+      if (ci && !waitingOk && ci.state !== 'unknown') {
+        var ciIn = [h('span', { class: 'oc-kind', text: 'Build' }),
+          h('b', { class: 'oc-ct', text: ci.state === 'passed' ? (ci.checks ? (ci.checks === 1 ? 'Its check passed' : 'All ' + ci.checks + ' checks passed') : 'Checks passed') : (ci.failing && ci.failing[0] ? ci.failing[0].name : 'A check failed') }),
+          h('span', { class: 'oc-cd', text: (ci.state === 'passed' ? 'on ' : ci.state === 'failed' ? 'failing, handed to you · ' : 'failing, ' + w.name + ' is fixing it · ') + (pushedPr ? prLabel(pushedPr) : 'its branch') })];
+        chips.push(failUrl ? h('a', { class: 'oc-chip oc-ci ' + ci.state, href: failUrl, target: '_blank', rel: 'noopener', title: 'Open the build' }, ciIn) : h('div', { class: 'oc-chip oc-ci ' + ci.state }, ciIn));
+      }
+      var changesBlock = chips.length ? h('div', { class: 'oc-changes' }, h('span', { class: 'label', text: chipsLabel }), h('div', { class: 'oc-chips' }, chips))
+        // Only when every run was watched: one from before changes were kept says nothing either way.
+        : null;
+      // Said with "nothing needed" in one line when there's nothing else to say.
+      var nothingChanged = !chips.length && runs.length && !live && !waitingOk && runs.every(function (r) { return r.changes; });
+      var aboutBlock = about.length ? h('div', { class: 'oc-changes' }, h('span', { class: 'label', text: 'What it’s about' }),
+        h('div', { class: 'oc-chips' }, about.map(function (g) {
+          return h('a', { class: 'oc-chip oc-chip-about', href: g.url, target: '_blank', rel: 'noopener', title: 'Open ' + g.target },
+            h('span', { class: 'oc-kind', text: 'Pull request' }), h('b', { class: 'oc-ct', text: g.target }), h('span', { class: 'oc-cd', text: g.state === 'existing' ? 'already open, left alone' : 'mentioned, not changed by it' }));
+        }))) : null;
+
+      // Whose turn, and the buttons for it.
+      var focusReply = function () { if (input && input.isConnected) { input.focus(); input.scrollIntoView({ block: 'nearest' }); } };
+      var followUp = w.enabled ? h('button', { type: 'button', class: 'btn', text: 'Ask a follow-up', onclick: focusReply }) : null;
+      var said = h('div', { 'aria-live': 'polite' });
+      var turn = function (cls, label, title, text, buttons) {
+        return h('aside', { class: 'oc-turn ' + cls, 'aria-label': label }, h('span', { class: 'oc-turn-l', text: label }), h('b', { class: 'oc-turn-t', text: title }), text ? h('p', { text: text }) : null,
+          h('div', { class: 'oc-turn-b' }, buttons.filter(Boolean)), said);
+      };
+      var decide = function (approve, button, label) {
+        var ids = waiting.map(function (i) { return i.candidateId; });
+        var restore = busy(button, label);
+        api('POST', '/api/proposals/' + encodeURIComponent(t.proposal.batchId), { approve: approve ? ids : [], skip: approve ? [] : ids }).then(function (x) {
+          restore(); said.textContent = '';
+          if (x.ok === false) { said.appendChild(msg(x)); return; }
+          refreshCounts(); livePoke(w.id, 300);
+        }, function () { restore(); });
+      };
+      var reply = function (text, button) {
+        var restore = busy(button, 'Sending…');
+        api('POST', '/api/ask', { worker: w.id, message: text, replyTo: t.id }).then(function (x) {
+          restore(); said.textContent = '';
+          if (x.ok === false) { said.appendChild(msg(x)); return; }
+          livePoke(w.id, 150);
+        }, function () { restore(); });
+      };
+      // Only a pull request it opened waits on a review because of it. New
+      // commits on one already open (often a teammate's it keeps moving) are a
+      // change, said above; its author and reviewers see them on their PR.
+      var review = prs.filter(function (p) { return p.state === 'open' || p.state === 'draft'; });
+      var panel = waitingOk && waiting.length && data.youManage ? turn('need', 'Your turn', 'OK the work?', w.trust === 'probation' ? w.name + ' asks before any work. Nothing has changed yet.' : 'It asks first because this acts outside the server. Nothing has changed yet.', [
+          (function () { var b = h('button', { type: 'button', class: 'btn go', text: waiting.length === 1 ? 'OK, run it' : 'OK, run all ' + waiting.length }); b.onclick = function () { decide(true, b, 'Starting…'); }; return b; })(),
+          (function () { var b = h('button', { type: 'button', class: 'btn', text: 'Not now' }); b.onclick = function () { decide(false, b, 'Skipping…'); }; return b; })()])
+        : waitingOk ? turn('need', 'Waiting', 'Waiting for an OK', 'Its manager says yes or no. Nothing has changed yet.', [])
+        : asksYou && choices.length ? turn('need', 'Your turn', 'Pick what it does next', null, choices.map(function (c) { var b = h('button', { type: 'button', class: 'btn', text: c }); b.onclick = function () { reply(c, b); }; return b; }).concat([w.enabled ? h('button', { type: 'button', class: 'linkish', style: 'font-size:12.5px;align-self:flex-start', text: 'Or say something else', onclick: focusReply }) : null]))
+        : asksYou ? turn('need', 'Your turn', 'It asked you something', 'Its question is below. Answer in the box at the bottom.', [w.enabled ? h('button', { type: 'button', class: 'btn go', text: 'Reply', onclick: focusReply }) : null])
+        : ciBad ? turn('need', 'Your turn', 'Fix the failing build', ci.note, [
+          failUrl ? h('a', { class: 'btn go', href: failUrl, target: '_blank', rel: 'noopener', text: 'Open the failing build ↗' }) : null,
+          w.enabled ? h('button', { type: 'button', class: 'btn', text: 'Ask ' + w.name + ' to try again', onclick: function () {
+            if (input) input.value = 'CI is still failing on ' + (pushedPr ? prLabel(pushedPr) : 'the branch') + (ci.failing && ci.failing[0] ? ' (' + ci.failing[0].name + ')' : '') + '. Read the failing build and fix it on the same branch.';
+            focusReply();
+          } }) : null,
+          pushedPr ? h('a', { class: 'btn', href: pushedPr.url, target: '_blank', rel: 'noopener', text: 'Open ' + prLabel(pushedPr) + ' ↗' }) : null])
+        : ciFixing ? turn('now', 'Nothing needed yet', w.name + ' is fixing the build', ci.note, [])
+        : live ? turn('now', 'Nothing needed yet', w.name + ' is on it', 'You’ll hear here, and in Slack, if it gets stuck or needs a decision.', [
+          h('button', { type: 'button', class: 'btn', text: 'Watch it live', onclick: function () { watchRun(live.runId, w.name + ' · ' + live.title); } }),
+          data.youManage ? stopRunButton(live.runId, w) : null])
+        : deciding ? turn('now', 'Nothing needed yet', 'It’s working out what to do', 'It answers, or proposes work, in a moment.', [])
+        : bad ? turn('bad', 'Your turn', document.getElementById('wl-fail-' + t.id) || runs.some(function (r) { return r.state === 'failed' || r.state === 'interrupted'; }) ? 'Pick how to carry on' : 'It didn’t finish', t.error || runs.map(function (r) { return r.error; }).filter(Boolean)[0] || 'What went wrong is below.', [
+          h('button', { type: 'button', class: 'btn go', text: 'See the options', onclick: function () { var el = document.getElementById('wl-fail-' + t.id); if (el && el.firstChild) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); else focusReply(); } }), followUp])
+        : review.length ? turn('info', 'Your turn', review.length === 1 ? 'Review the pull request' : 'Review the ' + review.length + ' pull requests', null,
+          review.slice(0, 2).map(function (p) { return h('a', { class: 'btn go', href: p.url, target: '_blank', rel: 'noopener', text: 'Open ' + prLabel(p) + ' ↗' }); }).concat([followUp]))
+        : null;
+      // Done, and nothing asked of you: a line, not a panel with nothing to press.
+      var doneLine = panel ? (nothingChanged ? h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'Nothing changed outside the server.' }) : null)
+        : h('p', { class: 'oc-done' }, icon('check', 14), h('span', { text: (nothingChanged ? 'Nothing changed outside the server · ' : '') + 'Nothing needed from you.' }),
+        w.enabled ? h('button', { type: 'button', class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Ask a follow-up', onclick: focusReply }) : null);
+
+      // The path it took: the thread's own stops, then whose turn it is, said
+      // as what's asked of them. Amber only when the work is held up on you;
+      // a pull request waiting for review is calm blue.
+      var you = waitingOk ? { label: 'Your turn', sub: 'OK the work', state: 'need', detail: 'Nothing happens until you OK it, or say not now.' }
+        : asksYou ? { label: 'Your turn', sub: choices.length ? 'pick what’s next' : 'answer its question', state: 'need', detail: 'It’s waiting on your answer.' }
+        : ciBad ? { label: 'Your turn', sub: 'fix the build', state: 'need', detail: ci.note }
+        : bad ? { label: 'Your turn', sub: 'carry on or retry', state: 'need', detail: 'The work stopped. Carry on, retry or leave it.' }
+        : tone === 'now' ? { label: 'You', sub: 'only if needed', state: 'next', detail: 'Nothing needed yet. You’ll hear if it gets stuck.' }
+        : review.length ? { label: 'Your turn', sub: review.length === 1 ? 'review the PR' : 'review ' + review.length + ' PRs', state: 'info', detail: 'The work is done. The pull request it opened waits for a person to review it.' } : null;
+      // The server's step names, in the words the rest of the card uses.
+      var path = (t.progress && t.progress.length ? t.progress : [{ label: whoFor(t), state: 'done', at: t.at }]).map(function (p) {
+        return p.label === 'Answer' ? Object.assign({}, p, { label: 'Reported back', detail: p.detail || 'It wrote up what it found, below.' }) : p;
+      }).concat(you ? [you] : []);
+      var CLS = { done: 'ok', now: 'now', need: 'need', failed: 'bad', next: 'todo', skipped: 'todo', info: 'info' };
+      var firstOpen = -1;
+      path.forEach(function (p, i) { if (firstOpen < 0 && (p.state === 'now' || p.state === 'need' || p.state === 'failed')) firstOpen = i; });
+      // Open on the stop that's moving or held up; with nothing held up, on
+      // none: a finished path is a row of ticks, a click away from detail.
+      var at = outcomeStop[t.id] != null && outcomeStop[t.id] < path.length ? outcomeStop[t.id] : firstOpen;
+      var about = h('div', { class: 'oc-about', 'aria-live': 'polite' });
+      var stops = h('ol', { class: 'oc-path', 'aria-label': 'How it got there' });
+      var drawPath = function () {
+        stops.replaceChildren.apply(stops, path.map(function (p, i) {
+          var cls = CLS[p.state] || 'todo';
+          var next = path[i + 1];
+          return h('li', { class: 'oc-stop ' + cls + (next ? ' to-' + (CLS[next.state] || 'todo') : '') },
+            h('button', { type: 'button', 'aria-pressed': i === at ? 'true' : 'false', onclick: function () { at = i; outcomeStop[t.id] = i; drawPath(); } },
+              h('span', { class: 'oc-mark', 'aria-hidden': 'true' }, cls === 'ok' ? icon('check', 12) : cls === 'bad' ? icon('x', 12) : cls === 'need' ? '!' : ''),
+              h('span', { class: 'oc-st' }, h('b', { text: p.label }), p.sub ? h('span', { text: p.sub }) : p.at ? h('span', { text: clock(p.at) }) : null)));
+        }));
+        about.hidden = at < 0;
+        if (at < 0) return;
+        var p = path[at];
+        about.replaceChildren(h('b', { text: p.label }), h('span', { text: p.detail || (p.at ? when(p.at) : (CLS[p.state] === 'todo' ? 'Not yet.' : '')) }));
+      };
+      drawPath();
+
+      var iconFor = tone === 'ok' ? icon('check', 20) : tone === 'bad' ? icon('x', 20) : tone === 'need' ? h('b', { text: '!' }) : h('span', { class: 'wl-dot live' });
+      // Its stage is already the badge above the title: the icon says it here.
+      return [h('div', { class: 'oc oc-' + tone, role: 'region', 'aria-label': 'What happened' },
+          h('div', { class: 'oc-main' },
+            h('div', { class: 'oc-head' }, h('span', { class: 'oc-icon', role: 'img', 'aria-label': badge }, iconFor),
+              h('div', { class: 'oc-words' }, h('p', { class: 'oc-headline', text: headline }), sub ? h('span', { class: 'oc-sub', text: sub }) : null)),
+            changesBlock, aboutBlock, doneLine),
+          panel),
+        path.length > 1 ? h('section', { class: 'oc-way', 'aria-label': 'How it got there' }, h('span', { class: 'label', text: 'How it got there' }), stops, about, runCalls(t.runs)) : null];
+    };
     var outcomeMark = function (t) {
       var said = [t.headline].concat(t.runs.map(function (r) { return (r.summary || '') + ' ' + (r.landed || ''); })).join(' ');
       var wrote = t.runs.some(function (r) { return r.result && r.result.name !== 'pull-requests.md'; });
@@ -6448,7 +6948,7 @@ export const CONSOLE_JS = String.raw`
     };
     var matches = function (t) {
       var words = q.value.trim().toLowerCase();
-      return !words || (titleOf(t) + ' ' + t.headline + ' ' + (t.team ? t.team.name : '')).toLowerCase().indexOf(words) >= 0;
+      return !words || (ticketKey(t) + ' ' + titleOf(t) + ' ' + t.headline + ' ' + (t.by || '') + ' ' + (t.team ? t.team.name : '')).toLowerCase().indexOf(words) >= 0;
     };
     var row = function (t) {
       var on = t.id === sel;
@@ -6456,7 +6956,7 @@ export const CONSOLE_JS = String.raw`
       var sub = whoFor(t) + ' · ' + (t.stage === 'running' ? 'running' : t.stage === 'deciding' ? 'deciding' : t.headline);
       return h('button', { class: 'wl-row' + (on ? ' on' : '') + (t.stage === 'nothing' || t.stage === 'declined' ? ' quiet' : ''), role: 'option', 'aria-selected': on ? 'true' : 'false', onclick: function () { sel = t.id; state.wlSel[w.id] = sel; drawList(); drawDetail(true); } },
         outcomeMark(t),
-        h('span', { class: 'wl-title', text: titleOf(t) }),
+        (function () { var k = ticketKey(t); return h('span', { class: 'wl-title', title: titleOf(t) }, k ? keyPill(k) : null, keyless(titleOf(t), k)); })(),
         h('span', { class: 'wl-meta' + (t.stage === 'failed' || t.stage === 'stopped' ? ' bad' : t.stage === 'waiting' || t.stage === 'needsYou' ? ' need' : ''), text: meta }),
         h('span', { class: 'wl-sub', text: sub }),
         h('span', { class: 'wl-meta', text: dayLabel(t.lastAt || t.at) === 'Today' ? clock(t.lastAt || t.at) : new Date(t.lastAt || t.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }));
@@ -6475,11 +6975,22 @@ export const CONSOLE_JS = String.raw`
       });
       // Only the kinds it has; a filter left on one that has emptied goes back to All.
       if (filter !== 'all' && !counts[filter]) { filter = 'all'; state.wlFilter = 'all'; }
+      // What each filter keeps, on hover: "Follow-ups" says nothing on its own.
+      var CHIP_SAYS = {
+        all: 'Everything ' + w.name + ' has worked on, newest first.',
+        needs: 'Waiting on a person: an OK, an answer, or a failed build handed back.',
+        prs: 'Work that opened a pull request, pushed to one, or is about one.',
+        triggers: 'Set off by a trigger: something new in a tool, Slack, or another system.',
+        followUps: 'Work the server started after a push: fixing a failing build, answering review comments, updating the ticket.',
+        mine: 'What you asked ' + w.name + ' yourself.',
+        team: 'Pieces of a team’s task.',
+        scheduled: 'Its own rounds, on its schedule or from Run now.',
+      };
       var shownChips = [['all', 'All'], ['needs', 'Needs you'], ['prs', 'Pull requests'], ['triggers', 'Triggers'], ['followUps', 'Follow-ups'], ['mine', 'Asked by me'], ['team', 'Team work'], ['scheduled', 'Scheduled']].filter(function (c) { return c[0] === 'all' || counts[c[0]]; });
       // All on its own filters nothing.
       chips.hidden = shownChips.length < 2;
       chips.replaceChildren.apply(chips, shownChips.map(function (c) {
-        return h('button', { class: 'chip small' + (c[0] === 'needs' ? ' need' : ''), 'aria-pressed': filter === c[0] ? 'true' : 'false', text: c[1] + ' · ' + counts[c[0]], onclick: function () { filter = c[0]; state.wlFilter = c[0]; drawList(); } });
+        return h('button', { class: 'chip small' + (c[0] === 'needs' ? ' need' : ''), 'aria-pressed': filter === c[0] ? 'true' : 'false', title: CHIP_SAYS[c[0]] || null, text: c[1] + ' · ' + counts[c[0]], onclick: function () { filter = c[0]; state.wlFilter = c[0]; drawList(); } });
       }));
       var shown = data.threads.filter(function (t) { return inFilter(t) && matches(t); });
       var keepScroll = list.scrollTop;
@@ -6497,10 +7008,11 @@ export const CONSOLE_JS = String.raw`
         // Open while one of them is the one picked; picking the entry opens it.
         var open = same.some(function (x) { return x.id === sel; });
         var first = row(t);
-        first.children[2].prepend(h('span', { class: 'wl-runs', text: plural(same.length, 'run', 'runs') }));
+        // Separate pieces of work on the same ticket, not runs: said as how many more.
+        first.children[2].prepend(h('span', { class: 'wl-runs', text: '+' + (same.length - 1) + ' more', title: plural(same.length - 1, 'more piece', 'more pieces') + ' of work on ' + k + '. Open this one to see ' + (same.length === 2 ? 'it' : 'them') + ' under it.' }));
         first.classList.add('wl-grouped');
         nodes.push(first);
-        if (open) same.slice(1).forEach(function (x) { var r = row(x); r.classList.add('wl-child'); nodes.push(r); });
+        if (open) same.slice(1).forEach(function (x) { var r = row(x); r.classList.add('wl-child'); r.title = 'More work on ' + k + ', ' + (x.source === 'followUp' ? 'started by the server after a push' : 'started separately') + '.'; nodes.push(r); });
       });
       if (!nodes.length) nodes.push(h('p', { class: 'muted', style: 'padding:24px 16px;text-align:center', text: data.threads.length ? 'Nothing matches.' : 'Nothing yet. Ask ' + w.name + ' something, or press Run now.' }));
       if (data.nextBefore) nodes.push(more);
@@ -6518,7 +7030,7 @@ export const CONSOLE_JS = String.raw`
         return;
       }
       if (!sel) { sel = t.id; state.wlSel[w.id] = sel; }
-      var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, prsOf(t), t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating]; })]);
+      var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, prsOf(t), t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating, (r.changes || []).length]; })]);
       if (!force && key === detailKey) return;
       detailKey = key;
       var ctx = { waiting: data.waiting, youManage: data.youManage, merge: true };
@@ -6536,8 +7048,10 @@ export const CONSOLE_JS = String.raw`
       var plain = asked ? stripPreface(t.prompt) : '';
       var ask = asked && one && !tp && plain !== heading ? plain : '';
       var source = tp ? h('div', { class: 'row', style: 'gap:8px;font-size:12.5px' },
-        h('span', { class: 'faint', text: 'Set off by ' + tp.via + ' · “' + tp.trigger + '”' }),
-        tp.key ? (/^https?:\/\//.test(tp.link) ? h('a', { class: 'tag', href: tp.link, target: '_blank', rel: 'noopener', text: tp.key + ' ↗' }) : h('span', { class: 'tag', text: tp.key })) : null) : null;
+        // Its key sits in the title, linked.
+        h('span', { class: 'faint', text: 'Set off by ' + tp.via + ' · “' + tp.trigger + '”' })) : null;
+      var hk = ticketKey(t);
+      heading = keyless(heading, hk);
       var original = tp ? h('details', { class: 't-report wl-original' }, h('summary', null, 'Original request'), h('pre', { class: 'watch-raw', text: plain })) : null;
       cur = t; drawComposer();
       var hadFocus = document.activeElement === input, caret = [input.selectionStart, input.selectionEnd];
@@ -6546,19 +7060,18 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'wl-detail-head' },
           h('div', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' },
             h('span', { class: 'row', style: 'gap:8px;flex:1;min-width:0;font-size:12.5px' },
-              h('span', { class: 'badge ' + (STAGE_BADGE[t.stage] || [''])[0], text: (STAGE_BADGE[t.stage] || ['', t.stage])[1] }),
+              // Where it stands, and its pull requests, are the card's below.
               h('span', { class: 'faint' }, t.team ? ['For ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: t.team.name, onclick: function () { go('team', { teamId: t.team.id }); } })] : whoFor(t), ' · ' + when(t.at) + (t.costUSD ? ' · ' + money(t.costUSD) : ''))),
-            pills,
             liveRun && data.youManage ? stopRunButton(liveRun.runId, w) : null,
             liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null,
             // Its logs, for whoever may stop it: how each step ended and why.
-            one && one.runId && data.youManage ? h('button', { class: 'btn small quiet', text: 'Logs', onclick: function () { runLogs(one.runId, w.name + ' · ' + one.title); } }) : null),
-          h('h2', { class: 'wl-detail-title' }, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
+            one && one.runId && data.youManage ? h('button', { class: 'btn small quiet', text: 'Step logs', title: 'How each step of its run went, and why it ended as it did: for when something looks wrong.', onclick: function () { runLogs(one.runId, w.name + ' · ' + one.title); } }) : null),
+          h('h2', { class: 'wl-detail-title' }, hk ? keyPill(hk, tp && /^https?:\/\//.test(tp.link) ? tp.link : null) : null, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
           source,
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
           original),
         // The live activity sits inside the timeline's running step.
-        h('div', { class: 'wl-detail-body' }, failedPanel(t, w, data.youManage), threadCard(t, w, ctx),
+        h('div', { class: 'wl-detail-body' }, outcome(t), h('div', { id: 'wl-fail-' + t.id }, failedPanel(t, w, data.youManage)), threadCard(t, w, ctx),
           liveRun && !(t.progress && t.progress.length > 1) ? h('section', { class: 'stack', style: 'gap:8px;margin-top:14px' }, h('div', { class: 't-kind', text: 'What it’s doing' }), liveRunView(liveRun.runId, true)) : null),
         h('div', { class: 'wl-detail-foot' },
           t.team ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Open the team task', onclick: function () { go('team', { teamId: t.team.id }); } }) : null),
@@ -6594,10 +7107,51 @@ export const CONSOLE_JS = String.raw`
       }
       drawList(); drawDetail(false);
     }, { alive: function () { return list.isConnected; } }));
+    // How a worker goes about things, once, for whoever is new to them: the
+    // list only makes sense knowing asks become proposals become runs.
+    var intro = read('overgo-wl-intro') === '1' ? null : h('div', { class: 'wl-intro', role: 'note' },
+      h('b', { text: 'How ' + w.name + ' works' }),
+      h('ol', null,
+        h('li', { text: 'Someone asks, a trigger fires, or the server spots a change' }),
+        h('li', { text: w.name + ' works out what to do' + (w.trust === 'probation' ? ' and proposes it' : '') }),
+        h('li', { text: w.trust === 'probation' ? 'You OK it' : 'It starts, asking first before anything outside the server' }),
+        h('li', { text: 'It reports back here, and where it was asked' })),
+      h('button', { type: 'button', class: 'btn small', text: 'Got it', onclick: function () {
+        store('overgo-wl-intro', '1'); intro.remove();
+        // The panes size to the window from where they start: they moved up.
+        window.dispatchEvent(new Event('resize'));
+      } }));
+    // The list is as wide as you drag it, remembered; double-click its edge
+    // to put it back.
+    var listPane = h('div', { class: 'wl-left' }, h('div', { class: 'wl-tools' }, chips, q), list);
+    var panes = h('div', { class: 'wl' }, listPane, detail);
+    var keptW = Number(read('overgo-wl-w'));
+    if (keptW > 0) panes.style.setProperty('--wl-w', keptW + 'px');
+    var setW = function (px, keep) {
+      var most = Math.max(320, panes.getBoundingClientRect().width * 0.6);
+      px = Math.round(Math.max(260, Math.min(px, most)));
+      panes.style.setProperty('--wl-w', px + 'px');
+      if (keep) store('overgo-wl-w', String(px));
+    };
+    var grip = h('div', { class: 'wl-grip', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the list', tabindex: '0', title: 'Drag to resize · double-click to reset' });
+    grip.onpointerdown = function (e) {
+      e.preventDefault();
+      var x0 = e.clientX, w0 = listPane.getBoundingClientRect().width;
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add('on');
+      grip.onpointermove = function (m) { setW(w0 + m.clientX - x0, false); };
+      grip.onpointerup = function () { grip.onpointermove = null; grip.classList.remove('on'); setW(listPane.getBoundingClientRect().width, true); };
+    };
+    grip.onkeydown = function (e) {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      setW(listPane.getBoundingClientRect().width + (e.key === 'ArrowRight' ? 24 : -24), true);
+    };
+    grip.ondblclick = function () { store('overgo-wl-w', null); panes.style.removeProperty('--wl-w'); };
+    listPane.appendChild(grip);
     return h('section', { class: 'stack', style: 'gap:12px', 'aria-label': w.name + '’s work' },
-      fitToWindow(h('div', { class: 'wl' },
-        h('div', { class: 'wl-left' }, h('div', { class: 'wl-tools' }, chips, q), list),
-        detail)));
+      intro,
+      fitToWindow(panes));
   }
 
   /// This month in a line: runs, pull requests, failures, cost per PR. PRs
@@ -6699,6 +7253,45 @@ export const CONSOLE_JS = String.raw`
       h('p', { class: 'faint', style: 'font-size:13px', text: 'Channel ID: in Slack, channel details → bottom. Invite the overgo bot there too (/invite @overgo).' }));
   }
 
+  /// Pages beside a rail that lists them, each with a line on what it holds,
+  /// so the rail alone says what's there. pages: [{ id, title, intro, sum,
+  /// body }]. opts.key: the state field that remembers the open page.
+  /// opts.numbered: steps taken in order (Setup), with Step n of N, Back and
+  /// Next, and opts.foot said beside them.
+  function railPages(pages, opts) {
+    var ids = pages.map(function (p) { return p.id; });
+    var rail = h('nav', { class: 'wz-rail', 'aria-label': opts.label });
+    var main = h('div', { class: 'wz-main stack' });
+    var show = function (i, scroll) {
+      state[opts.key] = pages[i].id;
+      rail.replaceChildren.apply(rail, pages.map(function (p, n) {
+        return h('button', { type: 'button', class: 'wz-step', 'aria-current': n === i ? (opts.numbered ? 'step' : 'page') : 'false', onclick: function () { show(n, true); } },
+          opts.numbered ? h('span', { class: 'wz-n', text: String(n + 1) }) : h('span', { class: 'wz-n wz-dot', 'aria-hidden': 'true' }),
+          h('span', { class: 'wz-t' }, h('b', { text: p.title }), p.sum ? h('span', { class: 'wz-sum', text: p.sum }) : null));
+      }));
+      var p = pages[i];
+      var foot = opts.numbered ? h('div', { class: 'wz-foot' },
+        i > 0 ? h('button', { type: 'button', class: 'btn', text: 'Back', onclick: function () { show(i - 1, true); } }) : null,
+        h('span', { style: 'flex:1' }),
+        opts.foot ? h('span', { class: 'faint', style: 'font-size:12.5px', text: opts.foot }) : null,
+        i < pages.length - 1 ? h('button', { type: 'button', class: 'btn go', text: 'Next: ' + pages[i + 1].title, onclick: function () { show(i + 1, true); } }) : null) : null;
+      main.replaceChildren.apply(main, [
+        h('div', { class: 'stack', style: 'gap:4px' }, opts.numbered ? h('span', { class: 'label', text: 'Step ' + (i + 1) + ' of ' + pages.length }) : null,
+          h('h2', { class: 'wz-title', text: p.title }), p.intro ? h('p', { class: 'faint', style: 'margin:0', text: p.intro }) : null)]
+        .concat(p.body.filter(Boolean), foot ? [foot] : []));
+      // A page starts at its top, under the pinned head.
+      if (scroll) {
+        var head = document.querySelector('.wk-sticky');
+        var top = main.getBoundingClientRect().top + window.scrollY - (head ? head.getBoundingClientRect().bottom : 0) - 16;
+        if (window.scrollY > top) window.scrollTo({ top: Math.max(0, top) });
+      }
+    };
+    show(Math.max(0, ids.indexOf(state[opts.key])), false);
+    // How tall the pinned head is, so the rail sticks below it.
+    setTimeout(function () { var head = document.querySelector('.wk-sticky'); if (head) document.documentElement.style.setProperty('--wk-head', head.offsetHeight + 'px'); }, 0);
+    return h('div', { class: 'wz' }, rail, main);
+  }
+
   /// A coding worker: pointed at a repo or workspace, so its work lands as
   /// branches. Trusted, it goes ahead; on probation it still asks.
   function codingTag() {
@@ -6719,7 +7312,7 @@ export const CONSOLE_JS = String.raw`
       var rd = d.readiness;
       var RUNG = { probation: 'Asks before work', trusted: 'Trusted', autonomous: 'On its own' };
       var explain = rd.level === 'probation' ? 'It proposes each run’s work and asks before anything leaves the server. ' : rd.level === 'trusted' ? 'It starts its own runs, and still asks before anything that changes something outside the server: a ticket, a message, a push. ' : 'It starts its own work and acts outside the server without asking. ';
-      var trustCard = card('trust', 'How much it does alone', null, [
+      var trustCard = card('trust', 'Trust level', null, [
         h('ol', { class: 'rungs', 'aria-label': 'Trust levels' }, ['probation', 'trusted', 'autonomous'].map(function (lvl) {
           var at = ['probation', 'trusted', 'autonomous'];
           return h('li', { 'data-l': lvl, class: lvl === rd.level ? 'on' : at.indexOf(lvl) < at.indexOf(rd.level) ? 'past' : lvl === rd.readyFor ? 'next' : '', 'aria-current': lvl === rd.level ? 'step' : null },
@@ -6887,21 +7480,22 @@ export const CONSOLE_JS = String.raw`
             if (m.ok !== false) setTimeout(render, 800);
           });
         };
-        settings = h('div', { class: 'stack', style: 'gap:16px' },
-          group('Picture', 'Its face here and on what it posts in Slack. Pick one, or use a link to your own image.', [picturePicker(w, function (url) { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { avatarUrl: url } }); },
+        // Each piece on its own, for the Setup step it belongs to.
+        settings = {
+          picture: group('Picture', 'Its face here and on what it posts in Slack. Pick one, or use a link to your own image.', [picturePicker(w, function (url) { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { avatarUrl: url } }); },
             function () { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/picture/pick', {}); })]),
-          group('Name', 'What people call it, in Slack and here. Its old name keeps working.' + (w.formerNames && w.formerNames.length ? ' Also answers to ' + w.formerNames.join(', ') + '.' : ''), [nameBox], 'name'),
-          group('Tagline', 'The line under its name, here and wherever it is listed.', [tagline], 'tagline'),
-          group('When it runs', 'On its own schedule, or only when someone asks.', [sched.node], 'when'),
-          group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
+          name: group('Name', 'What people call it, in Slack and here. Its old name keeps working.' + (w.formerNames && w.formerNames.length ? ' Also answers to ' + w.formerNames.join(', ') + '.' : ''), [nameBox], 'name'),
+          tagline: group('Tagline', 'The line under its name, here and wherever it is listed.', [tagline], 'tagline'),
+          when: group('On a schedule', 'On its own schedule, or only when someone asks.', [sched.node], 'when'),
+          boss: group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
             h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
               h('label', { class: 'field' }, 'Reports to (another worker)', reports))], 'boss'),
-          group('Who can ask it', 'Who may ask it, whose asks it starts on straight away, and who approves the rest. Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
+          who: group('Who can ask it', 'Who may ask it, whose asks it starts on straight away, and who approves the rest. Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
             h('b', { style: 'font-size:13px;margin-top:10px', text: 'Starts work for' }), starts.node,
             h('b', { style: 'font-size:13px;margin-top:10px', text: 'Approves the rest' }), approvesPick.node,
             !state.me.admin ? h('p', { class: 'faint', style: 'font-size:12.5px', text: 'Only an admin changes whose asks start straight away and who approves.' }) : null,
             othersNote], 'who'),
-          group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
+          where: group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
             where ? h('div', { style: 'max-width:480px' }, where) : null,
             // A worker whose job only reads shouldn't hold a flow that pushes.
             where && flows.some(function (f) { return f.id.indexOf('org-pr-') === 0; }) ? h('div', { class: 'row', style: 'gap:10px;align-items:center' },
@@ -6918,16 +7512,17 @@ export const CONSOLE_JS = String.raw`
               h('span', { class: 'faint', style: 'font-size:12.5px', text: 'For a worker whose job only reads.' })) : null,
             where ? null
               : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })], 'where'),
-          group('Answering in Slack', 'How many people it answers at once, each in their own thread. Its desk here, and its shifts, still take one thing at a time; each answer counts against its budget.', [atOnce], 'slack'),
-          usual ? group('How it works', 'The flow its work goes through, unless you name another of its flows when you ask (“use solve-ticket”).', [h('div', { style: 'max-width:480px' }, usual)], 'flow') : null,
-          group('Budget', 'At its budget it stops until the month turns.', [h('label', { class: 'field', style: 'max-width:240px' }, 'Monthly budget (USD)', budget),
+          slack: group('Answering in Slack', 'How many people it answers at once, each in their own thread. Its desk here, and its shifts, still take one thing at a time; each answer counts against its budget.', [atOnce], 'slack'),
+          flow: usual ? group('How it works', 'The flow its work goes through, unless you name another of its flows when you ask (“use solve-ticket”).', [h('div', { style: 'max-width:480px' }, usual)], 'flow') : null,
+          budget: group('Budget', 'At its budget it stops until the month turns. Its schedule and its triggers both count.', [h('label', { class: 'field', style: 'max-width:240px' }, 'Monthly budget (USD)', budget),
             h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + ' spent so far this month.' })], 'budget'),
-          settingRow('Pause or let go', 'Pausing keeps everything; letting go retires it for good.', [
+          letGo: settingRow('Pause or let go', 'Pausing keeps everything; letting go retires it for good.', [
             h('div', { class: 'row' },
               h('button', { class: 'btn', text: w.enabled ? 'Pause ' + w.name : 'Resume ' + w.name, onclick: function () {
                 api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/paused', { paused: w.enabled }).then(function (x) { if (x.ok === false) { saved.textContent = ''; saved.appendChild(msg(x)); } else render(); });
               } }),
-              letGo), saved], { danger: true }));
+              letGo), saved], { danger: true }),
+        };
       }
 
       // The job, readable at full width; its manager can rewrite it.
@@ -6960,6 +7555,27 @@ export const CONSOLE_JS = String.raw`
           // A change to how it works, from the same ask: saved with the job.
           var pendingFlow = null, everyone = null;
           var flowBox = h('div', { class: 'stack', style: 'gap:10px' });
+          // What saving changes, all three ways it shapes the worker, said
+          // before the button: its job as a diff, how it works, what it knows.
+          var before = d.jobDescription || '';
+          var jobSum = h('span', { class: 'faint', style: 'font-size:12.5px' });
+          var jobDiff = h('div');
+          var drawJobDiff = function () {
+            var ops = lineDiff(before, ta.value);
+            var add = ops.filter(function (o) { return o.op === '+'; }).length, del = ops.filter(function (o) { return o.op === '-'; }).length;
+            jobSum.textContent = add || del ? plural(add, 'line', 'lines') + ' added, ' + del + ' removed' : 'not changed yet';
+            fill(jobDiff, diffLines(before, ta.value));
+          };
+          var typing = null;
+          ta.addEventListener('input', function () { clearTimeout(typing); typing = setTimeout(drawJobDiff, 400); });
+          var jobDetails = h('details', { class: 'jd-row' }, h('summary', null, h('b', { text: 'Its job' }), ' · ', jobSum), jobDiff);
+          var whatChanges = h('section', { class: 'jd-changes', 'aria-label': 'What saving changes' },
+            h('div', { class: 'tu-head', text: 'What saving changes' }),
+            jobDetails,
+            h('div', { class: 'jd-row' }, h('b', { text: 'How it works' }), flowBox),
+            h('div', { class: 'jd-row' }, h('b', { text: 'What it knows' }),
+              h('span', { class: 'faint', style: 'font-size:12.5px' }, 'Not changed by this. ',
+                h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go)', text: 'Change it on What it knows →', onclick: function () { state.jobPage = 'knows'; render(); } }))));
           save.onclick = function () {
             var restore = busy(save, 'Saving…');
             var base = '/api/workers/' + encodeURIComponent(w.id);
@@ -6974,7 +7590,8 @@ export const CONSOLE_JS = String.raw`
               if (x.ok === false) { restore(); out.appendChild(msg(x)); return; }
               // A flow change redraws how it works too, so that one re-renders;
               // the button stays on Saving… until the new page is up.
-              if (pendingFlow) render(); else showJob('Saved. It plans from this from its next run.');
+              if (pendingFlow) { state.jobFlash = 'Saved ' + (jobChanged ? 'its job and ' : '') + 'how it works (' + pendingFlow.name + '). It works this way from its next run.'; render(); }
+              else showJob(jobChanged ? 'Saved its job. It plans from this from its next run. How it works and what it knows didn’t change.' : 'Nothing changed.');
             });
           };
           // Say the change once: it's routed to its job, how it works, or
@@ -7001,7 +7618,7 @@ export const CONSOLE_JS = String.raw`
               };
               return h('div', { class: 'row', style: 'gap:8px;align-items:center' }, give, said);
             });
-            if (!pendingFlow && !x.flowProblem) return;
+            if (!pendingFlow && !x.flowProblem) { flowBox.appendChild(h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Not changed. Rewrite it changes this too when what you ask is about how it carries the work out.' })); return; }
             var share = null;
             if (pendingFlow && pendingFlow.sharedWith.length) {
               var mine = !pendingFlow.othersNotYours.length;
@@ -7010,7 +7627,7 @@ export const CONSOLE_JS = String.raw`
               share = h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13px' }, everyone,
                 h('span', { text: 'Change it for ' + pendingFlow.sharedWith.join(', ') + ' too' + (mine ? '' : ' (only their manager or an admin can)') + '. Left unticked, ' + w.name + ' gets its own copy.' }));
             }
-            append(flowBox, [h('div', { class: 'tu-head', text: 'How it works' + (pendingFlow ? ' changes too: ' + pendingFlow.name : '') }),
+            append(flowBox, [pendingFlow ? h('span', { class: 'faint', style: 'font-size:12.5px', text: plural(pendingFlow.changes.length, 'change', 'changes') + ' to ' + pendingFlow.name + ', the flow it runs:' }) : null,
               x.flowProblem ? h('div', { class: 'msg warn', text: x.flowProblem }) : null,
               needs,
               pendingFlow ? h('ul', { style: 'margin:0;padding-left:18px;font-size:13.5px' }, pendingFlow.changes.map(function (c) { return h('li', { text: c }); })) : null,
@@ -7031,6 +7648,8 @@ export const CONSOLE_JS = String.raw`
               ask.value = '';
               x.ask = said;
               drawFlow(x);
+              drawJobDiff();
+              jobDetails.open = true;
               append(note, [x.note ? h('p', { style: 'margin:0 0 4px', text: x.note }) : null,
                 (x.job ? 'Its job is rewritten below' : 'Its job stays as it is') + (x.flow ? ', and how it works changes too (underneath)' : '') + '. Read it over, then save. ',
                 h('button', { class: 'linkish', text: 'Undo', onclick: function () { ta.value = before; note.textContent = ''; drawFlow({}); } })]);
@@ -7038,25 +7657,48 @@ export const CONSOLE_JS = String.raw`
           };
           ask.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); rewrite.click(); } };
           box.textContent = '';
-          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Say what to do, what to skip, and where things live. A change to how it carries the work out is written into its flow too.' }),
-            h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, ask, rewrite), note, flowBox, ta,
+          drawFlow({}); drawJobDiff();
+          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Edit it below, or say what should change and press Rewrite it: that rewrites its job, and how it works when the change is about its steps. Nothing is saved until you look it over below and press Save.' }),
+            h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, ask, rewrite), note, ta, whatChanges,
             h('div', { class: 'foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { showJob(); } }), out)]);
           ask.focus();
         };
-        append(box, text);
-        return h('div', { class: 'split' }, h('div', { class: 'wide' },
-            h('section', { class: 'sec', 'aria-labelledby': 'jobh' }, h('div', { class: 'sec-head' }, h('h2', { id: 'jobh', class: 'label', text: 'The job it was hired for' }), edit), box),
-            howItWorksCard(w)),
-          h('aside', { class: 'narrow' }, knowsCard(w, d), w.youManage ? modelsCard(w) : null, card('learned', 'What it has learned', null, [
-            h('p', { class: 'faint', text: 'From your ratings and notes. It reads these alongside its job before every run.' }),
-            d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
-              : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing yet.' })])));
+        // Said once after a save that redrew the page (how it works changed too).
+        append(box, [state.jobFlash ? h('div', { class: 'msg ok', text: state.jobFlash }) : null, text]);
+        state.jobFlash = null;
+        // Suggestions from reviews of its runs, where the text they change is:
+        // the same ones as on Performance, which also shows the runs behind them.
+        var suggested = w.youManage ? tuningView(w, d, function (job) { d.jobDescription = job; showJob('Saved. It plans from this from its next run.'); }, { only: 'suggestions' }) : null;
+        var first = (d.jobDescription || '').split('\n').filter(function (l) { return l.trim(); })[0] || '';
+        // Everything that shapes how it works, a page at a time, as Setup is.
+        return railPages([
+          { id: 'instructions', title: 'Instructions', intro: 'What ' + w.name + ' plans every run from: what to do, what to skip, and where things live.',
+            sum: d.tuningCount ? plural(d.tuningCount, 'suggested change', 'suggested changes') + ' waiting' : first.slice(0, 90),
+            body: [suggested, h('section', { class: 'sec', 'aria-labelledby': 'jobh' }, h('div', { class: 'sec-head' }, h('h2', { id: 'jobh', class: 'label', text: 'The job it was hired for' }), edit), box)] },
+          { id: 'notes', title: 'Notes it keeps', intro: 'What people told it. Every turn it plans reads these, alongside its instructions.', sum: 'What people told it to do differently', body: [journalView(w, 'notes')] },
+          { id: 'how', title: 'How it works', intro: 'The steps its work goes through, and where it stops to ask.', sum: (d.flows || []).length ? (d.flows || []).map(function (f) { return f.name; }).join(', ') : 'Its steps', body: [howItWorksCard(w)] },
+          { id: 'knows', title: 'What it knows', intro: 'Notes and files it reads before it works.', sum: 'What it reads before it works', body: [knowsCard(w, d)] },
+          w.youManage ? { id: 'models', title: 'Models', intro: 'Which model each part of its work uses.', sum: 'Which model each step uses', body: [modelsCard(w)] } : null,
+          { id: 'learned', title: 'What it has learned', intro: 'From your ratings and notes. It reads these alongside its job before every run.', sum: d.learned.length ? plural(d.learned.length, 'lesson', 'lessons') : 'Nothing yet',
+            body: [h('section', { class: 'panel pad' }, d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
+              : h('p', { class: 'muted', style: 'font-size:13.5px;margin:0', text: 'Nothing yet. Answer “Was this useful?” under a result and it learns from that.' }))] },
+          // Anyone else sees how it's set up here, since Setup is its manager's.
+          w.youManage ? null : { id: 'glance', title: 'At a glance', intro: 'How it’s set up.', sum: 'Its schedule, tools and who it answers to', body: [aside] },
+        ].filter(Boolean), { key: 'jobPage', label: 'Job sections' });
       };
 
       var st = workerStatus(w);
       var missing = (w.tools || []).filter(function (t) { return !t.ok; }).map(function (t) { return t.name; });
-      // Access lives in Settings now; old links to it land on its section.
-      if (state.workerTab === 'access') { state.workerTab = 'settings'; state.settingsSection = 'access'; }
+      // A tab it no longer has (an old link, or a button that still names
+      // one) lands where that tab's content went. Settings sections map to
+      // their Setup step.
+      var moved = WORKER_TAB_MOVED[state.workerTab];
+      if (moved) {
+        if (moved[0] === 'activity') state.activityView = moved[1];
+        if (moved[0] === 'setup') state.setupStep = moved[1] || { general: 'basics', access: 'where', history: 'review' }[state.settingsSection] || state.setupStep;
+        state.settingsSection = null;
+        state.workerTab = moved[0];
+      }
       var tab = state.workerTab || 'talk';
       var change = w.youManage ? function () { state.workerTab = 'settings'; render(); } : null;
       var row = function (k, v, extra) {
@@ -7187,7 +7829,6 @@ export const CONSOLE_JS = String.raw`
         // Changed on General, beside who may ask it; said here so Access tells the whole story.
         var othersLine = (w.anyoneMayStart ? 'Starts work for anyone who can ask it.' : w.startAudience ? 'Starts work for the people picked, and its manager.' : 'Starts work only for its manager.') +
           ' ' + (w.anyoneMayStart ? '' : w.approvers ? 'Its manager and the people picked approve the rest.' : 'Its manager approves the rest.');
-        var toWho = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Change under Who can ask it →', onclick: function () { var el = document.getElementById('ws-general'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
         var toolsList = h('div');
         var drawTools = function () {
           fill(toolsList, (w.tools || []).length ? h('div', { class: 'stack access-tools', style: 'gap:0' }, w.tools.map(function (t) {
@@ -7195,12 +7836,13 @@ export const CONSOLE_JS = String.raw`
           })) : h('p', { class: 'faint', text: 'No tools yet.' }));
         };
         drawTools();
-        return h('div', { class: 'stack', style: 'gap:16px' },
-          section('Role', 'Its job in the role catalog. The role’s tools come with it, in every run, under its trust.', roleBox(w, function () { drawTools(); })),
-          section('Tools', 'What it can reach, and how much of each. Calls outside a tool’s scope are refused, even with your OK.',
+        // Each section on its own, for the Setup step it belongs to.
+        return {
+          role: section('Role', 'Its job in the role catalog. The role’s tools come with it, in every run, under its trust.', roleBox(w, function () { drawTools(); })),
+          tools: section('Tools', 'What it can reach, and how much of each. Calls outside a tool’s scope are refused, even with your OK.',
             [toolsList,
             w.youManage ? giveToolPanel(w) : null]),
-          section('Writes code', 'A worker that writes code gets its own copy of each repo for every run, and what it makes goes out as a pull request. One that doesn’t reads the repos where they are, kept up to date hourly, and can’t change them.',
+          writes: section('Writes code', 'A worker that writes code gets its own copy of each repo for every run, and what it makes goes out as a pull request. One that doesn’t reads the repos where they are, kept up to date hourly, and can’t change them.',
             (function () {
               var sel = h('select', { 'aria-label': 'Writes code', style: 'max-width:420px' },
                 h('option', { value: '', text: 'From its flows (now: ' + (w.coding && w.writesCode === undefined ? 'writes code' : w.writesCode === undefined ? 'only reads' : 'from its flows') + ')', selected: w.writesCode === undefined }),
@@ -7216,7 +7858,7 @@ export const CONSOLE_JS = String.raw`
               };
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
             })()),
-          section('Cloud role', 'The AWS role its shell and its tools use: one set up on Setup → Secrets as OVERGO_AWSWORKER_ROLE (the default) or OVERGO_AWSWORKER_ROLE_<NAME>. Never the role this server runs with. CloudTrail names the worker on every call.',
+          cloud: section('Cloud role', 'The AWS role its shell and its tools use: one set up on Setup → Secrets as OVERGO_AWSWORKER_ROLE (the default) or OVERGO_AWSWORKER_ROLE_<NAME>. Never the role this server runs with. CloudTrail names the worker on every call.',
             (function () {
               var roles = w.cloudRoles || [];
               var current = w.cloudRole || 'default';
@@ -7242,16 +7884,17 @@ export const CONSOLE_JS = String.raw`
               };
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, admin ? said : h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Only an admin can change it.' }));
             })()),
-          trustCard,
-          section('Handing work on', 'When something it finds is another worker’s job, it asks them to take it. The work runs on the colleague’s budget.', handOn),
-          section('Work from others', 'When someone other than its manager asks. Set on General, with who may ask it.',
-            h('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, h('span', { style: 'font-size:13px', text: othersLine }), toWho)),
-          section('Team pull requests', 'Whether it may add its fixes to pull requests other people opened, when its work names one. Only a branch with an open pull request; never forced, and a conflict it leaves unresolved is never pushed.',
+          trust: trustCard,
+          handOn: section('Handing work on', 'When something it finds is another worker’s job, it asks them to take it. The work runs on the colleague’s budget.', handOn),
+          // Its manager changes this beside who may ask it; anyone else reads it here.
+          others: section('Work from others', 'When someone other than its manager asks.',
+            h('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, h('span', { style: 'font-size:13px', text: othersLine }))),
+          teamPrs: section('Team pull requests', 'Whether it may add its fixes to pull requests other people opened, when its work names one. Only a branch with an open pull request; never forced, and a conflict it leaves unresolved is never pushed.',
             [prs ? h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, prs, h('span', { text: 'Push fixes to the team’s open pull requests' })), prsOut)
               : h('p', { class: 'faint', style: 'font-size:13px', text: w.continueOpenPrs ? 'It pushes fixes to the team’s open pull requests. An admin set this.' : 'It only adds to pull requests it opened. Only an admin can change that.' }),
             w.continueOpenPrs ? prPeople(w, 'prAuthors', 'Only pull requests by', 'Everyone’s', 'Whose pull requests it fixes broken builds and conflicts on, as Bitbucket or GitHub names them, comma separated. Empty: everyone’s.') : null,
             w.continueOpenPrs ? prPeople(w, 'prCommentAuthors', 'Also fix review comments on pull requests by', 'Nobody’s', 'Whose pull requests it also fixes valid, quick review comments on, AI reviewers’ included. Empty: none; it leaves review comments to people.') : null]),
-          section('Always allowed', 'Steps you said it may always run without asking, from “Always allow” on an approval. Take one off and it asks again.',
+          always: section('Always allowed', 'Steps you said it may always run without asking, from “Always allow” on an approval. Take one off and it asks again.',
             (w.alwaysAllow || []).length ? h('div', { class: 'stack', style: 'gap:6px' }, w.alwaysAllow.map(function (k) {
               return h('div', { class: 'row', style: 'gap:10px' }, h('code', { style: 'font-size:12.5px', text: k.replace('/', ' → ') }),
                 w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Take off', onclick: function (e) {
@@ -7259,39 +7902,87 @@ export const CONSOLE_JS = String.raw`
                   api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { alwaysAllow: w.alwaysAllow.filter(function (x) { return x !== k; }) } }).then(function (x) { restore(); if (x.ok === false) alert(x.error); else render(); });
                 } }) : null);
             })) : h('p', { class: 'faint', style: 'font-size:13px', text: 'Nothing yet. Every step that reaches outside asks, as its trust says.' })),
-          section('Checkpoints', 'Where its flows stop so someone looks before a step, like “Continue to push?”. Anything that acts outside the server still asks unless its trust says otherwise.',
+          checkpoints: section('Checkpoints', 'Where its flows stop so someone looks before a step, like “Continue to push?”. Anything that acts outside the server still asks unless its trust says otherwise.',
             skip ? h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, skip, h('span', { text: 'Run straight through its flows’ checkpoints' })), skipOut)
-              : h('p', { class: 'faint', style: 'font-size:13px', text: w.skipCheckpoints ? 'It runs straight through its flows’ checkpoints. An admin set this.' : 'It stops at its flows’ checkpoints. Only an admin can change that.' })));
+              : h('p', { class: 'faint', style: 'font-size:13px', text: w.skipCheckpoints ? 'It runs straight through its flows’ checkpoints. An admin set this.' : 'It stops at its flows’ checkpoints. Only an admin can change that.' })),
+        };
       };
 
-      // Everything about how it's set up, in one tab: its own setup, what it
-      // may use and do alone, and its history. A short list jumps to each.
-      var settingsView = function () {
-        var parts = [];
-        if (settings) parts.push(['general', 'General', settings]);
-        parts.push(['access', 'Access', accessView()]);
-        if (w.youManage) parts.push(['history', 'History', h('section', { class: 'panel pad stack', style: 'gap:10px' },
-          h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Every change to its job, tools, trust and settings. Restore one to go back to it.' }), workerHistory(w))]);
-        var railBtns = {};
-        var mark = function (id) { Object.keys(railBtns).forEach(function (k) { railBtns[k].setAttribute('aria-current', k === id ? 'page' : 'false'); }); };
-        var jump = function (id) { mark(id); var el = document.getElementById('ws-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
-        // The same rail as Setup's: the section you're in is marked, and
-        // follows you as you scroll.
-        var nav = h('nav', { class: 'nav setup-rail wk-rail', 'aria-label': 'Settings sections' },
-          parts.map(function (p, i) { return (railBtns[p[0]] = h('button', { 'aria-current': i === 0 ? 'page' : 'false', text: p[1], onclick: function () { jump(p[0]); } })); }));
-        if (window.IntersectionObserver) setTimeout(function () {
-          var seen = new window.IntersectionObserver(function (es) {
-            es.forEach(function (e) { if (e.isIntersecting && nav.isConnected) mark(e.target.id.replace(/^ws-/, '')); });
-          }, { rootMargin: '-30% 0px -60% 0px' });
-          parts.forEach(function (p) { var el = document.getElementById('ws-' + p[0]); if (el) seen.observe(el); });
-        }, 0);
-        var body = h('div', { class: 'stack', style: 'gap:32px;flex:1;min-width:0' }, parts.map(function (p) {
-          return h('div', { id: 'ws-' + p[0], class: 'stack', style: 'gap:12px;scroll-margin-top:calc(var(--chrome-h) + var(--wk-head, 190px) + 16px)' }, h('h2', { class: 'label', text: p[1] }), p[2]);
-        }));
-        // How tall the pinned head is, so the list and a jump land below it.
-        setTimeout(function () { var head = document.querySelector('.wk-sticky'); if (head) document.documentElement.style.setProperty('--wk-head', head.offsetHeight + 'px'); }, 0);
-        if (state.settingsSection) { var to = state.settingsSection; state.settingsSection = null; setTimeout(function () { jump(to); }, 60); }
-        return h('div', { style: 'display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap' }, parts.length > 1 ? nav : null, body);
+      // Whose asks start straight away and who approves the rest, in a line.
+      var startsLine = function () {
+        return (w.anyoneMayStart ? 'Starts work for anyone who can ask it.' : w.startAudience ? 'Starts work for the people picked, and its manager.' : 'Starts work only for its manager.') +
+          (w.anyoneMayStart ? '' : w.approvers ? ' Its manager and the people picked OK the rest.' : ' Its manager OKs the rest.');
+      };
+      // Its whole setup in plain words: what a new teammate would want to know.
+      var setupSummary = function () {
+        var line = function (k, v) { return h('div', { class: 'wz-fact' }, h('dt', { text: k }), h('dd', { text: v })); };
+        var n = (d.triggers || []).length;
+        return h('section', { class: 'panel pad stack', style: 'gap:12px' },
+          h('h2', { class: 'section-title', text: 'In plain words' }),
+          h('dl', { class: 'wz-facts' },
+            line('What it does', w.tagline || 'No tagline yet.'),
+            line('Where it works', placeShort(w.place) + ' · ' + plural((w.tools || []).length, 'tool', 'tools') + (w.writesCode === false ? ' · only reads code' : '')),
+            line('Answers to', (w.manager || 'Nobody yet') + (w.reportsTo ? ', and reports to ' + w.reportsTo.name : '')),
+            line('Who can ask it', askers(w) + ' can ask. ' + startsLine()),
+            (w.slackHomeChannels || []).length ? line('Listens in Slack', plural(w.slackHomeChannels.length, 'home channel', 'home channels') + ', where “@overgo …” reaches it without its name') : null,
+            line('When it works', (w.cadence ? w.schedule : 'When asked') + (n ? ', and when ' + plural(n, 'trigger fires', 'triggers fire') : '')),
+            line('Budget', money(w.budgetUSDPerMonth) + ' a month (' + money(w.spentThisMonthUSD) + ' spent)'),
+            line('On its own', RUNG[rd.level] + '. ' + explain.trim())));
+      };
+      // Everything about how it's set up, as six steps in the order you'd
+      // think it through: what it is, where it works, who it works with, when
+      // it works, how much it does alone, and a last look. Each step says in
+      // a line what it's set to, so the rail alone is the summary.
+      var setupView = function () {
+        var g = settings || {};
+        var a = accessView();
+        var trig = h('section', { class: 'panel pad stack', style: 'gap:12px' },
+          h('div', null, h('h2', { class: 'section-title', text: 'When something happens' }), h('p', { class: 'faint', style: 'margin-top:4px', text: 'Triggers set it off: something new in a tool, another system telling us, or something in Slack.' })),
+          triggersView(w, d, { inline: true }));
+        var changes = w.youManage ? settingRow('History', 'Every change to its job, tools, trust and settings. Restore one to go back to it.', [workerHistory(w)]) : null;
+        var nTrig = (d.triggers || []).length;
+        var steps = [
+          ['basics', 'Basics', 'Its name, its face, and the line people see under its name.', w.name + (w.tagline ? ' · ' + w.tagline : ''), [g.picture, g.name, g.tagline]],
+          ['where', 'Where it works', 'What it can read and change, how its work runs, and the tools it uses.', placeShort(w.place) + ' · ' + plural((w.tools || []).length, 'tool', 'tools'), [g.where, g.flow, a.writes, a.role, a.tools, a.cloud]],
+          ['who', 'Who it works with', 'Who it answers to, who may ask it, whose asks start straight away, and where it listens in Slack.', 'Answers to ' + (w.manager || 'nobody yet') + ' · ' + askers(w) + ' can ask' + ((w.slackHomeChannels || []).length ? ' · ' + plural(w.slackHomeChannels.length, 'Slack channel', 'Slack channels') : ''),
+            [g.boss, g.who, settings ? null : a.others, homeChannelsPanel(w), g.slack, a.handOn]],
+          ['when', 'When it works', 'Its schedule and the things that set it off, in one place, with a budget that caps both.', (w.cadence ? w.schedule : 'When asked') + ' · ' + plural(nTrig, 'trigger', 'triggers') + ' · ' + money(w.budgetUSDPerMonth) + ' a month', [g.when, trig, g.budget]],
+          ['alone', 'How much it does alone', 'Whether it waits for an OK, where it stops to let someone look, and what it may always do.', RUNG[rd.level] + (w.skipCheckpoints ? ' · runs through checkpoints' : ''), [a.trust, a.checkpoints, a.always, a.teamPrs]],
+          ['review', 'Review', 'Its whole setup in plain words, every change made to it, and pausing or letting it go.', 'Its setup in plain words' + (changes ? ' · history' : ''), [setupSummary(), changes, g.letGo]],
+        ].map(function (s) { return { id: s[0], title: s[1], intro: s[2], sum: s[3], body: s[4].filter(Boolean) }; }).filter(function (p) { return p.body.length; });
+        return railPages(steps, { key: 'setupStep', label: 'Setup steps', numbered: true, foot: w.youManage ? 'Changes save as you make them.' : 'Only its manager can change these.' });
+      };
+
+      // What it did: each piece of work as one entry (Story), or every run in
+      // a table (Table). Its last 30 days at a glance on top.
+      var activityView = function () {
+        var view = state.activityView === 'table' ? 'table' : 'story';
+        var body = h('div');
+        var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'View' });
+        var said = h('p', { class: 'faint', style: 'margin:0;flex:1;min-width:240px;font-size:13px' });
+        var draw = function () {
+          seg.textContent = '';
+          [['story', 'Story'], ['table', 'Table']].forEach(function (c) {
+            seg.appendChild(h('button', { type: 'button', text: c[1], 'aria-pressed': view === c[0] ? 'true' : 'false', onclick: function () { if (view === c[0]) return; view = c[0]; state.activityView = view; draw(); } }));
+          });
+          said.textContent = view === 'table' ? 'Every run, one row each: how long it took, what it cost, and what it changed.' : 'Each piece of work on one line, from who asked to how it ended. Open one to see its thread.';
+          fill(body, view === 'table' ? runsView(w) : journalView(w, 'history'));
+        };
+        draw();
+        var l = w.last30 || { jobs: 0, failed: 0 };
+        var pct = successPct(l);
+        var spend = w.budgetUSDPerMonth > 0 ? (w.spentThisMonthUSD / w.budgetUSDPerMonth) * 100 : 0;
+        var gone = (w.tools || []).filter(function (t) { return !t.ok; }).length;
+        var stat = function (v, k, cls, title) { return h('div', { class: 'wk-stat' + (cls ? ' ' + cls : ''), title: title || null }, h('b', { text: v }), h('span', { text: k })); };
+        return h('div', { class: 'stack', style: 'gap:14px' },
+          h('div', { class: 'wk-stats-row', role: 'group', 'aria-label': 'Its last 30 days' },
+            stat(String(l.jobs), 'jobs, 30 days', null, l.failed ? l.failed + ' failed' : null),
+            stat(pct == null ? '—' : pct + '%', 'succeeded', pct != null && pct < 90 ? 'need' : null),
+            stat(money(w.spentThisMonthUSD), w.budgetUSDPerMonth > 0 ? 'of ' + money(w.budgetUSDPerMonth) + ' this month' : 'this month', spend >= 100 ? 'bad' : spend > 85 ? 'need' : null),
+            stat(String((w.tools || []).length), (w.tools || []).length ? (gone ? 'tools · ' + gone + ' can’t be reached' : 'tools · all reachable') : 'tools', gone ? 'bad' : null)),
+          monthLine(w),
+          h('div', { class: 'row', style: 'gap:12px;align-items:center;flex-wrap:wrap' }, said, seg),
+          body);
       };
 
       var pause = function (e) {
@@ -7303,14 +7994,11 @@ export const CONSOLE_JS = String.raw`
       // A tab switch swaps only what's under the header: the worker isn't
       // fetched again and its header isn't redrawn. Each tab loads its own.
       var bodyFor = function (t) {
-        return t === 'reach' ? h('div', { class: 'stack', style: 'gap:16px' }, homeChannelsPanel(w), reachView('worker', w.name, VIS[w.visibility || 'private']))
-          : t === 'runs' ? runsView(w)
+        return t === 'activity' ? activityView()
           : t === 'files' ? filesView(w)
-          : t === 'journal' ? journalView(w)
-          : t === 'triggers' ? triggersView(w, d)
-          : t === 'job' ? h('div', { class: 'stack', style: 'gap:16px' }, jobView(), w.youManage ? null : aside)
-          : t === 'tuning' && w.youManage ? tuningView(w, d, function (job) { d.jobDescription = job; })
-          : t === 'settings' ? settingsView()
+          : t === 'job' ? jobView()
+          : t === 'performance' && w.youManage ? tuningView(w, d, function (job) { d.jobDescription = job; })
+          : t === 'setup' ? setupView()
           : conversation(w);
       };
       var tabBody = h('div', { class: 'wk-body' }, bodyFor(tab));
@@ -7322,12 +8010,6 @@ export const CONSOLE_JS = String.raw`
         var row = document.querySelector('.chrome .topnav');
         if (row) row.replaceWith(chromeRow());
       };
-      // Its 30 days at a glance, beside its name: jobs, how many went
-      // well, spend against budget, and whether every tool answers.
-      var l30 = w.last30 || { jobs: 0, failed: 0 };
-      var okPct = successPct(l30);
-      var spendPct = w.budgetUSDPerMonth > 0 ? (w.spentThisMonthUSD / w.budgetUSDPerMonth) * 100 : 0;
-      var stat = function (v, k, cls, title) { return h('div', { class: 'wk-stat' + (cls ? ' ' + cls : ''), title: title || null }, h('b', { text: v }), h('span', { text: k })); };
       var teamNames = (Array.isArray(teams) ? teams : []).filter(function (t) { return (t.members || []).some(function (m) { return m.name === w.name; }); }).map(function (t) { return t.shortName || t.name; });
       return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head wk-head wk-head2' },
           w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
@@ -7340,14 +8022,10 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'wk-meta' },
               w.manager ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Managed by' }), whoChip(w.manager), w.managerInherited ? h('span', { class: 'faint', text: '(through its boss)' }) : null) : h('span', { class: 'wk-meta-i faint', text: 'No manager yet' }),
               h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Runs' }), h('span', { text: w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'When asked' })),
-              h('button', { class: 'linkish wk-meta-i', style: 'color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } }),
-              w.ephemeral ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Ephemeral' }), h('span', { text: 'keeps no content past a conversation, because it holds ' + w.ephemeral.tools.join(', ') })) : null),
-            monthLine(w)),
-          h('div', { class: 'wk-stats-row', role: 'group', 'aria-label': 'At a glance' },
-            stat(String(l30.jobs), 'jobs, 30 days', null, l30.failed ? l30.failed + ' failed' : null),
-            stat(okPct == null ? '—' : okPct + '%', 'succeeded', okPct != null && okPct < 90 ? 'need' : null),
-            stat(money(w.spentThisMonthUSD), w.budgetUSDPerMonth > 0 ? 'of ' + money(w.budgetUSDPerMonth) + ' this month' : 'this month', spendPct >= 100 ? 'bad' : spendPct > 85 ? 'need' : null),
-            stat(String((w.tools || []).length), (w.tools || []).length ? (missing.length ? 'tools · ' + missing.length + ' can’t be reached' : 'tools · all reachable') : 'tools', missing.length ? 'bad' : null)),
+              h('button', { class: 'linkish wk-meta-i', style: 'color:var(--go)', title: 'Who can ask it, and where it listens', text: whoCanAsk(w), onclick: function () { state.workerTab = 'setup'; state.setupStep = 'who'; render(); } }),
+              h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + (w.budgetUSDPerMonth > 0 ? ' of ' + money(w.budgetUSDPerMonth) : '') + ' this month' })),
+              w.ephemeral ? h('span', { class: 'wk-meta-i' }, h('span', { class: 'faint', text: 'Ephemeral' }), h('span', { text: 'keeps no content past a conversation, because it holds ' + w.ephemeral.tools.join(', ') })) : null)),
+          // Its numbers are on Activity; the head stays one short block.
           h('div', { class: 'page-actions' },
             w.youManage ? h('button', { class: 'btn quiet', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
@@ -7396,7 +8074,7 @@ export const CONSOLE_JS = String.raw`
               state.me.admin && !stand ? h('button', { class: 'btn bad', text: 'Install ' + missing[0], onclick: function () { go('setup', { setupTab: 'tools' }); } }) : null,
               !w.youManage && !state.me.admin ? h('span', { class: 'faint', text: 'Ask an admin to install it.' }) : null));
         })() : null,
-        (workerChrome(w, { triggers: (d.triggers || []).length, tuning: d.tuningCount || 0 }, function () { return tab; }, pickTab), null)),
+        (workerChrome(w, { performance: d.tuningCount || 0 }, function () { return tab; }, pickTab), null)),
         tabBody];
     });
   }
@@ -8420,7 +9098,7 @@ export const CONSOLE_JS = String.raw`
       tried.textContent = '';
       if (!w) { tried.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
       var restore = busy(test, 'Asking the tool…');
-      api('POST', '/api/triggers/test', { watch: w }).then(function (x) {
+      api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake/test', { watch: w }).then(function (x) {
         restore();
         if (x.ok === false) { tried.appendChild(msg(x)); return; }
         append(tried, [h('p', { class: 'faint', style: 'margin:0', text: 'It sees ' + plural(x.items.length, 'item', 'items') + ' now. These are skipped; each new one after goes in.' }),
@@ -13926,6 +14604,47 @@ export const CONSOLE_JS = String.raw`
   function fileSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
   var TEXT_FILE = /\.(md|markdown|txt|csv|tsv|json|ya?ml|xml|svg|tsx?|jsx?|css|py|sql|sh|log)$/i;
 
+  /// Every tool a thread's runs called, and any that failed or was refused,
+  /// with what came back: so "the tool refused" can be checked without the
+  /// Logs reader. Loaded when opened; a thread with no runs shows nothing.
+  function runCalls(runs) {
+    var ids = (runs || []).map(function (r) { return r.runId; }).filter(Boolean);
+    if (!ids.length) return null;
+    var list = h('div', { class: 'stack', style: 'gap:4px;margin-top:6px' }, h('p', { class: 'faint', style: 'margin:0;font-size:12.5px', text: 'Loading…' }));
+    var box = h('details', { class: 'oc-calls' }, h('summary', { class: 'faint', style: 'cursor:pointer;font-size:12.5px;width:max-content', text: 'Tool calls' }), list);
+    var loaded = false;
+    box.addEventListener('toggle', function () {
+      if (!box.open || loaded) return;
+      loaded = true;
+      Promise.all(ids.map(function (id) { return api('GET', '/api/runs/' + encodeURIComponent(id) + '/steps'); })).then(function (all) {
+        var seen = {};
+        var rows = [];
+        all.forEach(function (x) {
+          if (!x || x.ok === false) return;
+          x.steps.forEach(function (s) {
+            s.activity.forEach(function (a) {
+              if (a.kind === 'said') return;
+              var key = a.at + '|' + a.kind + '|' + a.text;
+              if (seen[key]) return;
+              seen[key] = true;
+              rows.push(a);
+            });
+          });
+        });
+        rows.sort(function (a, b) { return a.at - b.at; });
+        var failed = rows.filter(function (a) { return a.kind === 'error' || a.kind === 'denied'; }).length;
+        box.firstChild.textContent = 'Tool calls · ' + rows.length + (failed ? ' · ' + failed + ' failed or refused' : '');
+        list.replaceChildren.apply(list, rows.length ? rows.map(function (a) {
+          var bad = a.kind === 'error' || a.kind === 'denied';
+          return h('div', { class: 'row', style: 'gap:8px;align-items:baseline;font-size:12.5px' + (bad ? ';color:var(--bad)' : '') },
+            h('span', { class: 'faint', style: 'flex:none', text: clock(a.at) }),
+            h('span', { class: a.kind === 'tool' ? 'mono' : '', style: 'min-width:0;overflow-wrap:anywhere', text: (a.kind === 'error' ? 'Error: ' : '') + a.text }));
+        }) : [h('p', { class: 'faint', style: 'margin:0;font-size:12.5px', text: 'No tool calls recorded for this work.' })]);
+      }, function () { loaded = false; });
+    });
+    return box;
+  }
+
   /// The files a run wrote besides its report: the HTML it rendered, the
   /// data behind it. Asked for once per run, since a thread redraws often,
   /// and drawn as buttons that open each in the side panel. A run that wrote
@@ -14295,15 +15014,45 @@ export const CONSOLE_JS = String.raw`
         if (!last || last.day !== day) days.push(last = { day: day, files: [] });
         last.files.push(f);
       });
+      // A run leaves several files in one folder (its plan, its diff, the
+      // pull request's text): one entry per piece of work, its files on it,
+      // rather than plan.md, diff and pull-request.md over and over.
+      var workOf = function (f) {
+        if (f.name.indexOf('/') <= 0) return '';
+        var label = f.name.slice(0, f.name.lastIndexOf('/')).split('/').pop()
+          .replace(/^\d{4}-\d{2}-\d{2}-\d{4}-/, '').replace(/^(errand|shift-\d+)-/, '').replace(/[-_]+/g, ' ').trim();
+        return label ? label.charAt(0).toUpperCase() + label.slice(1) : '';
+      };
+      var fileBtn = function (f, sub) {
+        var base = f.name.split('/').pop();
+        return h('button', { type: 'button', class: 'fl-file', title: base + ' · ' + fileSize(f.bytes), onclick: function () { openRunFile(f, w.name + ' · ' + sub); } }, icon('doc', 13), h('span', { text: base }));
+      };
       days.forEach(function (d) {
+        var works = [], byWork = {};
+        d.files.forEach(function (f) {
+          var k = f.name.slice(0, Math.max(0, f.name.lastIndexOf('/'))) || f.name;
+          if (!byWork[k]) works.push(byWork[k] = { label: workOf(f), files: [], at: f.at });
+          byWork[k].files.push(f);
+        });
         list.appendChild(h('section', { class: 'panel', 'aria-label': d.day },
           h('div', { class: 'wl-day', text: d.day }),
-          d.files.map(function (f) {
-            var folder = f.name.indexOf('/') > 0 ? f.name.slice(0, f.name.lastIndexOf('/')).replace(/^\d{4}-\d{2}-\d{2}-\d{4}-/, '').replace(/[-_]+/g, ' ') : '';
-            return h('button', { class: 'wl-row', style: 'grid-template-columns:auto 1fr auto;width:100%;text-align:left', onclick: function () { openRunFile(f, w.name + ' · ' + (folder || 'its files')); } },
-              icon('doc', 16),
-              h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, h('span', { class: 'wl-title', text: f.name.split('/').pop() }), folder ? h('span', { class: 'wl-sub', text: folder }) : null),
-              h('span', { class: 'wl-meta', text: clock(f.at) + ' · ' + fileSize(f.bytes) }));
+          works.map(function (g) {
+            if (!g.label) {
+              // A report on its own ("2026-11-23-1251-errand-pr-26596-….md"),
+              // named for the work it reports on.
+              var f = g.files[0], base = f.name.split('/').pop();
+              var named = /^\d{4}-\d{2}-\d{2}-\d{4}-/.test(base) ? base.replace(/\.md$/i, '').replace(/^\d{4}-\d{2}-\d{2}-\d{4}-/, '').replace(/^(errand|shift-\d+)-/, '').replace(/[-_]+/g, ' ').trim() : '';
+              named = named ? named.charAt(0).toUpperCase() + named.slice(1) : '';
+              return h('button', { class: 'wl-row', style: 'grid-template-columns:auto 1fr auto;width:100%;text-align:left', onclick: function () { openRunFile(f, w.name + ' · its files'); } },
+                icon('doc', 16),
+                h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, h('span', { class: 'wl-title', text: named || base }), named ? h('span', { class: 'wl-sub', text: 'Its report · ' + base }) : null),
+                h('span', { class: 'wl-meta', text: clock(f.at) + ' · ' + fileSize(f.bytes) }));
+            }
+            return h('div', { class: 'wl-row fl-work', style: 'grid-template-columns:auto 1fr auto' },
+              icon('library', 16),
+              h('span', { class: 'stack', style: 'gap:6px;min-width:0' }, h('span', { class: 'wl-title', text: g.label }),
+                h('span', { class: 'fl-files' }, g.files.map(function (f) { return fileBtn(f, g.label); }))),
+              h('span', { class: 'wl-meta', text: clock(g.at) + ' · ' + plural(g.files.length, 'file', 'files') }));
           })));
       });
     };
@@ -14475,8 +15224,11 @@ export const CONSOLE_JS = String.raw`
   /// names them.
   var JOURNAL_STEP = { proposed: 0, approved: 1, rejected: 1, launched: 2, completed: 3, failed: 3 };
   var JOURNAL_STEP_WORD = { proposed: 'Proposed', approved: 'you OK’d', rejected: 'turned down', launched: 'started', completed: 'finished', failed: 'failed' };
-  function journalView(w) {
-    var box = h('div', { class: 'stack', style: 'gap:16px' }, thinking('Loading its journal…'));
+  /// Its journal: the notes it keeps (on Job), and what it did (on Activity).
+  /// part is 'notes' or 'history' for just one; both when left out.
+  function journalView(w, part) {
+    var box = h('div', { class: 'stack', style: 'gap:16px' }, thinking(part === 'notes' ? 'Loading its notes…' : 'Loading what it did…'));
+    var built = false;
     var notesBox = h('div', { class: 'jl-notelist' });
     var notesCount = h('span', { class: 'sec-count' });
     var list = h('div', { class: 'jl-list' });
@@ -14624,7 +15376,8 @@ export const CONSOLE_JS = String.raw`
         if (x.ok === false) { box.replaceChildren(msg(x)); return; }
         entries = x.entries;
         drawNotes(x); drawEntries(); showMore(x);
-        if (box.querySelector('.journal-notes')) return;
+        if (built) return;
+        built = true;
         var input = h('textarea', { placeholder: 'e.g. Always link the pull request on the ticket', 'aria-label': 'Note for ' + w.name, maxlength: '600', style: 'min-height:64px' });
         var add = h('button', { class: 'btn', text: 'Add note' });
         add.onclick = function () {
@@ -14633,17 +15386,17 @@ export const CONSOLE_JS = String.raw`
           api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/journal', { note: input.value }).then(function (r) { restore(); out.replaceChildren(msg(r, 'Noted. Its next turn reads it.')); if (r.ok !== false) { input.value = ''; load(); } });
         };
         input.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) add.click(); };
-        box.replaceChildren(
+        box.replaceChildren.apply(box, [
           // Notes: a box of its own, each note a row, a box for another under them.
-          h('section', { class: 'sec journal-notes', 'aria-label': 'Notes it keeps' },
+          part === 'history' ? null : h('section', { class: 'sec journal-notes', 'aria-label': 'Notes it keeps' },
             h('div', { class: 'sec-head' }, h('span', { class: 'row', style: 'gap:8px' }, h('h2', { class: 'label', text: 'Notes it keeps' }), notesCount),
               h('span', { class: 'faint', style: 'font-size:12.5px;text-align:right', text: 'Every turn it plans reads these. Tell ' + w.name + ' how to work differently, here or in a conversation.' })),
             notesBox,
             x.canChange ? h('div', { class: 'jl-add' }, input, h('div', { class: 'row', style: 'gap:10px' }, add, h('span', { class: 'faint', style: 'font-size:12.5px', text: '⌘ Enter adds it' }))) : null,
             out),
-          h('section', { class: 'sec', 'aria-label': 'What it did' },
+          part === 'notes' ? null : h('section', { class: 'sec', 'aria-label': 'What it did' },
             h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'What it did' }), filterSeg()),
-            list, more));
+            list, more)].filter(Boolean));
       });
     };
     load();
@@ -14703,6 +15456,7 @@ export const CONSOLE_JS = String.raw`
     document.addEventListener('keydown', onKey);
     shut.focus();
     load(function (nodes) { body.textContent = ''; append(body, nodes); });
+    return close;
   }
 
   /// The first thing a report says, for the card: past headings and rules.
@@ -16120,8 +16874,23 @@ export const CONSOLE_JS = String.raw`
           t.kind === 'watch' && t.enabled ? h('button', { class: 'btn small', text: 'Check now', onclick: act('/api/triggers/' + encodeURIComponent(t.id) + '/check', {}, 'Checked.') }) : null,
           onEdit ? h('button', { class: 'btn small', text: 'Edit', onclick: onEdit }) : null,
           onCopy ? h('button', { class: 'btn small quiet', text: 'Duplicate', title: 'A new trigger filled in from this one', onclick: onCopy }) : null,
-          h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: act('/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }) }),
-          h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () { if (window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) act('/api/triggers/' + encodeURIComponent(t.id) + '/remove', {})(); } })) : null),
+          h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: function (e) {
+            // Only this row changes: redrawn where it is, nothing else fetched.
+            var restore = busy(e.target, t.enabled ? 'Pausing…' : 'Turning on…');
+            api('POST', '/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }).then(function (x) {
+              if (x.ok === false) { restore(); out.textContent = ''; out.appendChild(msg(x)); return; }
+              // Changed on the same object, so Edit and Duplicate see it too.
+              t.enabled = !t.enabled;
+              row.replaceWith(triggerRow(t, canEdit, onEdit, onCopy));
+            }, restore);
+          } }),
+          h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () {
+            if (!window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) return;
+            api('POST', '/api/triggers/' + encodeURIComponent(t.id) + '/remove', {}).then(function (x) {
+              if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+              row.remove();
+            });
+          } })) : null),
       h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + (t.notifyOnly ? 'says what changed' : (t.startsOnItsOwn ? 'starts on its own: ' : '') + t.instructions.split('\n')[0].slice(0, 140)) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
       tracked,
       h('span', { class: 'faint', text: [t.handledTotal + ' handled', t.handledToday + ' today of ' + t.maxPerDay, t.lastFiredAt ? 'last ' + ago(t.lastFiredAt) : 'not set off yet', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null, t.kind === 'watch' && t.seeded ? (t.lastFiredAt ? 'has seen ' + plural(t.seenCount || 0, 'item', 'items') : 'watching for new ones — ' + plural(t.seenCount || 0, 'item', 'items') + ' already there skipped') : null].filter(Boolean).join(' · ') }),
@@ -16135,7 +16904,8 @@ export const CONSOLE_JS = String.raw`
   /// it opens filled in and saves as a change to it; what sets it off stays.
   /// Given one to copy (from), it opens filled in from that and saves as a
   /// new trigger, everything still open to change: another channel, say.
-  function triggerBuilder(w, done, t, from) {
+  /// inPanel: drawn in a side panel, which carries its title.
+  function triggerBuilder(w, done, t, from, inPanel) {
     var src = t || from;
     var kind = src ? src.kind : 'watch';
     var name = h('input', { type: 'text', placeholder: 'e.g. New bugs in Support Backlog', 'aria-label': 'Name' });
@@ -16178,7 +16948,7 @@ export const CONSOLE_JS = String.raw`
       var a = parseArgs();
       if (a === null) { testOut.textContent = ''; testOut.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
       var restore = busy(test, 'Asking the tool…');
-      api('POST', '/api/triggers/test', { watch: { server: server.value, tool: call.value, args: a, everyMinutes: 15, itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() } }).then(function (x) {
+      api('POST', '/api/triggers/test', { workerId: w.id, watch: { server: server.value, tool: call.value, args: a, everyMinutes: 15, itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() } }).then(function (x) {
         restore(); testOut.textContent = '';
         if (x.ok === false) { testOut.appendChild(msg(x)); return; }
         append(testOut, seenNow(x.items));
@@ -16527,11 +17297,12 @@ export const CONSOLE_JS = String.raw`
     var act = function (path, body) { api('POST', path, body).then(function (x) { if (x.ok === false) { stopOut.textContent = ''; stopOut.appendChild(msg(x)); } else done(); }); };
     var form = h('div', { class: 'stack trig-form' },
       h('div', { class: 'spread trig-head', style: 'align-items:center' },
-        h('div', null, h('button', { type: 'button', class: 'linkish', text: '← All triggers', onclick: done }), h('h1', { text: t ? t.name : from ? 'Copy of ' + from.name : 'New trigger for ' + w.name })),
+        // In a side panel its title is the panel's, and Close goes back.
+        inPanel ? h('span') : h('div', null, h('button', { type: 'button', class: 'linkish', text: '← All triggers', onclick: done }), h('h1', { text: t ? t.name : from ? 'Copy of ' + from.name : 'New trigger for ' + w.name })),
         t ? h('div', { class: 'row', style: 'gap:12px' }, h('button', { type: 'button', class: 'btn small', text: 'Duplicate', title: 'A new trigger filled in from this one', onclick: function () {
           var holder = form.parentNode;
           if (!holder) return;
-          holder.replaceChild(triggerBuilder(w, done, undefined, t), form);
+          holder.replaceChild(triggerBuilder(w, done, undefined, t, inPanel), form);
           window.scrollTo({ top: 0 });
         } }), h('span', { class: 'faint', text: [t.enabled ? 'On' : 'Paused', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null, (t.handledTotal || 0) + ' handled'].filter(Boolean).join(' · ') })) : null),
       h('section', { class: 'trig-says', 'aria-label': 'In plain words' }, h('span', { class: 'label', text: 'In plain words' }), says),
@@ -16558,7 +17329,9 @@ export const CONSOLE_JS = String.raw`
     return form;
   }
 
-  function triggersView(w, d) {
+  /// opts.inline: shown inside a Setup step, so an empty list stays a list
+  /// with Add, rather than opening the builder over the step.
+  function triggersView(w, d, opts) {
     var list = d.triggers || [];
     var v = d.value;
     var root = h('div', { class: 'stack', style: 'gap:16px' });
@@ -16573,10 +17346,30 @@ export const CONSOLE_JS = String.raw`
       var head = document.querySelector('.wk-sticky');
       if (root.getBoundingClientRect().top < (head ? head.getBoundingClientRect().bottom : 0)) window.scrollTo({ top: 0 });
     };
-    var showBuilder = function () { focus(triggerBuilder(w, close)); };
-    // Asked for from elsewhere ("Add a trigger"), or nothing to show yet: open
-    // the builder rather than make them click again.
-    if (w.youManage && (state.triggerOpen || !list.length)) {
+    // In a Setup step the form opens in a side panel over the step, so the
+    // step stays put behind it and the saved trigger shows in its list.
+    var inline = !!(opts && opts.inline);
+    var inPanel = function (title, make) {
+      var shut = null;
+      shut = openReader(title, 'Saving adds it to When it works. Esc or Close leaves it unsaved.', function (put) {
+        put([make(function () { if (shut) shut(); state.triggerOpen = false; render(); })]);
+      }, null);
+    };
+    var showBuilder = inline
+      ? function () { inPanel('New trigger for ' + w.name, function (done) { return triggerBuilder(w, done, undefined, undefined, true); }); }
+      : function () { focus(triggerBuilder(w, close)); };
+    var editOne = function (t) {
+      if (inline) inPanel(t.name, function (done) { return triggerBuilder(w, done, t, undefined, true); });
+      else focus(triggerBuilder(w, render, t));
+    };
+    var copyOne = function (t) {
+      if (inline) inPanel('Copy of ' + t.name, function (done) { return triggerBuilder(w, done, undefined, t, true); });
+      else focus(triggerBuilder(w, render, undefined, t));
+    };
+    // Asked for from elsewhere ("Add a trigger"): open it rather than make
+    // them click again; on the Triggers page, also when there's none yet.
+    if (inline && w.youManage && state.triggerOpen) { state.triggerOpen = false; setTimeout(showBuilder, 0); }
+    if (!inline && w.youManage && (state.triggerOpen || !list.length)) {
       state.triggerOpen = false;
       root.appendChild(triggerBuilder(w, close));
       return root;
@@ -16590,7 +17383,7 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'spread', style: 'align-items:center' },
         h('p', { class: 'muted', text: list.length ? 'What sets ' + w.name + ' off on its own' + (/when asked/i.test(w.schedule) ? '.' : ', besides its schedule (' + w.schedule.toLowerCase() + ').') : w.name + ' only works on its schedule (' + w.schedule.toLowerCase() + ') and when asked. Give it a trigger so it acts the moment work shows up.' }),
         w.youManage ? h('button', { class: 'btn go', onclick: showBuilder }, icon('bolt', 15), 'Add a trigger') : null),
-      list.map(function (t) { return triggerRow(t, w.youManage, w.youManage ? function () { focus(triggerBuilder(w, render, t)); } : null, w.youManage ? function () { focus(triggerBuilder(w, render, undefined, t)); } : null); })]);
+      list.map(function (t) { return triggerRow(t, w.youManage, w.youManage ? function () { editOne(t); } : null, w.youManage ? function () { copyOne(t); } : null); })]);
     return root;
   }
 
@@ -16742,7 +17535,7 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'row', style: 'gap:10px;align-items:center' }, go_, out));
         go_.onclick = function () {
           // A flow change: its manager drafts and tries it on the worker's Tuning tab.
-          if (s.action && s.action.kind === 'tuneFlow') { state.tuneAsk = { workerId: s.action.workerId, text: s.action.ask }; go('worker', { workerId: s.action.workerId, workerTab: 'tuning' }); return; }
+          if (s.action && s.action.kind === 'tuneFlow') { state.tuneAsk = { workerId: s.action.workerId, text: s.action.ask, title: s.title, why: s.why }; go('worker', { workerId: s.action.workerId, workerTab: 'tuning' }); return; }
           var restore = busy(go_, 'Applying…');
           api('POST', '/api/admin/tuning/apply', { id: s.id }).then(function (x) {
             restore(); out.textContent = '';
@@ -19130,13 +19923,22 @@ export const CONSOLE_JS = String.raw`
   // Tuning: say what's wrong, see what its work shows, change how it works,
   // and try a change on a past job before keeping it. Its manager or an admin.
   var REVIEW_AREA_NAMES = { job: 'Its job', flow: 'How it works', notes: 'What it knows', app: 'An app’s guide', tool: 'A tool' };
-  function tuningView(w, d, onJob) {
+  /// opts.only 'suggestions': just the latest review's open suggestions, to
+  /// show on Job beside the text they change. Nothing when there are none.
+  function tuningView(w, d, onJob, opts) {
     var path = '/api/workers/' + encodeURIComponent(w.id);
     var post = function (p, body) { return api('POST', path + p, body); };
     var data = null, shown = null;
     var complaint = h('textarea', { 'aria-label': 'What’s wrong', placeholder: 'The more you say, the better: “the answers are too technical for a sales rep”, “it marks things BLOCKED when it could have tried”. Leave it blank and it looks for what would help most.', style: 'min-height:112px;font-size:13.5px' });
-    // Sent here from Setup → Tuning with what to change already said.
-    if (state.tuneAsk && state.tuneAsk.workerId === w.id) { complaint.value = state.tuneAsk.text; state.tuneAsk = null; }
+    // Sent here from Setup → Tuning with what to change already said. Kept
+    // until the review starts, so a redraw of the page doesn't lose it, and
+    // shown with why, so it's clear what the box was filled in with.
+    var asked = !(opts && opts.only) && state.tuneAsk && state.tuneAsk.workerId === w.id ? state.tuneAsk : null;
+    if (asked) complaint.value = asked.text;
+    var fromOrg = asked ? h('div', { class: 'msg warn', style: 'display:flex;flex-direction:column;gap:4px' },
+      h('b', { text: 'From Setup → Tuning: ' + (asked.title || 'a suggested change') }),
+      asked.why ? h('span', { style: 'font-size:13px', text: asked.why }) : null,
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'What to change is filled in below. Review its work to draft the change and try it on a past run.' })) : null;
     var go = h('button', { class: 'btn go', text: 'Review its work' });
     // Enter reviews, as the conversation box sends. Shift or Cmd+Enter is a new line.
     // Only with something written: a blank box's review is the button's to start.
@@ -19163,6 +19965,8 @@ export const CONSOLE_JS = String.raw`
     // Kept on the server, and the scoreboard then marks the change.
     var mark = function (s, st) {
       s.state = st;
+      // Changed here, so it stays in view with its Undo.
+      s.here = true;
       if (st === 'applied') s.impact = { kind: 'waiting', needs: 3 };
       if (!shown) return;
       post('/reviews/' + encodeURIComponent(shown.id) + '/suggestions/' + encodeURIComponent(s.id), { state: st }).then(function () {
@@ -19377,7 +20181,13 @@ export const CONSOLE_JS = String.raw`
             done(s, 'Changed. It plans from this from its next run.');
           });
         };
-        slot.replaceChildren(h('div', { class: 'tu-head', text: 'Its job with this worked in. Read it over, then save.' }), ta, h('div', { class: 'row', style: 'gap:8px' }, save));
+        var diff = h('div');
+        fill(diff, diffLines(d.jobDescription, ta.value));
+        ta.addEventListener('input', function () { fill(diff, diffLines(d.jobDescription, ta.value)); });
+        slot.replaceChildren(h('div', { class: 'tu-head', text: 'Its job with this worked in. Read it over, then save.' }),
+          h('details', { open: true, class: 'jd-row' }, h('summary', null, h('b', { text: 'What changes in its job' })), diff),
+          h('p', { class: 'faint', style: 'margin:0;font-size:12.5px', text: 'Only its job changes. How it works and what it knows stay as they are.' }),
+          ta, h('div', { class: 'row', style: 'gap:8px' }, save));
       });
     };
 
@@ -19534,6 +20344,8 @@ export const CONSOLE_JS = String.raw`
     };
 
     go.onclick = function () {
+      if (asked && state.tuneAsk === asked) state.tuneAsk = null;
+      if (fromOrg) fromOrg.remove();
       var restore = busy(go, 'Reading its work…');
       results.replaceChildren(thinking('Reading its recent runs and answers. This can take a minute or two.'));
       post('/review', { complaint: complaint.value }).then(function (x) {
@@ -19547,10 +20359,26 @@ export const CONSOLE_JS = String.raw`
         });
       });
     };
+    if (opts && opts.only === 'suggestions') {
+      var only = h('div', { class: 'stack', style: 'gap:12px' });
+      only.hidden = true;
+      drawSide = function () {};
+      drawResults = function () {
+        var open = shown ? shown.suggestions.filter(function (s) { return !s.state || (s.here && s.state === 'applied'); }) : [];
+        only.hidden = !open.length;
+        only.replaceChildren.apply(only, open.length ? [h('div', { class: 'stack', style: 'gap:2px' },
+          h('h3', { class: 'section-title', style: 'margin:0', text: plural(open.length, 'Suggested change', 'Suggested changes') }),
+          h('span', { class: 'faint', style: 'font-size:12.5px', text: 'From a review of its runs, ' + when(shown.at) + '. Nothing changes until you apply one. The runs behind each, and how it’s doing, are on Performance.' }))].concat(open.map(drawSuggestion)) : []);
+      };
+      load();
+      return only;
+    }
     load();
+    // Arrived with a suggestion: bring the box into view and ready to send.
+    if (asked) setTimeout(function () { if (complaint.isConnected) { complaint.scrollIntoView({ block: 'center' }); complaint.focus(); } }, 0);
     return h('div', { class: 'stack', style: 'gap:20px' }, card('tuboard', 'How it’s doing', null, [board]), h('div', { class: 'tu-grid' },
       h('div', { class: 'stack', style: 'gap:18px;min-width:0' },
-        card('tuwrong', 'What’s wrong?', null, [h('div', { class: 'stack', style: 'gap:10px' }, complaint, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' }, go, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Enter to review · Shift or ⌘+Enter for a new line' })))]),
+        card('tuwrong', 'What’s wrong?', null, [h('div', { class: 'stack', style: 'gap:10px' }, fromOrg, complaint, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' }, go, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Enter to review · Shift or ⌘+Enter for a new line' })))]),
         card('tusaid', 'What people said', null, [said], true),
         card('tupast', 'Reviews', null, [past], true),
         card('tuwatch', 'Watch for trouble', null, [h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;align-items:flex-start;font-size:13.5px' }, watch, h('span', { text: 'When its runs keep hitting trouble, overgo reviews them, tries a fix on a past job and tells you in Slack. At most once a week, and only runs from after it started watching count. It never applies a change by itself.' })), watchOff])),
@@ -19648,18 +20476,23 @@ export const CONSOLE_JS = String.raw`
         api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/learn', {}).then(function (x) { restore(); if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); });
       } }) : null;
     };
-    var body;
+    // Its buttons go in the card's header bar, where they're seen whatever
+    // the notes' length; under them nobody found them.
+    var body, actions = null;
+    var bar = function (xs) { return h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end' }, xs); };
     if (k && k.status === 'learning') {
       body = [h('p', { class: 'row', style: 'margin:0;gap:8px;font-size:13.5px' }, h('span', { class: 'livedot' }), 'Going through its tools, read only. A few minutes.')];
     } else if (!k || !k.body) {
-      body = [h('p', { class: 'faint', style: 'font-size:13.5px', text: (k && k.error ? 'Its last try didn’t finish: ' + k.error + ' ' : '') + 'It hasn’t been through its tools yet. Learning takes one read-only run: it finds the projects, statuses, people and places its job uses, and reads its notes before every run after.' }),
-        learn('Learn its tools')];
+      body = [h('p', { class: 'faint', style: 'font-size:13.5px;margin:0', text: (k && k.error ? 'Its last try didn’t finish: ' + k.error + ' ' : '') + 'It hasn’t been through its tools yet. Learning takes one read-only run: it finds the projects, statuses, people and places its job uses, and reads its notes before every run after.' })];
+      actions = w.youManage ? bar([learn('Learn its tools')]) : null;
     } else {
-      var text = h('div', { style: 'white-space:pre-wrap;font-size:13px;line-height:1.55;max-height:320px;overflow:auto', text: k.body });
+      // Its notes are Markdown: drawn as such (md never inserts markup), at
+      // full height, since they are this page's whole content.
+      var text = h('div', { class: 'knows-body', style: 'font-size:13.5px;line-height:1.6;max-width:110ch;overflow-wrap:anywhere' }, md(k.body));
       var refresh = w.youManage ? h('select', { 'aria-label': 'Refresh', style: 'width:auto;font-size:12.5px' },
         h('option', { value: 'weekly', text: 'Refresh weekly', selected: k.refresh !== 'off' }), h('option', { value: 'off', text: 'Don’t refresh', selected: k.refresh === 'off' })) : null;
       if (refresh) refresh.onchange = function () { api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/knowledge', { refresh: refresh.value }); };
-      var edit = w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Correct it', onclick: function () {
+      var edit = w.youManage ? h('button', { class: 'btn small', text: 'Edit', onclick: function () {
         var ta = h('textarea', { style: 'min-height:260px;font-size:13px' }); ta.value = k.body;
         var save = h('button', { class: 'btn small go', text: 'Save' });
         save.onclick = function () {
@@ -19669,10 +20502,10 @@ export const CONSOLE_JS = String.raw`
         text.replaceWith(h('div', { class: 'stack', style: 'gap:6px' }, ta, h('div', { class: 'row', style: 'gap:8px' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { render(); } }))));
         ta.focus();
       } }) : null;
-      body = [h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: 'From its tools ' + when(k.updatedAt) + (k.editedBy ? ', corrected by ' + k.editedBy : '') + '. It reads this before every run.' + (k.error ? ' Its last refresh didn’t finish: ' + k.error : '') }),
-        text, h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, learn('Learn again'), edit, refresh)];
+      body = [h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: 'From its tools ' + when(k.updatedAt) + (k.editedBy ? ', edited by ' + k.editedBy : '') + '. It reads this before every run.' + (k.error ? ' Its last refresh didn’t finish: ' + k.error : '') }), text];
+      actions = w.youManage ? bar([edit, learn('Learn again'), refresh]) : null;
     }
-    return card('knows', 'What it knows', null, body.concat([out]));
+    return card('knows', 'What it knows', actions, h('div', { class: 'stack', style: 'gap:12px;align-items:stretch' }, body.concat([out])));
   }
 
   // A worker's setup over time, newest first, with Restore.

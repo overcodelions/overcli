@@ -63,7 +63,7 @@ function artifact(name: string, body: string) {
   return { name, body, producedAt: NOW };
 }
 
-function setup(opts: { runs?: FlowRun[]; prWatch?: PrWatchState } = {}) {
+function setup(opts: { runs?: FlowRun[]; prWatch?: PrWatchState; errand?: OrgServiceDeps['workers']['runErrand'] } = {}) {
   const roster = [
     worker('mario', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org', caps: { maxItemsPerShift: 2, runIn: 'worktree', allowExternalActions: false, continueOpenPrs: true, prAuthors: ['Pat'] } as Worker['caps'] }),
     worker('cal', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'private' }),
@@ -81,7 +81,7 @@ function setup(opts: { runs?: FlowRun[]; prWatch?: PrWatchState } = {}) {
       },
       setEnabled: () => ({ ok: true }),
       remove: () => ({ ok: true }),
-      runErrand: async () => ({ ok: false, error: 'no' }),
+      runErrand: opts.errand ?? (async () => ({ ok: false, error: 'no' })),
       journalFor: () => [],
       spentThisMonth: () => new Map(),
       workerNames: () => roster.map((w) => w.name),
@@ -304,5 +304,49 @@ describe('tuning a worker from a chat', () => {
     const call = await connect(org, pat);
     expect(await call('add_worker_note', { worker: 'Mario', note: 'The acme checkout lives in the payments repo.' })).toEqual({ added: 'The acme checkout lives in the payments repo.', worker: 'Mario' });
     expect(await call('add_worker_note', { worker: 'Cal', note: 'mine now' })).toHaveProperty('error');
+  });
+});
+
+describe('following up on a question', () => {
+  function asking() {
+    const prompts: string[] = [];
+    const { org } = setup({
+      errand: async (_id, text) => {
+        prompts.push(text);
+        return { ok: true, result: { orchestrationId: 'o', count: 0, queued: 0, launchedNothing: true, reply: `Answer ${prompts.length}.` } as never };
+      },
+    });
+    return { org, prompts };
+  }
+
+  it('lists what you asked, newest first, so a lost askId can be found instead of asking again', async () => {
+    const { org } = asking();
+    const call = await connect(org, pat);
+    const first = await call('ask_worker', { worker: 'Mario', message: 'Which acme orders failed today?' });
+    expect(first).toMatchObject({ reply: 'Answer 1.' });
+    const res = await call('my_asks', { worker: 'Mario' });
+    expect(res.asks).toEqual([expect.objectContaining({ askId: first.askId, worker: 'Mario', asked: 'Which acme orders failed today?', status: 'answered', reply: 'Answer 1.' })]);
+    expect(await (await connect(org, ada))('my_asks', {})).toEqual({ asks: [] });
+  });
+
+  it('carries on from an earlier answer, to the same worker, quoting it', async () => {
+    const { org, prompts } = asking();
+    const call = await connect(org, pat);
+    const first = await call('ask_worker', { worker: 'Mario', message: 'Which acme orders failed today?' });
+    const next = await call('ask_worker', { followUpOn: first.askId, message: 'Retry the second one.' });
+    expect(next).toMatchObject({ reply: 'Answer 2.' });
+    expect(prompts[1]).toContain('I asked: "Which acme orders failed today?"');
+    expect(prompts[1]).toContain('You answered: "Answer 1."');
+    expect(prompts[1]).toContain('Retry the second one.');
+    const listed = await call('my_asks', {});
+    expect(listed.asks[0]).toMatchObject({ askId: next.askId, followUpOn: first.askId });
+  });
+
+  it('will not follow up on a question you cannot see, or send it to another worker', async () => {
+    const { org } = asking();
+    const call = await connect(org, pat);
+    const first = await call('ask_worker', { worker: 'Mario', message: 'Which acme orders failed today?' });
+    expect(await (await connect(org, { slackUserId: SAM, name: 'Sam', admin: false }))('ask_worker', { followUpOn: first.askId, message: 'and?' })).toMatchObject({ error: expect.stringContaining('No question') });
+    expect(await call('ask_worker', { message: 'and?' })).toMatchObject({ error: expect.stringContaining('which worker') });
   });
 });

@@ -222,6 +222,7 @@ function makeHarness(opts: {
 
   return {
     engine,
+    crew,
     notified,
     emitted,
     files,
@@ -519,6 +520,71 @@ describe('TeamEngine', () => {
     await flush();
     expect(task(h).stages[0].status).toBe('done');
     expect(h.commissions[2].workerId).toBe('rook');
+  });
+
+  describe('the bench, for a task already under way', () => {
+    const noCheckpoints = () => team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } });
+    const failAde = async () => {
+      const h = makeHarness({ seedTeams: [noCheckpoints()], turns: [PLAN] });
+      h.engine.start();
+      h.engine.brief('team-1', 'x');
+      await flush();
+      h.engine.approve(task(h).id);
+      await flush();
+      h.settle(h.commissions[0].id, 'done');
+      h.settle(h.commissions[1].id, 'failed');
+      await flush();
+      return h;
+    };
+
+    it('won’t approve a plan while a member is paused', async () => {
+      const h = makeHarness({ seedTeams: [team()], turns: ['<team_questions>[]</team_questions>', PLAN] });
+      h.engine.start();
+      h.engine.brief('team-1', 'x');
+      await flush();
+      if (task(h).status === 'questions') h.engine.answer(task(h).id, []);
+      await flush();
+      expect(task(h).status).toBe('proposed');
+      h.crew[2].enabled = false;
+      expect(h.engine.approve(task(h).id)).toMatchObject({ ok: false, error: expect.stringContaining('Rook is paused') });
+      expect(h.commissions).toEqual([]);
+      h.crew[2].enabled = true;
+      expect(h.engine.approve(task(h).id).ok).toBe(true);
+    });
+
+    it('carries on past a failed piece whose member is paused, but not when a later piece is theirs', async () => {
+      const h = await failAde();
+      h.crew[1].enabled = false;
+      expect(h.engine.continueTask(task(h).id).ok).toBe(true);
+      await flush();
+      expect(h.commissions[2].workerId).toBe('rook');
+
+      const h2 = await failAde();
+      h2.crew[2].enabled = false;
+      expect(h2.engine.continueTask(task(h2).id)).toMatchObject({ ok: false, error: expect.stringContaining('Rook is paused') });
+      expect(h2.commissions).toHaveLength(2);
+    });
+
+    it('won’t retry a stage when a member whose piece runs again is paused', async () => {
+      const h = await failAde();
+      h.crew[1].enabled = false;
+      expect(h.engine.retry(task(h).id)).toMatchObject({ ok: false, error: expect.stringContaining('Ade is paused') });
+      expect(h.commissions).toHaveLength(2);
+      h.crew[1].enabled = true;
+      expect(h.engine.retry(task(h).id).ok).toBe(true);
+    });
+
+    it('retries one piece only when its own member is back', async () => {
+      const h = await failAde();
+      h.crew[0].enabled = false;
+      h.crew[1].enabled = false;
+      expect(h.engine.retryPiece(task(h).id, 'ade')).toMatchObject({ ok: false, error: expect.stringContaining('Ade is paused') });
+      h.crew[1].enabled = true;
+      // Maya, paused, has nothing left to run here.
+      expect(h.engine.retryPiece(task(h).id, 'ade').ok).toBe(true);
+      await flush();
+      expect(h.commissions[2].workerId).toBe('ade');
+    });
   });
 
   describe('skipping', () => {
@@ -2005,6 +2071,22 @@ describe('what a team knows', () => {
     await flush();
     expect(task(h).status).toBe('done');
     expect(h.engine.list().teams[0].knowledge).toMatchObject({ status: 'ready', body: '# Roadmap\nQ1: acme exports (ACME-12, owner Maya).' });
+  });
+
+  it('stays on the bench while a member is paused: nothing starts, and it says why', async () => {
+    const h = makeHarness({ seedTeams: [team()], turns: [KNOWN] });
+    h.engine.start();
+    h.crew[1].enabled = false;
+    const learn = h.engine.learn('team-1');
+    expect(learn).toMatchObject({ ok: false });
+    expect(!learn.ok && learn.error).toBe('Discovery is on the bench: Ade is paused, so this can\'t start. Resume Ade or take Ade off the team, then try again.');
+    expect(h.engine.brief('team-1', 'Write the proposal')).toMatchObject({ ok: false });
+    await flush();
+    expect(h.commissions).toEqual([]);
+    expect(h.engine.list().tasks).toEqual([]);
+    // Back from the bench: it learns.
+    h.crew[1].enabled = true;
+    expect(h.engine.learn('team-1').ok).toBe(true);
   });
 
   it('saves a team of one, and plans and runs its work', async () => {

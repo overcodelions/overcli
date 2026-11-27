@@ -59,7 +59,7 @@ import type { AccessService, PersonRole } from '../main/org/accessService';
 import { withoutEmails } from '../main/org/peopleDirectory';
 import type { SlackPerson } from '../main/slack/slackApi';
 import { slackManifestForConsole } from '../main/slack/slackManifest';
-import type { OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
+import type { CarryOn, OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
 import { AUDIENCE_ROLES, isAdmin, parseAudience, type OrgCaller } from '../shared/org/policy';
 import { CONSOLE_CSS, CONSOLE_HTML, CONSOLE_ICON, CONSOLE_JS } from './consoleAssets';
 import { registerOrgTools } from './orgMcpTools';
@@ -627,6 +627,13 @@ function placeNames(org: OrgService, c: OrgCaller): string[] {
 function processRoutes(processes: ProcessService, triggers: TriggerService | undefined, org: OrgService, draftProcess?: ControlPlaneDeps['draftProcess'], slackPeople?: ControlPlaneDeps['slackPeople']): Array<{ method: string; path: RegExp; handle: Handler }> {
   // One picture at a time per person: each is a minute of the model's time.
   const drafting = new Set<string>();
+  // The workers a process's stages hand work to, its teams' members too:
+  // what its intake watch may call is held to their tools.
+  const processWorkers = (id: string): string[] => [
+    ...new Set(
+      (processes.find(id)?.stages ?? []).flatMap((st) => (st.kind === 'worker' && st.workerId ? [st.workerId] : st.kind === 'team' && st.teamId ? org.teamWorkerIds(st.teamId) : [])),
+    ),
+  ];
   const intakeOf = (id: string) =>
     (triggers?.list() ?? [])
       .filter((t) => t.hand?.kind === 'process' && t.hand.processId === id)
@@ -921,6 +928,17 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
     },
     {
       method: 'POST',
+      path: /^\/api\/processes\/([^/]+)\/intake\/test$/,
+      handle: (c, b, [rawId]) => {
+        const id = decodeURIComponent(rawId);
+        if (!processes.canSteer(c, id)) return { ok: false, error: 'Only the process owner or an admin can change how work comes in.' };
+        const watch = triggerInput({ kind: 'watch', watch: b.watch }).watch;
+        if (!watch) return { ok: false, error: 'Pick the tool to watch and what to ask it.' };
+        return org.testWatch(c, watch, { workerIds: processWorkers(id) });
+      },
+    },
+    {
+      method: 'POST',
       path: /^\/api\/processes\/([^/]+)\/intake$/,
       handle: (c, b, [rawId]) => {
         const id = decodeURIComponent(rawId);
@@ -930,6 +948,8 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
         const channel = typeof b.channel === 'string' ? b.channel.trim() : '';
         const base = { workerId: '', hand: { kind: 'process' as const, processId: id }, instructions: '', deliver: [], maxPerDay: 50, enabled: true, createdBy: c.name };
         const watch = b.kind === 'watch' ? triggerInput({ kind: 'watch', watch: b.watch }).watch : undefined;
+        const refused = watch ? org.watchRefusal(c, watch, { workerIds: processWorkers(id) }) : null;
+        if (refused) return { ok: false, error: refused };
         const res =
           b.kind === 'webhook'
             ? triggers.create({ ...base, name: `${proc.name}: posted events`, kind: 'webhook' })
@@ -1463,7 +1483,15 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/retry$/, handle: (c, b, [id]) => org.retryTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
     { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/skip$/, handle: (c, b, [id]) => org.skipTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
     { method: 'POST', path: /^\/api\/teams\/suggest$/, handle: (c, b) => org.suggestTeam(c, str(b.purpose).slice(0, 1000), str(b.name).slice(0, 80)) },
-    { method: 'POST', path: /^\/api\/runs\/([^/]+)\/resume$/, handle: (c, _b, [id]) => org.resumeInterrupted(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/runs\/([^/]+)\/resume$/,
+      handle: (c, b, [id]) => {
+        const how = str(b.how);
+        if (how && how !== 'sendBack' && how !== 'retry' && how !== 'skip') return { ok: false, error: 'how is sendBack, retry or skip.' };
+        return org.carryOn(c, decodeURIComponent(id), (how || undefined) as CarryOn | undefined, str(b.note) || undefined);
+      },
+    },
     { method: 'GET', path: /^\/api\/secrets$/, handle: (c) => org.secretList(c) },
     { method: 'POST', path: /^\/api\/secrets$/, handle: (c, b) => org.setSecret(c, str(b.name), str(b.value)) },
     { method: 'POST', path: /^\/api\/secrets\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.removeSecret(c, decodeURIComponent(name)) },
@@ -1748,7 +1776,17 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, b, [id]) => org.createTrigger(c, decodeURIComponent(id), triggerInput(b.trigger)) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/trigger-drafts$/, handle: (c, b, [id]) => org.startTriggerDraft(c, decodeURIComponent(id), typeof b.description === 'string' ? b.description : '') },
     { method: 'GET', path: /^\/api\/trigger-drafts\/([^/]+)$/, handle: (c, _b, [id]) => org.triggerDraft(c, decodeURIComponent(id)) },
-    { method: 'POST', path: /^\/api\/triggers\/test$/, handle: (c, b) => org.testWatch(c, triggerInput({ kind: 'watch', watch: b.watch }).watch!) },
+    {
+      method: 'POST',
+      path: /^\/api\/triggers\/test$/,
+      handle: (c, b) => {
+        const watch = triggerInput({ kind: 'watch', watch: b.watch }).watch;
+        if (!watch) return { ok: false, error: 'Pick the tool to check, and what to call.' };
+        // Tried for a worker's trigger: the call is held to what that worker
+        // may use. A process's intake is tried on its own route.
+        return org.testWatch(c, watch, typeof b.workerId === 'string' && b.workerId ? { workerId: b.workerId } : {});
+      },
+    },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/check$/, handle: (c, _b, [id]) => org.checkTriggerNow(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeTrigger(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)$/, handle: (c, b, [id]) => org.updateTrigger(c, decodeURIComponent(id), triggerPatch(b.patch)) },

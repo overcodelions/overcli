@@ -207,9 +207,9 @@ overgo is Overcli for a whole org: one container running `overcli serve`. It hos
 
 - **Ask from where you already are.** Mention `@overgo` in Slack and the answer comes back in the thread, team work included. Or use the web console, or connect Claude Code, Claude Desktop or Codex over MCP and ask *"what's waiting on me?"*
 - **Managers approve.** Anything that reaches outside the server (a push, a message, a ticket update) waits for the worker's manager, in Slack or the console. Workers start on probation and earn more room.
-- **An Access tab on every worker.** Its role, its tools and how far each reaches, how much it does alone, and its standing approvals.
+- **A Setup tab on every worker.** Six steps: its role, its tools and how far each reaches, who it works with, when it works, how much it does alone, and its standing approvals.
 - **One handbook.** Admins keep a page every worker reads after its own job.
-- **A Tuning tab.** Says whether a worker is getting better, and suggests changes from its own runs. Nothing changes until its manager applies one.
+- **A Performance tab.** Says whether a worker is getting better, and suggests changes from its own runs. Nothing changes until its manager applies one.
 - **A record of everything.** The Library keeps every result with its time, cost and rating; Reports shows time saved and spend by day. Each manager gets a Monday digest in Slack.
 - **Easy to watch.** Prometheus metrics on a port of their own (`OVERCLI_METRICS`), and admins are told when a key expires or a tool's API goes away.
 
@@ -266,7 +266,7 @@ Everything in the box:
 | 21 | **Teams** | Put workers together on one task. Write a brief and a coordinator plans the stages — who contributes, who challenges — for you to approve, hiring any member the plan is missing. Members work in the team's project on one shared branch per task, files land in a shared folder, and the coordinator writes the final pack. Afterwards, ask the team follow-up questions in its room and hand work back to a member. Members keep their own permissions unless you say otherwise, and a budget per task caps the spend. Lives in the Workers view. |
 | 22 | **Documents projects** | Overcli without a repo. **Open a folder** of documents and Overcli offers the documents view, or **Start something new**: describe what you want and get a prepared folder in `~/Documents/Overcli Projects/` — one flat folder, deliberately no `inbox/` or `output/` — with an undo history it sets up for you, and starter flows for documents rather than code. |
 | 23 | **Headless CLI** | The same flows and workers, run from a command line instead of the app — one shot in CI or on a box you own, driving the same runtime the GUI does. Deploy a flow or a worker cadence straight to GitHub Actions or Jenkins as a generated pipeline. |
-| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack (teams work in the thread), the web console or Claude over MCP, with managers approving what they do. Each worker has a role, an Access tab and a Tuning tab; admins keep one handbook every worker reads, offer APIs published from overapi, and watch the server through Prometheus metrics. A Monday digest tells managers how the week went. See [overgo](#overgo-the-org-server). |
+| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack (teams work in the thread), the web console or Claude over MCP, with managers approving what they do. Each worker has a role, a Setup tab and a Performance tab; admins keep one handbook every worker reads, offer APIs published from overapi, and watch the server through Prometheus metrics. A Monday digest tells managers how the week went. See [overgo](#overgo-the-org-server). |
 
 ## Build & package
 

@@ -442,7 +442,9 @@ function Conversation({ server, worker, detail, proposals, onChanged, onOpenRun,
     );
   }
 
-  const fresh = pending.filter((p) => !p.replyTo);
+  // A new question shows here until its thread is listed, then only there.
+  const listed = new Set((threads ?? []).flatMap((t) => [t.id, ...(t.followUps ?? []).map((f) => f.id)]));
+  const fresh = pending.filter((p) => !p.replyTo && !listed.has(`ask:${p.askId}`));
   return (
     <div className="flex flex-col gap-4">
       {deskTasks.map((task) => (
@@ -535,6 +537,10 @@ function ThreadView({
   onTuning: () => void;
 }) {
   const parts = [thread, ...(thread.followUps ?? [])];
+  // Once the thread has it, the message is shown there: a copy kept until the
+  // answer lands would read as the same thing asked twice.
+  const shown = new Set(parts.map((x) => x.id));
+  const unseen = pending.filter((p) => !shown.has(`ask:${p.askId}`));
   const inSlack = startedInSlack(thread, asks);
   const stage = STAGE[thread.stage] ?? STAGE.done;
   return (
@@ -564,7 +570,7 @@ function ThreadView({
         return (
           <div key={t.id} className="flex flex-col gap-3.5">
             <article className="flex gap-3.5">
-              <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-card-strong text-xs font-semibold text-ink">{initials(who.who)}</span>
+              {who.who === 'You' ? <Me server={server} /> : <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-card-strong text-xs font-semibold text-ink">{initials(who.who)}</span>}
               <div className="min-w-0 flex-1">
                 <div className="text-xs text-ink-faint">
                   <span className="font-medium text-ink-muted">{who.who}</span>
@@ -631,7 +637,7 @@ function ThreadView({
           </div>
         );
       })}
-      {pending.map((p) => (
+      {unseen.map((p) => (
         <div key={p.askId} className="flex flex-col gap-3.5">
           <article className="flex gap-3.5">
             <Me server={server} />
@@ -1006,8 +1012,16 @@ function RunsList({ detail, onOpen }: { detail: Detail; onOpen: (runId: string) 
   );
 }
 
+/// Why a run is paused where only its manager can move it on (`OrgService.runPause`).
+interface RunPause {
+  reason: 'interrupted' | 'failure';
+  step: string;
+  sendsBackTo?: string;
+  error?: string;
+}
+
 interface RunInfo {
-  run: { id: string; title: string; state: string; startedAt: number; endedAt?: number; steps: number; costUSD?: number; error?: string };
+  run: { id: string; title: string; state: string; startedAt: number; endedAt?: number; steps: number; costUSD?: number; error?: string; pause?: RunPause };
   thread: { id: string; prompt: string; by?: string; via?: string } | null;
   waiting: OrgWaiting[];
   youManage: boolean;
@@ -1085,11 +1099,31 @@ function RunPage({ server, worker, runId, past, onChanged, onTuning }: { server:
             </span>
           </div>
           <h1 className="mt-3 text-2xl font-semibold leading-snug tracking-tight text-ink">{said(info.thread?.prompt ?? '').headline || r.title}</h1>
+          {r.pause?.reason === 'failure' && (
+            <p className="mt-2 text-sm text-ink-muted">
+              Paused because "{r.pause.step}" failed after its retries.{info.youManage ? (r.pause.sendsBackTo ? ` Send it back to "${r.pause.sendsBackTo}" to fix what it found, retry it, or skip it.` : ' Retry it or skip it.') : ''}
+            </p>
+          )}
         </div>
         {info.youManage && (
           <div className="flex gap-2">
             {going && <button disabled={busy} className={btn} onClick={() => act(`/api/runs/${enc(r.id)}/stop`)}>Stop</button>}
-            {r.state === 'paused' && <button disabled={busy} className={btn} title="Carry on a run the server stopped mid-step" onClick={() => act(`/api/runs/${enc(r.id)}/resume`)}>Carry on</button>}
+            {r.pause?.reason === 'interrupted' && <button disabled={busy} className={btn} title="Carry on a run the server stopped mid-step" onClick={() => act(`/api/runs/${enc(r.id)}/resume`)}>Carry on</button>}
+            {r.pause?.reason === 'failure' && r.pause.sendsBackTo && (
+              <button disabled={busy} className={btn} title={`Hand what "${r.pause.step}" found back to "${r.pause.sendsBackTo}" to fix, then carry on from there`} onClick={() => act(`/api/runs/${enc(r.id)}/resume`, { how: 'sendBack' })}>
+                Send back to {r.pause.sendsBackTo}
+              </button>
+            )}
+            {r.pause?.reason === 'failure' && (
+              <button disabled={busy} className={btn} title={`Run "${r.pause.step}" again as it is`} onClick={() => act(`/api/runs/${enc(r.id)}/resume`, { how: 'retry' })}>
+                Retry {r.pause.step}
+              </button>
+            )}
+            {r.pause?.reason === 'failure' && (
+              <button disabled={busy} className={btn} title={`Treat "${r.pause.step}" as passed and go on to the next step`} onClick={() => act(`/api/runs/${enc(r.id)}/resume`, { how: 'skip' })}>
+                Skip {r.pause.step}
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -18,7 +18,8 @@ function fakeHost(s: { prs: OpenPr[]; base?: string; conflicted?: boolean; undec
     defaultHead: async () => s.base ?? 'base1',
     conflicted: async () => (asked.conflicted++, s.undecided ? undefined : (s.conflicted ?? false)),
     build: async () => (asked.build++, s.build ?? 'passed'),
-    comments: async () => (asked.comments++, s.comments ?? 0),
+    // The first n comments the PR has: ids by position, so more is newer.
+    comments: async () => (asked.comments++, Array.from({ length: s.comments ?? 0 }, (_, i) => ({ id: String(i + 1), author: 'Dana Reviewer', at: `2026-11-01T00:00:${String(i).padStart(2, '0')}Z`, body: `Comment ${i + 1}`, file: 'src/a.ts', line: i + 1 }))),
   };
   return { host, asked, s };
 }
@@ -320,7 +321,7 @@ describe('the hosts', () => {
     })!;
     const [one] = (await host.open())!;
     expect(one.author).toEqual(['Dana Reviewer', 'dana']);
-    expect(await host.comments(one)).toBe(1);
+    expect((await host.comments(one))?.map((c) => c.body)).toEqual(['Rename this']);
   });
 
   it('reads GitHub: a running check is pending', async () => {
@@ -548,7 +549,15 @@ describe('waking workers', () => {
     expect(woken[0][1]).not.toContain('new review comment');
     expect(woken[1][1]).toContain('2 new review comments');
     expect(woken[1][1]).not.toContain('its build failed');
+    // The new comments themselves, read by the server, so a worker without
+    // the host's tool can fix them; the old one, and the builds watcher, get none.
+    expect(woken[1][1]).toContain('Comment 2 by Dana Reviewer on src/a.ts:2: Comment 2');
+    expect(woken[1][1]).toContain('Comment 3 by Dana Reviewer on src/a.ts:3: Comment 3');
+    expect(woken[1][1]).not.toContain('Comment 1 by');
+    expect(woken[1][1]).toContain('You do not need the host’s own tool to read them');
+    expect(woken[0][1]).not.toContain('Comment 2');
     expect(state.repos['acme-web'].prs['42'].commentRounds).toBe(1);
+    expect(state.repos['acme-web'].prs['42'].pending?.said).toBeUndefined();
     expect(state.repos['acme-web'].prs['42'].pending).toBeUndefined();
     // Two watchers in one check spend one of the pull request's day's wakes.
     expect(state.repos['acme-web'].prs['42'].woken).toHaveLength(1);
@@ -586,7 +595,7 @@ describe('host listings', () => {
     const host = prHostFor(GH_REPO, { env, fetchImpl: f })!;
     const open = (await host.open())!;
     expect(open).toHaveLength(101);
-    expect(await host.comments(open[0])).toBe(102);
+    expect((await host.comments(open[0]))?.length).toBe(102);
   });
 
   it('fails the whole list when a later page can’t be read, rather than reading a short one', async () => {

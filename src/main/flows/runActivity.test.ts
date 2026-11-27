@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MainToRendererEvent } from '../../shared/types';
-import { describeTool, RunActivity } from './runActivity';
+import { describeTool, readable, RunActivity } from './runActivity';
 
 const stream = (events: unknown[]): MainToRendererEvent => ({ type: 'stream', conversationId: 'c1', events }) as unknown as MainToRendererEvent;
 const assistant = (text: string, tools: Array<[string, unknown]> = []) => ({ timestamp: 1_000, kind: { type: 'assistant', info: { text, toolUses: tools.map(([name, input], i) => ({ id: `t${i}`, name, inputJSON: JSON.stringify(input) })), thinking: [] } } });
@@ -14,6 +14,15 @@ describe('a run, in words', () => {
     expect(describeTool('WebSearch', '{"query":"partner ecosystem MCP 2026"}')).toBe('Searched the web: partner ecosystem MCP 2026');
     expect(describeTool('mcp__claude_ai_Acme_Wiki__searchIssuesUsingQuery', '{"jql":"project = ACME"}')).toBe('Acme Wiki: search issues using query (project = ACME)');
     expect(describeTool('Bash', JSON.stringify({ command: 'x'.repeat(300) })).length).toBeLessThan(110);
+  });
+});
+
+describe('a question to its worker', () => {
+  it('reads as a question, not as the tags the runtime reads it by', () => {
+    expect(readable('<worker_question>This step has no Bitbucket tool. Paste them, or give it access?</worker_question>')).toBe('Asked: This step has no Bitbucket tool. Paste them, or give it access?');
+    // Still streaming, closing tag not in yet.
+    expect(readable('Read the plan. <worker_question>Which branch')).toBe('Read the plan. Asked: Which branch');
+    expect(readable('Plain words.')).toBe('Plain words.');
   });
 });
 
@@ -56,6 +65,21 @@ describe('run activity', () => {
     ]);
   });
 
+  it('says which call failed, with what the API said', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-activity-'));
+    const a = new RunActivity((c) => (c === 'c1' ? 'r1' : undefined), { dir, keepDays: () => 7 });
+    const body = `HTTP 403: ${'token lacks the notes write scope. '.repeat(8)}`;
+    a.observe(stream([
+      assistant('', [['mcp__overapi-acme-board__create_note', { title: 'Onboarding links' }], ['mcp__overapi-acme-board__search_notes', { query: 'onboarding' }]]),
+      { timestamp: 1_100, kind: { type: 'toolResult', results: [{ id: 't1', content: '[]', isError: false }, { id: 't0', content: body, isError: true }] } },
+    ]));
+    const failed = a.list('r1').filter((x) => x.kind === 'error');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].tool).toBe('mcp__overapi-acme-board__create_note');
+    expect(failed[0].text.startsWith('overapi-acme-board: create note failed: HTTP 403')).toBe(true);
+    expect(failed[0].text.length).toBeGreaterThan(200);
+  });
+
   it('records what a run did, keeps it across a restart, and lets it go after the org keeps things', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-activity-'));
     const a = new RunActivity((c) => (c === 'c1' ? 'r1' : undefined), { dir, keepDays: () => 7 });
@@ -64,7 +88,7 @@ describe('run activity', () => {
     expect(a.list('r1').map((x) => [x.kind, x.text])).toEqual([
       ['said', 'Reading the scores first.'],
       ['tool', 'Read x/SCORING.md'],
-      ['error', 'denied'],
+      ['error', 'Read x/SCORING.md failed: denied'],
     ]);
     expect(a.list('r1', 1_000).map((x) => x.kind)).toEqual(['error']);
     await a.flushed();

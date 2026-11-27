@@ -112,7 +112,7 @@ Parameters:
     AllowedValues: ['no', 'yes']
     Description: >-
       Optional. yes also makes three read-only roles workers can be set to on
-      their Access tab: QA (CloudWatch logs), ENGINEERING (CloudWatch, X-Ray)
+      their Setup tab (Where it works, Cloud role): QA (CloudWatch logs), ENGINEERING (CloudWatch, X-Ray)
       and DEVOPS (ReadOnlyAccess). None of them can read the org's secrets.
       Every worker gets the default worker role either way. See deploy/aws.md,
       "Workers' AWS roles".
@@ -311,7 +311,7 @@ Resources:
   # Workers never use the instance role. The server assumes one of these for
   # each worker's run (src/main/org/workerCloud.ts), with the worker's name as
   # the session name, so CloudTrail says which worker made each call. The
-  # default one is OVERGO_AWSWORKER_ROLE; a worker set to QA on its Access tab
+  # default one is OVERGO_AWSWORKER_ROLE; a worker set to QA on its Setup tab
   # gets OVERGO_AWSWORKER_ROLE_QA. Add your own: name it overgo-worker-<org>-…,
   # trust the instance role, and set its ARN on Setup → Secrets.
 

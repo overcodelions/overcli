@@ -52,6 +52,7 @@ import type {
   MainToRendererEvent,
   PermissionMode,
   Project,
+  StreamEventKind,
   UUID,
   Workspace,
 } from '../../shared/types';
@@ -103,6 +104,8 @@ import {
   type WorkspaceMemberRef,
 } from '../../shared/flows/workspaceMembers';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
+import { changesFromTranscript, describeChange, type RunChange } from '../../shared/flows/runChanges';
+import { scrubOutbound } from '../secretScrub';
 import { appendRunSummary } from './runSummaryLog';
 import { nextRunNumber } from './runNumbers';
 import { host } from '../host';
@@ -302,6 +305,10 @@ export interface FlowRuntimeResumeArgs {
   /// need only the same outside tools, not just this one. See
   /// `FlowRun.externalActionRunGrant`.
   forRun?: boolean;
+  /// On a FAILURE pause whose step hands its failures back to an earlier
+  /// step (`on_fail: goto`): run that hand-back once more, after the
+  /// automatic retries ran out. `reason` is what the target step is told.
+  sendBack?: { reason: string };
 }
 
 export interface FlowRuntimeDeleteArgs {
@@ -844,6 +851,7 @@ export class FlowRuntimeImpl {
       const run = this.runs.get(runId);
       if (!run) return;
       this.markStepActivity(runId);
+      if (this.keepRunChanges && run.workerId && !run.trial) this.noteChanges(run, event.events);
 
       // An unattended worker with no grant for external actions runs under
       // `acceptEdits` (see resolvePermissionMode), which keeps the approval
@@ -1843,6 +1851,32 @@ export class FlowRuntimeImpl {
     if (args.override && pausedReason === 'failure') {
       run.state = { kind: 'running', currentStepId: nextStepId };
       this.advanceAfterStep(args.runId, nextStepId);
+      return { ok: true };
+    }
+
+    // Send back: what `on_fail: goto` does on its own, asked for by a person
+    // once its retries are spent. The target step gets the failed step's
+    // output as feedback (a reviewer's findings), and the budget starts again.
+    if (args.sendBack) {
+      if (pausedReason !== 'failure') return { ok: false, error: 'Only a run paused on a failed step can be sent back.' };
+      const failed = run.flowSnapshot.steps.find((s) => s.id === nextStepId);
+      const policy = failed?.onFail;
+      if (!failed || policy?.action !== 'goto') {
+        return { ok: false, error: `"${nextStepId}" doesn't hand its failures back to an earlier step. Retry it or skip it instead.` };
+      }
+      this.retryCounts.delete(`${args.runId}:${failed.id}`);
+      this.retryFeedback.set(args.runId, {
+        targetStepId: policy.target,
+        fromStepId: failed.id,
+        artifactName: run.artifacts[failed.output] ? failed.output : null,
+        reason: args.sendBack.reason,
+        attempt: 1,
+        maxRetries: policy.maxRetries,
+      });
+      run.state = { kind: 'running', currentStepId: policy.target };
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+      void this.executeStep(args.runId, policy.target);
       return { ok: true };
     }
 
@@ -2968,6 +3002,99 @@ export class FlowRuntimeImpl {
     this.emitRunUpdate(run);
     this.checkpoint(run);
     return { ok: true };
+  }
+
+  /// Whether worker runs keep what they change outside the server. Only an
+  /// org server turns it on (cli/serve.ts): its console is what shows it.
+  keepRunChanges = false;
+
+  /// Calls a worker run made of tools that don't only read, by run and call
+  /// id, until their result comes back. In memory only: the arguments are
+  /// read once, to say the change in a few words, and never kept.
+  private readonly changeCalls = new Map<string, { tool: string; input: string; at: number }>();
+
+  /// A change as a run keeps it: a few words, its detail scrubbed of secrets.
+  private static keptChange(tool: string, input: string, at: number): RunChange {
+    const c = describeChange(tool, input, at);
+    return c.detail ? { ...c, detail: scrubOutbound(c.detail) } : c;
+  }
+
+  /// What a worker run changes outside the server, as it happens: a call of
+  /// an MCP tool that doesn't only read, once its result comes back without
+  /// an error. Kept on the run (the newest 40), so its thread can say what
+  /// changed instead of only that it finished.
+  private noteChanges(run: FlowRun, events: Array<{ kind: StreamEventKind }>): void {
+    // Kept from its first event on, even empty: an empty list says nothing
+    // changed, where a run from before this was kept says nothing either way.
+    if (!run.changed) run.changed = [];
+    for (const ev of events) {
+      if (ev.kind.type === 'assistant' && !ev.kind.info.isPartial) {
+        for (const u of ev.kind.info.toolUses) {
+          if (u.name.startsWith('mcp__') && !isReadOnlyMcpTool(u.name)) this.changeCalls.set(`${run.id}:${u.id}`, { tool: u.name, input: (u.inputJSON ?? '').slice(0, 4000), at: Date.now() });
+        }
+      } else if (ev.kind.type === 'toolResult') {
+        for (const r of ev.kind.results) {
+          const key = `${run.id}:${r.id}`;
+          const call = this.changeCalls.get(key);
+          if (!call) continue;
+          this.changeCalls.delete(key);
+          if (r.isError) continue;
+          run.changed = [...(run.changed ?? []), FlowRuntimeImpl.keptChange(call.tool, call.input, Date.now())].slice(-40);
+          this.checkpoint(run);
+        }
+      }
+    }
+    // A call whose result never came (the run died mid-call) is let go
+    // after an hour, so nothing piles up over a long-running server.
+    if (this.changeCalls.size > 100) {
+      const stale = Date.now() - 60 * 60_000;
+      for (const [k, c] of this.changeCalls) if (c.at < stale) this.changeCalls.delete(k);
+    }
+  }
+
+  /// Runs from before changes were kept as they happened: what they changed,
+  /// read back from their steps' session transcripts, within each run's own
+  /// time. Only finished worker runs started after since that have none yet; one
+  /// whose transcripts are gone stays unknown, and is tried again next time.
+  /// Read back what past worker runs changed from their session transcripts,
+  /// for runs since `since` with no record yet. Async, one run at a time and
+  /// yielding between them, so a first start after upgrading doesn't hold
+  /// the event loop (Slack, the control plane, live runs) while it reads.
+  /// At most `limit` runs a call; the rest wait for the next start. A run
+  /// with no transcript left is recorded as having changed nothing, so it
+  /// isn't looked for again on every start.
+  async backfillChanges(
+    transcript: (sessionId: string) => Promise<string[] | null>,
+    since: number,
+    opts: { limit?: number; yieldEach?: () => Promise<void> } = {},
+  ): Promise<{ runs: number; changes: number; left: number }> {
+    const limit = opts.limit ?? 200;
+    const pause = opts.yieldEach ?? (() => new Promise<void>((r) => setImmediate(r)));
+    const due = [...this.runs.values()].filter((run) => run.workerId && !run.trial && !run.changed && run.createdAt >= since && run.state.kind !== 'running');
+    let runs = 0, changes = 0;
+    for (const run of due.slice(0, limit)) {
+      await pause();
+      // Changed while this waited: a live run records its own.
+      if (run.changed || run.state.kind === 'running' || this.runs.get(run.id) !== run) continue;
+      const ids = [...new Set(Object.values(run.sessionIdsByParticipant ?? {}))];
+      const found: string[][] = [];
+      for (const id of ids) {
+        const lines = await transcript(id);
+        if (lines) found.push(lines);
+      }
+      if (run.changed) continue;
+      const end = Math.max(run.createdAt, ...run.attempts.map((a) => a.endedAt ?? a.startedAt ?? run.createdAt)) + 60_000;
+      const list = found
+        .flatMap((lines) => changesFromTranscript(lines, run.createdAt - 1000, end, isReadOnlyMcpTool))
+        .sort((a, b) => a.at - b.at)
+        .map((c) => (c.detail ? { ...c, detail: scrubOutbound(c.detail) } : c))
+        .slice(-40);
+      run.changed = list;
+      saveRun(run);
+      runs++;
+      changes += list.length;
+    }
+    return { runs, changes, left: Math.max(0, due.length - limit) };
   }
 
   /// Note that the run's executing step is still alive. Any event on one

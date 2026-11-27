@@ -153,6 +153,24 @@ describe('ConnectionsInbox', () => {
       expect(fs.readdirSync(path.join(dir, 'done'))).toEqual(['2026-01-01-a.json']);
     });
 
+    it('stops saying a push is waiting once the server refuses it outright', async () => {
+      let signedIn = false;
+      const box = withOrg(
+        () => ({ signedIn: true, url: 'https://overgo.acme.dev' }),
+        async () => (signedIn ? { ok: false, error: 'No such project.', retry: false } : { ok: false, error: 'Sign in first.', retry: true }),
+      );
+      fs.mkdirSync(dir, { recursive: true });
+      drop('2026-01-01-a.json', envelope('a', 'shop-staging'));
+      box.start();
+      await box.scan();
+      expect(status().waiting).toBe('Sign in first.');
+      signedIn = true;
+      await box.retry();
+      box.dispose();
+      expect(status().waiting).toBeUndefined();
+      expect(fs.readdirSync(path.join(dir, 'rejected'))).toContain('2026-01-01-a.json');
+    });
+
     it('is never taken for a push', async () => {
       const sent: string[] = [];
       const box = withOrg(() => ({ signedIn: false, error: 'no' }), async (p) => {

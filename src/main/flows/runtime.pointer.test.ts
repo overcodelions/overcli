@@ -580,6 +580,38 @@ describe('resuming an externalAction pause', () => {
     expect(approved).toBe(false);
   });
 
+  it('sends a failed reviewer back to the step it hands failures to, with what it found, once its retries are spent', async () => {
+    const h = harness();
+    const f = flow();
+    f.steps[1] = { ...f.steps[1], onFail: { action: 'goto', target: 'render-report', maxRetries: 2 } };
+    const r: FlowRun = {
+      id: RUN_ID, flowId: 'report-flow', flowSnapshot: f, projectPath: '/tmp/does-not-matter', userPrompt: 'render the report',
+      conversationIds: {}, createdAt: Date.now(), attempts: [],
+      artifacts: { 'polished.html': { name: 'polished.html', kind: 'text', body: 'CHANGES REQUESTED: the total is off by one.', producedByStepId: 'design-polish', producedAt: Date.now() } } as FlowRun['artifacts'],
+      state: { kind: 'paused', nextStepId: 'design-polish', reason: 'failure' },
+    };
+    (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    expect(h.rt.resumeRun({ runId: RUN_ID, sendBack: { reason: 'Pat sent this back.' } }).ok).toBe(true);
+    await flush();
+    expect(r.state).toMatchObject({ kind: 'running', currentStepId: 'render-report' });
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0].prompt).toContain('Pat sent this back.');
+    expect(h.sends[0].prompt).toContain('the total is off by one');
+  });
+
+  it('will not send back a step that has nowhere to send its failures, or a run not paused on a failure', () => {
+    const h = harness();
+    const r: FlowRun = {
+      id: RUN_ID, flowId: 'report-flow', flowSnapshot: flow(), projectPath: '/tmp/does-not-matter', userPrompt: 'x',
+      conversationIds: {}, artifacts: {}, state: { kind: 'paused', nextStepId: 'design-polish', reason: 'failure' }, createdAt: Date.now(), attempts: [],
+    };
+    (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    expect(h.rt.resumeRun({ runId: RUN_ID, sendBack: { reason: 'x' } })).toMatchObject({ ok: false, error: expect.stringContaining('Retry it or skip it') });
+    r.state = { kind: 'paused', nextStepId: 'design-polish', reason: 'interrupted' };
+    expect(h.rt.resumeRun({ runId: RUN_ID, sendBack: { reason: 'x' } }).ok).toBe(false);
+    expect(h.sends).toHaveLength(0);
+  });
+
   it('advances when overriding a failure pause', async () => {
     const h = harness();
     const r: FlowRun = {

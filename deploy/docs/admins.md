@@ -111,7 +111,7 @@ Workers that ask first still ask before any step that changes something, whateve
 
 ### Tool requests
 
-A manager who wants a tool for a worker asks from the worker's **Access** tab (**+ Give it a tool**) or from Slack (`/worker Ada tools add zendesk: to read tickets`).
+A manager who wants a tool for a worker asks from the worker's **Setup** tab, under **Where it works** (**+ Give it a tool**) or from Slack (`/worker Ada tools add zendesk: to read tickets`).
 
 - **Given at once** when the tool is one any hire may have (see [Setup → Hiring](#setup--rules-spending-and-sign-in)), or when an admin asks.
 - **Otherwise it comes to you.** Every admin gets a Slack DM, and a **Tool** card waits in the Inbox, with what it's for. **Give it** or **Decline**. A tool that isn't installed yet has to be installed on Setup → Tools first.
@@ -252,7 +252,7 @@ Every secret the server uses, with why it's needed and how to get one. Values go
 
 - **The environment wins.** A secret set in the server's environment (`deploy/.env` or the task definition) shows as "set by the environment" and is changed there.
 - **Read-only mode:** with `OVERCLI_SECRETS_READONLY=1`, for secrets managed in Terraform, the page lists them and changes nothing. The server re-reads them every five minutes either way.
-- **Workers' AWS roles:** `OVERGO_AWSWORKER_ROLE` is the IAM role ARN workers use for AWS; until it's set, they have none. Add `OVERGO_AWSWORKER_ROLE_<NAME>` (`_QA`, `_DEVOPS`) for other roles, and pick one per worker on its **Access** tab under **Cloud role**. Only an admin changes a worker's role, and it applies on its next AWS call. Each role must trust the server's role, and the server's role must be allowed to assume it. See [Workers' AWS roles](../aws.md#workers-aws-roles).
+- **Workers' AWS roles:** `OVERGO_AWSWORKER_ROLE` is the IAM role ARN workers use for AWS; until it's set, they have none. Add `OVERGO_AWSWORKER_ROLE_<NAME>` (`_QA`, `_DEVOPS`) for other roles, and pick one per worker on its **Setup** tab, under **Where it works** → **Cloud role**. Only an admin changes a worker's role, and it applies on its next AWS call. Each role must trust the server's role, and the server's role must be allowed to assume it. See [Workers' AWS roles](../aws.md#workers-aws-roles).
 
 ## Setup → Toolchains
 
@@ -304,7 +304,7 @@ They appear on the Hire page until they're in the catalog. **Add to the catalog*
 
 ### A worker's role
 
-A worker hired from a catalog role keeps it, and any worker can be given one on its page under **Access → Role**. The role's tools come with it in every run, including the one-off work it plans when someone asks it something, so no flow step has to list them. On its page, its manager can turn one of them off for that worker, or narrow one under **Tools** like any tool.
+A worker hired from a catalog role keeps it, and any worker can be given one on its **Setup** tab under **Where it works** → **Role**. The role's tools come with it in every run, including the one-off work it plans when someone asks it something, so no flow step has to list them. On its page, its manager can turn one of them off for that worker, or narrow one under **Tools** like any tool.
 
 Trust still decides when they're used. A call that only reads always goes through. Anything else goes through in a run a person approved (on probation, every run waits for its manager's approval first), in any run when its manager turns on **Always allow its role's tools**, and always for an autonomous worker. Otherwise the call is refused and the worker says what it was about to do. Changing a role's tools in the catalog changes them for every worker with that role; each keeps its own job.
 
@@ -418,7 +418,7 @@ Don't keep anything by hand under that folder. **Readiness** shows how many run 
 
 ## Setup → Tuning
 
-What goes wrong across the org's workers, that no one worker's [Tuning](#tune-a-worker) tab can see or fix. It counts the last 30 days of every worker's runs, leaving out test runs, with no model in the loop: the same answer every time. Admins only.
+What goes wrong across the org's workers, that no one worker's [Performance](#tune-a-worker) tab can see or fix. It counts the last 30 days of every worker's runs, leaving out test runs, with no model in the loop: the same answer every time. Admins only.
 
 - **Give a tool:** a worker's runs were refused a tool it doesn't have. **Apply** gives it.
 - **Let any manager give a tool:** workers of 2 or more managers were refused the same tool, so each manager would have to ask an admin. **Apply** adds it to the tools any manager may give.
@@ -501,12 +501,12 @@ The [operator's guide](../README.md) covers the container itself.
 
 ## Tune a worker
 
-Each worker has a **Tuning** tab, for its manager or an admin. The number on it is how many answers were marked not useful since its last review. A thumbs-down on an answer asks what was wrong, and that shows here.
+Each worker has a **Performance** tab, for its manager or an admin. The number on it is how many answers were marked not useful since its last review. A thumbs-down on an answer asks what was wrong, and that shows here.
 
 **How it's doing** is counted from its runs, with no model turn. It says whether it's getting better, comparing the runs either side of its last change, or recent runs with earlier ones. It needs three runs each side. Each run shows as a bar of time working and time waiting between steps. Long waits usually mean a step is stopping for approval. *Ran clean* means a run finished, no tool was refused and nobody marked it not useful. It doesn't check that the answer was right: ratings do that.
 
-**Review its work** reads its last 10 runs and 12 answers and suggests what to change. Say what's wrong in the box first if you've seen something: that comes first. Each suggestion names the runs that show it, and what it would change: the job, a flow's steps, its notes, an app's guide or a tool. Job, steps and notes open with the change written in, and nothing is saved until you read it and save. A review is one model turn, only when someone asks for one, and it's kept.
+**Review its work** reads its last 10 runs and 12 answers and suggests what to change. Say what's wrong in the box first if you've seen something: that comes first. Each suggestion names the runs that show it, and what it would change: the job, a flow's steps, its notes, an app's guide or a tool. Job, steps and notes open with the change written in, and nothing is saved until you read it and save. Suggestions waiting also show on the **Job** tab, above its instructions. A review is one model turn, only when someone asks for one, and it's kept.
 
-**Watch for trouble.** Every 30 minutes overgo checks each worker's runs since its last review. Runs from before it first started watching don't count, so turning it on doesn't set it off on old history. If 3 runs had tools refused, 2 failed, 3 spent most of their time waiting, or 2 pieces of work were marked not useful, it runs a review, tries the first fix to its steps on a past job as a test run, and tells its manager in Slack. That's at most once a week for a worker, and it spends that worker's budget. It only proposes: nothing changes until a person applies it. It also tells the manager if an applied change looks to have made things worse, and **Undo** on that suggestion puts it back. Turn it off for the org under **Setup → Hiring**, or per worker on its Tuning tab. Turning it back on for the org starts counting afresh.
+**Watch for trouble.** Every 30 minutes overgo checks each worker's runs since its last review. Runs from before it first started watching don't count, so turning it on doesn't set it off on old history. If 3 runs had tools refused, 2 failed, 3 spent most of their time waiting, or 2 pieces of work were marked not useful, it runs a review, tries the first fix to its steps on a past job as a test run, and tells its manager in Slack. That's at most once a week for a worker, and it spends that worker's budget. It only proposes: nothing changes until a person applies it. It also tells the manager if an applied change looks to have made things worse, and **Undo** on that suggestion puts it back. Turn it off for the org under **Setup → Hiring**, or per worker on its Performance tab. Turning it back on for the org starts counting afresh.
 
 **Try a change before keeping it.** A change to a flow's steps can be tried on a past job, and the results are shown beside that job's. A test run only reads, and uses the app under test. A call that would update a ticket or message someone is refused and shown to you, and a server-opened pull request step is left out. It uses budget like any run. The app under test is not protected: a test can change data there, as the real run could, so point **Apps to test** at test environments. A flow with steps on anything but Claude can't be test-run, because only Claude's calls can be held back.
