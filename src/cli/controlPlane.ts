@@ -1996,7 +1996,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
   ] as Array<{ method: string; path: RegExp; handle: PublicHandler }>;
   const allow = rateLimiter(60);
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://local');
       const path = url.pathname;
@@ -2228,7 +2228,16 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
       }
     })();
   });
+  // Keep idle connections open longer than the load balancer in front does
+  // (idle_timeout 300s in deploy/). With Node's 5s default the balancer
+  // reuses a socket the server has just closed and the browser gets the
+  // balancer's HTML 502 page instead of JSON.
+  server.keepAliveTimeout = KEEP_ALIVE_MS;
+  server.headersTimeout = KEEP_ALIVE_MS + 5_000;
+  return server;
 }
+
+export const KEEP_ALIVE_MS = 310_000;
 
 export function listenControlPlane(server: http.Server, address: { host: string; port: number }): Promise<void> {
   return new Promise((resolve, reject) => {
