@@ -3106,7 +3106,7 @@ export const CONSOLE_JS = String.raw`
     return s;
   }
 
-  function api(method, path, body) {
+  function api(method, path, body, retried) {
     return fetch(path, {
       method: method,
       headers: Object.assign({ Authorization: 'Bearer ' + token() }, body ? { 'Content-Type': 'application/json' } : {},
@@ -3115,6 +3115,16 @@ export const CONSOLE_JS = String.raw`
       body: body ? JSON.stringify(body) : undefined
     }).then(function (res) {
       if (res.status === 401) { store(TOKEN_KEY, null); state.me = null; render(); throw new Error('Your token was not accepted. Sign in again.'); }
+      // A proxy in front (load balancer, restart in progress) answers with
+      // its own HTML page. Retry a read once; otherwise say what happened
+      // rather than "Unexpected token '<'".
+      var type = res.headers.get('Content-Type') || '';
+      if (type.indexOf('text/html') >= 0) {
+        if (!retried && method === 'GET' && res.status >= 500) {
+          return new Promise(function (r) { setTimeout(r, 400); }).then(function () { return api(method, path, body, true); });
+        }
+        throw new Error('The server could not be reached (' + res.status + '). Try again in a moment.');
+      }
       return res.json().then(function (x) { notePictures(path, x); return x; });
     });
   }
@@ -5191,7 +5201,15 @@ export const CONSOLE_JS = String.raw`
 
   /// The worker page's status chip: what's happening now first; when it's
   /// idle and its newest run failed, that, in red.
+  /// Marked so a live update replaces the whole chip (row and all), not just
+  /// the first .badge inside it, which used to nest the row one level per
+  /// update and repeat "1 run needs a look".
   function workerHeadBadge(w) {
+    var el = workerHeadBadgeEl(w);
+    el.setAttribute('data-wk-head-badge', '');
+    return el;
+  }
+  function workerHeadBadgeEl(w) {
     var lr = w.last30 && w.last30.lastRun;
     var st = w.stalled;
     var openStalled = function () { openRun(st.newest.runId); };
@@ -6289,7 +6307,7 @@ export const CONSOLE_JS = String.raw`
       // Keep the header's badge in step with what's happening.
       var need = x.threads.filter(function (t) { return t.stage === 'waiting' || t.stage === 'needsYou'; }).length;
       var moving = x.threads.some(function (t) { return t.stage === 'running' || t.stage === 'deciding'; });
-      var badge = document.querySelector('.page-head .badge:not([class*="t-"])');
+      var badge = document.querySelector('.page-head [data-wk-head-badge]');
       if (badge) badge.replaceWith(workerHeadBadge(Object.assign({}, w, { waiting: need, state: moving ? 'working' : w.state === 'working' ? 'idle' : w.state })));
       if (!n) return;
       var waitingOnYou = /waiting/.test(n.sentence) && !moving;
